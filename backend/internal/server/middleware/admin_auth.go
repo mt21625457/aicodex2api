@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -12,23 +11,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// AdminAuth 管理员认证中间件
+// NewAdminAuthMiddleware 创建管理员认证中间件
+func NewAdminAuthMiddleware(
+	authService *service.AuthService,
+	userService *service.UserService,
+	settingService *service.SettingService,
+) AdminAuthMiddleware {
+	return AdminAuthMiddleware(adminAuth(authService, userService, settingService))
+}
+
+// adminAuth 管理员认证中间件实现
 // 支持两种认证方式（通过不同的 header 区分）：
 // 1. Admin API Key: x-api-key: <admin-api-key>
 // 2. JWT Token: Authorization: Bearer <jwt-token> (需要管理员角色)
-func AdminAuth(
+func adminAuth(
 	authService *service.AuthService,
-	userRepo interface {
-		GetByID(ctx context.Context, id int64) (*model.User, error)
-		GetFirstAdmin(ctx context.Context) (*model.User, error)
-	},
+	userService *service.UserService,
 	settingService *service.SettingService,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 检查 x-api-key header（Admin API Key 认证）
 		apiKey := c.GetHeader("x-api-key")
 		if apiKey != "" {
-			if !validateAdminApiKey(c, apiKey, settingService, userRepo) {
+			if !validateAdminApiKey(c, apiKey, settingService, userService) {
 				return
 			}
 			c.Next()
@@ -36,26 +41,27 @@ func AdminAuth(
 		}
 
 		tokenString, viaCookie, err := extractAdminToken(c, authService)
-		if err == nil {
-			// Cookie 认证必须通过来源校验，避免跨站提交。
-			if viaCookie && !enforceCookieOrigin(c, authService.AllowedOrigins(), authService.AuthCookieRequireOrigin()) {
-				AbortWithError(c, 403, "INVALID_ORIGIN", "Origin or Referer check failed")
-				return
-			}
-			if !validateJWTForAdmin(c, tokenString, authService, userRepo) {
-				return
-			}
-			if viaCookie {
-				c.Set("auth_method", "cookie")
-			} else {
-				c.Set("auth_method", "jwt")
-			}
-			c.Next()
+		if err != nil {
+			AbortWithError(c, 401, "UNAUTHORIZED", err.Error())
 			return
 		}
 
-		// 无有效认证信息
-		AbortWithError(c, 401, "UNAUTHORIZED", "Authorization required")
+		// Cookie 认证必须通过来源校验，避免跨站提交。
+		if viaCookie && !enforceCookieOrigin(c, authService.AllowedOrigins(), authService.AuthCookieRequireOrigin()) {
+			AbortWithError(c, 403, "INVALID_ORIGIN", "Origin or Referer check failed")
+			return
+		}
+
+		if !validateJWTForAdmin(c, tokenString, authService, userService) {
+			return
+		}
+
+		if viaCookie {
+			c.Set("auth_method", "cookie")
+		} else {
+			c.Set("auth_method", "jwt")
+		}
+		c.Next()
 	}
 }
 
@@ -64,9 +70,7 @@ func validateAdminApiKey(
 	c *gin.Context,
 	key string,
 	settingService *service.SettingService,
-	userRepo interface {
-		GetFirstAdmin(ctx context.Context) (*model.User, error)
-	},
+	userService *service.UserService,
 ) bool {
 	storedKey, err := settingService.GetAdminApiKey(c.Request.Context())
 	if err != nil {
@@ -81,7 +85,7 @@ func validateAdminApiKey(
 	}
 
 	// 获取真实的管理员用户
-	admin, err := userRepo.GetFirstAdmin(c.Request.Context())
+	admin, err := userService.GetFirstAdmin(c.Request.Context())
 	if err != nil {
 		AbortWithError(c, 500, "INTERNAL_ERROR", "No admin user found")
 		return false
@@ -97,9 +101,7 @@ func validateJWTForAdmin(
 	c *gin.Context,
 	token string,
 	authService *service.AuthService,
-	userRepo interface {
-		GetByID(ctx context.Context, id int64) (*model.User, error)
-	},
+	userService *service.UserService,
 ) bool {
 	// 验证 JWT token
 	claims, err := authService.ValidateToken(token)
@@ -113,7 +115,7 @@ func validateJWTForAdmin(
 	}
 
 	// 从数据库获取用户
-	user, err := userRepo.GetByID(c.Request.Context(), claims.UserID)
+	user, err := userService.GetByID(c.Request.Context(), claims.UserID)
 	if err != nil {
 		AbortWithError(c, 401, "USER_NOT_FOUND", "User not found")
 		return false
