@@ -2,6 +2,7 @@ package entstore
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -135,6 +136,187 @@ func TestStore_UpdateConfig_KeepSecretWhenEmpty(t *testing.T) {
 	require.Equal(t, "pg-secret", finalCfg.Postgres.Password)
 	require.Equal(t, "redis-secret", finalCfg.Redis.Password)
 	require.Equal(t, "s3-secret", finalCfg.S3.SecretAccessKey)
+}
+
+func TestStore_S3ProfilesLifecycle(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	initialProfiles, err := store.ListS3Profiles(ctx)
+	require.NoError(t, err)
+	require.Len(t, initialProfiles, 1)
+	require.Equal(t, defaultS3ProfileID, initialProfiles[0].ProfileID)
+	require.True(t, initialProfiles[0].IsActive)
+
+	created, err := store.CreateS3Profile(ctx, CreateS3ProfileInput{
+		ProfileID: "archive",
+		Name:      "归档账号",
+		S3: S3Config{
+			Enabled:         true,
+			Region:          "us-east-1",
+			Bucket:          "archive-bucket",
+			AccessKeyID:     "archive-ak",
+			SecretAccessKey: "archive-sk",
+			UseSSL:          true,
+		},
+		SetActive: false,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "archive", created.ProfileID)
+	require.False(t, created.IsActive)
+	require.True(t, created.SecretAccessKeyConfigured)
+
+	updated, err := store.UpdateS3Profile(ctx, UpdateS3ProfileInput{
+		ProfileID: "archive",
+		Name:      "归档账号-更新",
+		S3: S3Config{
+			Enabled:         true,
+			Region:          "us-east-1",
+			Bucket:          "archive-bucket-updated",
+			AccessKeyID:     "archive-ak-2",
+			SecretAccessKey: "",
+			UseSSL:          true,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "归档账号-更新", updated.Name)
+	require.Equal(t, "archive-ak-2", updated.S3.AccessKeyID)
+	require.Equal(t, "archive-sk", updated.S3.SecretAccessKey)
+
+	active, err := store.SetActiveS3Profile(ctx, "archive")
+	require.NoError(t, err)
+	require.True(t, active.IsActive)
+
+	cfg, err := store.GetConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "archive", cfg.ActiveS3ProfileID)
+	require.Equal(t, "archive-bucket-updated", cfg.S3.Bucket)
+
+	err = store.DeleteS3Profile(ctx, "archive")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrActiveS3Profile))
+
+	_, err = store.SetActiveS3Profile(ctx, defaultS3ProfileID)
+	require.NoError(t, err)
+	require.NoError(t, store.DeleteS3Profile(ctx, "archive"))
+}
+
+func TestStore_DeleteS3ProfileInUse(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	_, err := store.CreateS3Profile(ctx, CreateS3ProfileInput{
+		ProfileID: "for-job",
+		Name:      "任务账号",
+		S3: S3Config{
+			Enabled: true,
+			Region:  "us-east-1",
+			Bucket:  "job-bucket",
+			UseSSL:  true,
+		},
+	})
+	require.NoError(t, err)
+
+	_, _, err = store.CreateBackupJob(ctx, CreateBackupJobInput{
+		BackupType:  backupjob.BackupTypePostgres.String(),
+		UploadToS3:  true,
+		TriggeredBy: "admin:9",
+		S3ProfileID: "for-job",
+	})
+	require.NoError(t, err)
+
+	err = store.DeleteS3Profile(ctx, "for-job")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrS3ProfileInUse))
+}
+
+func TestStore_SourceProfilesLifecycle(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	initialPG, err := store.ListSourceProfiles(ctx, "postgres")
+	require.NoError(t, err)
+	require.Len(t, initialPG, 1)
+	require.Equal(t, defaultSourceID, initialPG[0].ProfileID)
+	require.True(t, initialPG[0].IsActive)
+
+	created, err := store.CreateSourceProfile(ctx, CreateSourceProfileInput{
+		SourceType: "postgres",
+		ProfileID:  "pg-reporting",
+		Name:       "报表库",
+		Config: SourceConfig{
+			Host:     "10.0.0.10",
+			Port:     15432,
+			User:     "report_user",
+			Password: "secret",
+			Database: "reporting",
+			SSLMode:  "require",
+		},
+		SetActive: false,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "pg-reporting", created.ProfileID)
+	require.False(t, created.IsActive)
+	require.True(t, created.PasswordConfigured)
+
+	active, err := store.SetActiveSourceProfile(ctx, "postgres", "pg-reporting")
+	require.NoError(t, err)
+	require.True(t, active.IsActive)
+
+	cfg, err := store.GetConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "pg-reporting", cfg.ActivePostgresID)
+	require.Equal(t, "10.0.0.10", cfg.Postgres.Host)
+	require.Equal(t, int32(15432), cfg.Postgres.Port)
+
+	err = store.DeleteSourceProfile(ctx, "postgres", "pg-reporting")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrSourceActive))
+
+	_, err = store.SetActiveSourceProfile(ctx, "postgres", defaultSourceID)
+	require.NoError(t, err)
+	require.NoError(t, store.DeleteSourceProfile(ctx, "postgres", "pg-reporting"))
+}
+
+func TestStore_CreateBackupJob_WithSelectedSourceProfiles(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	_, err := store.CreateSourceProfile(ctx, CreateSourceProfileInput{
+		SourceType: "postgres",
+		ProfileID:  "pg-custom",
+		Name:       "自定义PG",
+		Config: SourceConfig{
+			Host:     "127.0.0.2",
+			Port:     6432,
+			User:     "custom_user",
+			Database: "custom_db",
+			SSLMode:  "disable",
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = store.CreateSourceProfile(ctx, CreateSourceProfileInput{
+		SourceType: "redis",
+		ProfileID:  "redis-custom",
+		Name:       "自定义Redis",
+		Config: SourceConfig{
+			Addr: "127.0.0.3:6380",
+			DB:   5,
+		},
+	})
+	require.NoError(t, err)
+
+	job, created, err := store.CreateBackupJob(ctx, CreateBackupJobInput{
+		BackupType:  backupjob.BackupTypeFull.String(),
+		TriggeredBy: "admin:10",
+		PostgresID:  "pg-custom",
+		RedisID:     "redis-custom",
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, "pg-custom", job.PostgresProfileID)
+	require.Equal(t, "redis-custom", job.RedisProfileID)
 }
 
 func openTestStore(t *testing.T) *Store {

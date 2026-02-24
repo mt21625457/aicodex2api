@@ -13,6 +13,12 @@ const (
 	Label = "backup_s3config"
 	// FieldID holds the string denoting the id field in the database.
 	FieldID = "id"
+	// FieldProfileID holds the string denoting the profile_id field in the database.
+	FieldProfileID = "profile_id"
+	// FieldName holds the string denoting the name field in the database.
+	FieldName = "name"
+	// FieldIsActive holds the string denoting the is_active field in the database.
+	FieldIsActive = "is_active"
 	// FieldEnabled holds the string denoting the enabled field in the database.
 	FieldEnabled = "enabled"
 	// FieldEndpoint holds the string denoting the endpoint field in the database.
@@ -42,6 +48,9 @@ const (
 // Columns holds all SQL columns for backups3config fields.
 var Columns = []string{
 	FieldID,
+	FieldProfileID,
+	FieldName,
+	FieldIsActive,
 	FieldEnabled,
 	FieldEndpoint,
 	FieldRegion,
@@ -66,6 +75,12 @@ func ValidColumn(column string) bool {
 }
 
 var (
+	// DefaultProfileID holds the default value on creation for the "profile_id" field.
+	DefaultProfileID string
+	// DefaultName holds the default value on creation for the "name" field.
+	DefaultName string
+	// DefaultIsActive holds the default value on creation for the "is_active" field.
+	DefaultIsActive bool
 	// DefaultEnabled holds the default value on creation for the "enabled" field.
 	DefaultEnabled bool
 	// DefaultEndpoint holds the default value on creation for the "endpoint" field.
@@ -96,6 +111,21 @@ type OrderOption func(*sql.Selector)
 // ByID orders the results by the id field.
 func ByID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldID, opts...).ToFunc()
+}
+
+// ByProfileID orders the results by the profile_id field.
+func ByProfileID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldProfileID, opts...).ToFunc()
+}
+
+// ByName orders the results by the name field.
+func ByName(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldName, opts...).ToFunc()
+}
+
+// ByIsActive orders the results by the is_active field.
+func ByIsActive(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldIsActive, opts...).ToFunc()
 }
 
 // ByEnabled orders the results by the enabled field.

@@ -26,6 +26,32 @@ func (_c *BackupSourceConfigCreate) SetSourceType(v backupsourceconfig.SourceTyp
 	return _c
 }
 
+// SetProfileID sets the "profile_id" field.
+func (_c *BackupSourceConfigCreate) SetProfileID(v string) *BackupSourceConfigCreate {
+	_c.mutation.SetProfileID(v)
+	return _c
+}
+
+// SetName sets the "name" field.
+func (_c *BackupSourceConfigCreate) SetName(v string) *BackupSourceConfigCreate {
+	_c.mutation.SetName(v)
+	return _c
+}
+
+// SetIsActive sets the "is_active" field.
+func (_c *BackupSourceConfigCreate) SetIsActive(v bool) *BackupSourceConfigCreate {
+	_c.mutation.SetIsActive(v)
+	return _c
+}
+
+// SetNillableIsActive sets the "is_active" field if the given value is not nil.
+func (_c *BackupSourceConfigCreate) SetNillableIsActive(v *bool) *BackupSourceConfigCreate {
+	if v != nil {
+		_c.SetIsActive(*v)
+	}
+	return _c
+}
+
 // SetHost sets the "host" field.
 func (_c *BackupSourceConfigCreate) SetHost(v string) *BackupSourceConfigCreate {
 	_c.mutation.SetHost(v)
@@ -215,6 +241,10 @@ func (_c *BackupSourceConfigCreate) ExecX(ctx context.Context) {
 
 // defaults sets the default values of the builder before save.
 func (_c *BackupSourceConfigCreate) defaults() {
+	if _, ok := _c.mutation.IsActive(); !ok {
+		v := backupsourceconfig.DefaultIsActive
+		_c.mutation.SetIsActive(v)
+	}
 	if _, ok := _c.mutation.ContainerName(); !ok {
 		v := backupsourceconfig.DefaultContainerName
 		_c.mutation.SetContainerName(v)
@@ -238,6 +268,15 @@ func (_c *BackupSourceConfigCreate) check() error {
 		if err := backupsourceconfig.SourceTypeValidator(v); err != nil {
 			return &ValidationError{Name: "source_type", err: fmt.Errorf(`ent: validator failed for field "BackupSourceConfig.source_type": %w`, err)}
 		}
+	}
+	if _, ok := _c.mutation.ProfileID(); !ok {
+		return &ValidationError{Name: "profile_id", err: errors.New(`ent: missing required field "BackupSourceConfig.profile_id"`)}
+	}
+	if _, ok := _c.mutation.Name(); !ok {
+		return &ValidationError{Name: "name", err: errors.New(`ent: missing required field "BackupSourceConfig.name"`)}
+	}
+	if _, ok := _c.mutation.IsActive(); !ok {
+		return &ValidationError{Name: "is_active", err: errors.New(`ent: missing required field "BackupSourceConfig.is_active"`)}
 	}
 	if _, ok := _c.mutation.ContainerName(); !ok {
 		return &ValidationError{Name: "container_name", err: errors.New(`ent: missing required field "BackupSourceConfig.container_name"`)}
@@ -277,6 +316,18 @@ func (_c *BackupSourceConfigCreate) createSpec() (*BackupSourceConfig, *sqlgraph
 	if value, ok := _c.mutation.SourceType(); ok {
 		_spec.SetField(backupsourceconfig.FieldSourceType, field.TypeEnum, value)
 		_node.SourceType = value
+	}
+	if value, ok := _c.mutation.ProfileID(); ok {
+		_spec.SetField(backupsourceconfig.FieldProfileID, field.TypeString, value)
+		_node.ProfileID = value
+	}
+	if value, ok := _c.mutation.Name(); ok {
+		_spec.SetField(backupsourceconfig.FieldName, field.TypeString, value)
+		_node.Name = value
+	}
+	if value, ok := _c.mutation.IsActive(); ok {
+		_spec.SetField(backupsourceconfig.FieldIsActive, field.TypeBool, value)
+		_node.IsActive = value
 	}
 	if value, ok := _c.mutation.Host(); ok {
 		_spec.SetField(backupsourceconfig.FieldHost, field.TypeString, value)

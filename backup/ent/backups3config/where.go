@@ -54,6 +54,21 @@ func IDLTE(id int) predicate.BackupS3Config {
 	return predicate.BackupS3Config(sql.FieldLTE(FieldID, id))
 }
 
+// ProfileID applies equality check predicate on the "profile_id" field. It's identical to ProfileIDEQ.
+func ProfileID(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldEQ(FieldProfileID, v))
+}
+
+// Name applies equality check predicate on the "name" field. It's identical to NameEQ.
+func Name(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldEQ(FieldName, v))
+}
+
+// IsActive applies equality check predicate on the "is_active" field. It's identical to IsActiveEQ.
+func IsActive(v bool) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldEQ(FieldIsActive, v))
+}
+
 // Enabled applies equality check predicate on the "enabled" field. It's identical to EnabledEQ.
 func Enabled(v bool) predicate.BackupS3Config {
 	return predicate.BackupS3Config(sql.FieldEQ(FieldEnabled, v))
@@ -107,6 +122,146 @@ func CreatedAt(v time.Time) predicate.BackupS3Config {
 // UpdatedAt applies equality check predicate on the "updated_at" field. It's identical to UpdatedAtEQ.
 func UpdatedAt(v time.Time) predicate.BackupS3Config {
 	return predicate.BackupS3Config(sql.FieldEQ(FieldUpdatedAt, v))
+}
+
+// ProfileIDEQ applies the EQ predicate on the "profile_id" field.
+func ProfileIDEQ(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldEQ(FieldProfileID, v))
+}
+
+// ProfileIDNEQ applies the NEQ predicate on the "profile_id" field.
+func ProfileIDNEQ(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldNEQ(FieldProfileID, v))
+}
+
+// ProfileIDIn applies the In predicate on the "profile_id" field.
+func ProfileIDIn(vs ...string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldIn(FieldProfileID, vs...))
+}
+
+// ProfileIDNotIn applies the NotIn predicate on the "profile_id" field.
+func ProfileIDNotIn(vs ...string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldNotIn(FieldProfileID, vs...))
+}
+
+// ProfileIDGT applies the GT predicate on the "profile_id" field.
+func ProfileIDGT(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldGT(FieldProfileID, v))
+}
+
+// ProfileIDGTE applies the GTE predicate on the "profile_id" field.
+func ProfileIDGTE(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldGTE(FieldProfileID, v))
+}
+
+// ProfileIDLT applies the LT predicate on the "profile_id" field.
+func ProfileIDLT(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldLT(FieldProfileID, v))
+}
+
+// ProfileIDLTE applies the LTE predicate on the "profile_id" field.
+func ProfileIDLTE(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldLTE(FieldProfileID, v))
+}
+
+// ProfileIDContains applies the Contains predicate on the "profile_id" field.
+func ProfileIDContains(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldContains(FieldProfileID, v))
+}
+
+// ProfileIDHasPrefix applies the HasPrefix predicate on the "profile_id" field.
+func ProfileIDHasPrefix(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldHasPrefix(FieldProfileID, v))
+}
+
+// ProfileIDHasSuffix applies the HasSuffix predicate on the "profile_id" field.
+func ProfileIDHasSuffix(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldHasSuffix(FieldProfileID, v))
+}
+
+// ProfileIDEqualFold applies the EqualFold predicate on the "profile_id" field.
+func ProfileIDEqualFold(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldEqualFold(FieldProfileID, v))
+}
+
+// ProfileIDContainsFold applies the ContainsFold predicate on the "profile_id" field.
+func ProfileIDContainsFold(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldContainsFold(FieldProfileID, v))
+}
+
+// NameEQ applies the EQ predicate on the "name" field.
+func NameEQ(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldEQ(FieldName, v))
+}
+
+// NameNEQ applies the NEQ predicate on the "name" field.
+func NameNEQ(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldNEQ(FieldName, v))
+}
+
+// NameIn applies the In predicate on the "name" field.
+func NameIn(vs ...string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldIn(FieldName, vs...))
+}
+
+// NameNotIn applies the NotIn predicate on the "name" field.
+func NameNotIn(vs ...string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldNotIn(FieldName, vs...))
+}
+
+// NameGT applies the GT predicate on the "name" field.
+func NameGT(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldGT(FieldName, v))
+}
+
+// NameGTE applies the GTE predicate on the "name" field.
+func NameGTE(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldGTE(FieldName, v))
+}
+
+// NameLT applies the LT predicate on the "name" field.
+func NameLT(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldLT(FieldName, v))
+}
+
+// NameLTE applies the LTE predicate on the "name" field.
+func NameLTE(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldLTE(FieldName, v))
+}
+
+// NameContains applies the Contains predicate on the "name" field.
+func NameContains(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldContains(FieldName, v))
+}
+
+// NameHasPrefix applies the HasPrefix predicate on the "name" field.
+func NameHasPrefix(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldHasPrefix(FieldName, v))
+}
+
+// NameHasSuffix applies the HasSuffix predicate on the "name" field.
+func NameHasSuffix(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldHasSuffix(FieldName, v))
+}
+
+// NameEqualFold applies the EqualFold predicate on the "name" field.
+func NameEqualFold(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldEqualFold(FieldName, v))
+}
+
+// NameContainsFold applies the ContainsFold predicate on the "name" field.
+func NameContainsFold(v string) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldContainsFold(FieldName, v))
+}
+
+// IsActiveEQ applies the EQ predicate on the "is_active" field.
+func IsActiveEQ(v bool) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldEQ(FieldIsActive, v))
+}
+
+// IsActiveNEQ applies the NEQ predicate on the "is_active" field.
+func IsActiveNEQ(v bool) predicate.BackupS3Config {
+	return predicate.BackupS3Config(sql.FieldNEQ(FieldIsActive, v))
 }
 
 // EnabledEQ applies the EQ predicate on the "enabled" field.

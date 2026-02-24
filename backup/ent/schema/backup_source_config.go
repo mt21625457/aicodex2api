@@ -15,6 +15,9 @@ type BackupSourceConfig struct {
 func (BackupSourceConfig) Fields() []ent.Field {
 	return []ent.Field{
 		field.Enum("source_type").Values("postgres", "redis"),
+		field.String("profile_id"),
+		field.String("name"),
+		field.Bool("is_active").Default(false),
 		field.String("host").Optional(),
 		field.Int("port").Optional().Nillable(),
 		field.String("username").Optional(),
@@ -31,6 +34,7 @@ func (BackupSourceConfig) Fields() []ent.Field {
 
 func (BackupSourceConfig) Indexes() []ent.Index {
 	return []ent.Index{
-		index.Fields("source_type").Unique(),
+		index.Fields("source_type", "profile_id").Unique(),
+		index.Fields("source_type", "is_active"),
 	}
 }

@@ -262,12 +262,12 @@ func (_q *BackupS3ConfigQuery) Clone() *BackupS3ConfigQuery {
 // Example:
 //
 //	var v []struct {
-//		Enabled bool `json:"enabled,omitempty"`
+//		ProfileID string `json:"profile_id,omitempty"`
 //		Count int `json:"count,omitempty"`
 //	}
 //
 //	client.BackupS3Config.Query().
-//		GroupBy(backups3config.FieldEnabled).
+//		GroupBy(backups3config.FieldProfileID).
 //		Aggregate(ent.Count()).
 //		Scan(ctx, &v)
 func (_q *BackupS3ConfigQuery) GroupBy(field string, fields ...string) *BackupS3ConfigGroupBy {
@@ -285,11 +285,11 @@ func (_q *BackupS3ConfigQuery) GroupBy(field string, fields ...string) *BackupS3
 // Example:
 //
 //	var v []struct {
-//		Enabled bool `json:"enabled,omitempty"`
+//		ProfileID string `json:"profile_id,omitempty"`
 //	}
 //
 //	client.BackupS3Config.Query().
-//		Select(backups3config.FieldEnabled).
+//		Select(backups3config.FieldProfileID).
 //		Scan(ctx, &v)
 func (_q *BackupS3ConfigQuery) Select(fields ...string) *BackupS3ConfigSelect {
 	_q.ctx.Fields = append(_q.ctx.Fields, fields...)

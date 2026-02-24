@@ -17,6 +17,9 @@ var (
 		{Name: "triggered_by", Type: field.TypeString, Default: "system"},
 		{Name: "idempotency_key", Type: field.TypeString, Nullable: true},
 		{Name: "upload_to_s3", Type: field.TypeBool, Default: false},
+		{Name: "s3_profile_id", Type: field.TypeString, Nullable: true},
+		{Name: "postgres_profile_id", Type: field.TypeString, Nullable: true},
+		{Name: "redis_profile_id", Type: field.TypeString, Nullable: true},
 		{Name: "started_at", Type: field.TypeTime, Nullable: true},
 		{Name: "finished_at", Type: field.TypeTime, Nullable: true},
 		{Name: "error_message", Type: field.TypeString, Nullable: true},
@@ -38,17 +41,32 @@ var (
 			{
 				Name:    "backupjob_status_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{BackupJobsColumns[3], BackupJobsColumns[16]},
+				Columns: []*schema.Column{BackupJobsColumns[3], BackupJobsColumns[19]},
 			},
 			{
 				Name:    "backupjob_backup_type_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{BackupJobsColumns[2], BackupJobsColumns[16]},
+				Columns: []*schema.Column{BackupJobsColumns[2], BackupJobsColumns[19]},
 			},
 			{
 				Name:    "backupjob_idempotency_key",
 				Unique:  false,
 				Columns: []*schema.Column{BackupJobsColumns[5]},
+			},
+			{
+				Name:    "backupjob_s3_profile_id_status",
+				Unique:  false,
+				Columns: []*schema.Column{BackupJobsColumns[7], BackupJobsColumns[3]},
+			},
+			{
+				Name:    "backupjob_postgres_profile_id_status",
+				Unique:  false,
+				Columns: []*schema.Column{BackupJobsColumns[8], BackupJobsColumns[3]},
+			},
+			{
+				Name:    "backupjob_redis_profile_id_status",
+				Unique:  false,
+				Columns: []*schema.Column{BackupJobsColumns[9], BackupJobsColumns[3]},
 			},
 		},
 	}
@@ -87,6 +105,9 @@ var (
 	// BackupS3configsColumns holds the columns for the "backup_s3configs" table.
 	BackupS3configsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "profile_id", Type: field.TypeString, Default: "default"},
+		{Name: "name", Type: field.TypeString, Default: "默认账号"},
+		{Name: "is_active", Type: field.TypeBool, Default: false},
 		{Name: "enabled", Type: field.TypeBool, Default: false},
 		{Name: "endpoint", Type: field.TypeString, Default: ""},
 		{Name: "region", Type: field.TypeString, Default: ""},
@@ -104,6 +125,18 @@ var (
 		Name:       "backup_s3configs",
 		Columns:    BackupS3configsColumns,
 		PrimaryKey: []*schema.Column{BackupS3configsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "backups3config_profile_id",
+				Unique:  true,
+				Columns: []*schema.Column{BackupS3configsColumns[1]},
+			},
+			{
+				Name:    "backups3config_is_active",
+				Unique:  false,
+				Columns: []*schema.Column{BackupS3configsColumns[3]},
+			},
+		},
 	}
 	// BackupSettingsColumns holds the columns for the "backup_settings" table.
 	BackupSettingsColumns = []*schema.Column{
@@ -126,6 +159,9 @@ var (
 	BackupSourceConfigsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt, Increment: true},
 		{Name: "source_type", Type: field.TypeEnum, Enums: []string{"postgres", "redis"}},
+		{Name: "profile_id", Type: field.TypeString},
+		{Name: "name", Type: field.TypeString},
+		{Name: "is_active", Type: field.TypeBool, Default: false},
 		{Name: "host", Type: field.TypeString, Nullable: true},
 		{Name: "port", Type: field.TypeInt, Nullable: true},
 		{Name: "username", Type: field.TypeString, Nullable: true},
@@ -145,9 +181,14 @@ var (
 		PrimaryKey: []*schema.Column{BackupSourceConfigsColumns[0]},
 		Indexes: []*schema.Index{
 			{
-				Name:    "backupsourceconfig_source_type",
+				Name:    "backupsourceconfig_source_type_profile_id",
 				Unique:  true,
-				Columns: []*schema.Column{BackupSourceConfigsColumns[1]},
+				Columns: []*schema.Column{BackupSourceConfigsColumns[1], BackupSourceConfigsColumns[2]},
+			},
+			{
+				Name:    "backupsourceconfig_source_type_is_active",
+				Unique:  false,
+				Columns: []*schema.Column{BackupSourceConfigsColumns[1], BackupSourceConfigsColumns[4]},
 			},
 		},
 	}

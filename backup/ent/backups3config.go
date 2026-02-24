@@ -17,6 +17,12 @@ type BackupS3Config struct {
 	config `json:"-"`
 	// ID of the ent.
 	ID int `json:"id,omitempty"`
+	// ProfileID holds the value of the "profile_id" field.
+	ProfileID string `json:"profile_id,omitempty"`
+	// Name holds the value of the "name" field.
+	Name string `json:"name,omitempty"`
+	// IsActive holds the value of the "is_active" field.
+	IsActive bool `json:"is_active,omitempty"`
 	// Enabled holds the value of the "enabled" field.
 	Enabled bool `json:"enabled,omitempty"`
 	// Endpoint holds the value of the "endpoint" field.
@@ -47,11 +53,11 @@ func (*BackupS3Config) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case backups3config.FieldEnabled, backups3config.FieldForcePathStyle, backups3config.FieldUseSsl:
+		case backups3config.FieldIsActive, backups3config.FieldEnabled, backups3config.FieldForcePathStyle, backups3config.FieldUseSsl:
 			values[i] = new(sql.NullBool)
 		case backups3config.FieldID:
 			values[i] = new(sql.NullInt64)
-		case backups3config.FieldEndpoint, backups3config.FieldRegion, backups3config.FieldBucket, backups3config.FieldAccessKeyID, backups3config.FieldSecretAccessKeyEncrypted, backups3config.FieldPrefix:
+		case backups3config.FieldProfileID, backups3config.FieldName, backups3config.FieldEndpoint, backups3config.FieldRegion, backups3config.FieldBucket, backups3config.FieldAccessKeyID, backups3config.FieldSecretAccessKeyEncrypted, backups3config.FieldPrefix:
 			values[i] = new(sql.NullString)
 		case backups3config.FieldCreatedAt, backups3config.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -76,6 +82,24 @@ func (_m *BackupS3Config) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field id", value)
 			}
 			_m.ID = int(value.Int64)
+		case backups3config.FieldProfileID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field profile_id", values[i])
+			} else if value.Valid {
+				_m.ProfileID = value.String
+			}
+		case backups3config.FieldName:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field name", values[i])
+			} else if value.Valid {
+				_m.Name = value.String
+			}
+		case backups3config.FieldIsActive:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field is_active", values[i])
+			} else if value.Valid {
+				_m.IsActive = value.Bool
+			}
 		case backups3config.FieldEnabled:
 			if value, ok := values[i].(*sql.NullBool); !ok {
 				return fmt.Errorf("unexpected type %T for field enabled", values[i])
@@ -178,6 +202,15 @@ func (_m *BackupS3Config) String() string {
 	var builder strings.Builder
 	builder.WriteString("BackupS3Config(")
 	builder.WriteString(fmt.Sprintf("id=%v, ", _m.ID))
+	builder.WriteString("profile_id=")
+	builder.WriteString(_m.ProfileID)
+	builder.WriteString(", ")
+	builder.WriteString("name=")
+	builder.WriteString(_m.Name)
+	builder.WriteString(", ")
+	builder.WriteString("is_active=")
+	builder.WriteString(fmt.Sprintf("%v", _m.IsActive))
+	builder.WriteString(", ")
 	builder.WriteString("enabled=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Enabled))
 	builder.WriteString(", ")

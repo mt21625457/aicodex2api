@@ -19,6 +19,12 @@ type BackupSourceConfig struct {
 	ID int `json:"id,omitempty"`
 	// SourceType holds the value of the "source_type" field.
 	SourceType backupsourceconfig.SourceType `json:"source_type,omitempty"`
+	// ProfileID holds the value of the "profile_id" field.
+	ProfileID string `json:"profile_id,omitempty"`
+	// Name holds the value of the "name" field.
+	Name string `json:"name,omitempty"`
+	// IsActive holds the value of the "is_active" field.
+	IsActive bool `json:"is_active,omitempty"`
 	// Host holds the value of the "host" field.
 	Host string `json:"host,omitempty"`
 	// Port holds the value of the "port" field.
@@ -49,9 +55,11 @@ func (*BackupSourceConfig) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
+		case backupsourceconfig.FieldIsActive:
+			values[i] = new(sql.NullBool)
 		case backupsourceconfig.FieldID, backupsourceconfig.FieldPort, backupsourceconfig.FieldRedisDb:
 			values[i] = new(sql.NullInt64)
-		case backupsourceconfig.FieldSourceType, backupsourceconfig.FieldHost, backupsourceconfig.FieldUsername, backupsourceconfig.FieldPasswordEncrypted, backupsourceconfig.FieldDatabase, backupsourceconfig.FieldSslMode, backupsourceconfig.FieldAddr, backupsourceconfig.FieldContainerName:
+		case backupsourceconfig.FieldSourceType, backupsourceconfig.FieldProfileID, backupsourceconfig.FieldName, backupsourceconfig.FieldHost, backupsourceconfig.FieldUsername, backupsourceconfig.FieldPasswordEncrypted, backupsourceconfig.FieldDatabase, backupsourceconfig.FieldSslMode, backupsourceconfig.FieldAddr, backupsourceconfig.FieldContainerName:
 			values[i] = new(sql.NullString)
 		case backupsourceconfig.FieldCreatedAt, backupsourceconfig.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -81,6 +89,24 @@ func (_m *BackupSourceConfig) assignValues(columns []string, values []any) error
 				return fmt.Errorf("unexpected type %T for field source_type", values[i])
 			} else if value.Valid {
 				_m.SourceType = backupsourceconfig.SourceType(value.String)
+			}
+		case backupsourceconfig.FieldProfileID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field profile_id", values[i])
+			} else if value.Valid {
+				_m.ProfileID = value.String
+			}
+		case backupsourceconfig.FieldName:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field name", values[i])
+			} else if value.Valid {
+				_m.Name = value.String
+			}
+		case backupsourceconfig.FieldIsActive:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field is_active", values[i])
+			} else if value.Valid {
+				_m.IsActive = value.Bool
 			}
 		case backupsourceconfig.FieldHost:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -188,6 +214,15 @@ func (_m *BackupSourceConfig) String() string {
 	builder.WriteString(fmt.Sprintf("id=%v, ", _m.ID))
 	builder.WriteString("source_type=")
 	builder.WriteString(fmt.Sprintf("%v", _m.SourceType))
+	builder.WriteString(", ")
+	builder.WriteString("profile_id=")
+	builder.WriteString(_m.ProfileID)
+	builder.WriteString(", ")
+	builder.WriteString("name=")
+	builder.WriteString(_m.Name)
+	builder.WriteString(", ")
+	builder.WriteString("is_active=")
+	builder.WriteString(fmt.Sprintf("%v", _m.IsActive))
 	builder.WriteString(", ")
 	builder.WriteString("host=")
 	builder.WriteString(_m.Host)

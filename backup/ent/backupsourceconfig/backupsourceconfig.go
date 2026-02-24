@@ -16,6 +16,12 @@ const (
 	FieldID = "id"
 	// FieldSourceType holds the string denoting the source_type field in the database.
 	FieldSourceType = "source_type"
+	// FieldProfileID holds the string denoting the profile_id field in the database.
+	FieldProfileID = "profile_id"
+	// FieldName holds the string denoting the name field in the database.
+	FieldName = "name"
+	// FieldIsActive holds the string denoting the is_active field in the database.
+	FieldIsActive = "is_active"
 	// FieldHost holds the string denoting the host field in the database.
 	FieldHost = "host"
 	// FieldPort holds the string denoting the port field in the database.
@@ -46,6 +52,9 @@ const (
 var Columns = []string{
 	FieldID,
 	FieldSourceType,
+	FieldProfileID,
+	FieldName,
+	FieldIsActive,
 	FieldHost,
 	FieldPort,
 	FieldUsername,
@@ -70,6 +79,8 @@ func ValidColumn(column string) bool {
 }
 
 var (
+	// DefaultIsActive holds the default value on creation for the "is_active" field.
+	DefaultIsActive bool
 	// DefaultContainerName holds the default value on creation for the "container_name" field.
 	DefaultContainerName string
 	// DefaultCreatedAt holds the default value on creation for the "created_at" field.
@@ -114,6 +125,21 @@ func ByID(opts ...sql.OrderTermOption) OrderOption {
 // BySourceType orders the results by the source_type field.
 func BySourceType(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldSourceType, opts...).ToFunc()
+}
+
+// ByProfileID orders the results by the profile_id field.
+func ByProfileID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldProfileID, opts...).ToFunc()
+}
+
+// ByName orders the results by the name field.
+func ByName(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldName, opts...).ToFunc()
+}
+
+// ByIsActive orders the results by the is_active field.
+func ByIsActive(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldIsActive, opts...).ToFunc()
 }
 
 // ByHost orders the results by the host field.

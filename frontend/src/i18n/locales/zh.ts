@@ -903,11 +903,22 @@ export default {
       form: {
         sourceMode: '源模式',
         backupRoot: '备份根目录',
+        activePostgresProfile: '当前激活 PostgreSQL 配置',
+        activeRedisProfile: '当前激活 Redis 配置',
+        activeS3Profile: '当前激活 S3 账号',
         retentionDays: '保留天数',
         keepLast: '至少保留最近任务数',
         uploadToS3: '上传到 S3',
+        useActivePostgresProfile: '使用当前激活 PostgreSQL 配置',
+        useActiveRedisProfile: '使用当前激活 Redis 配置',
+        useActiveS3Profile: '使用当前激活账号',
         idempotencyKey: '幂等键（可选）',
         secretConfigured: '已配置，留空不变',
+        source: {
+          profileID: '配置 ID（唯一）',
+          profileName: '配置名称',
+          setActive: '创建后立即设为激活配置'
+        },
         postgres: {
           title: 'PostgreSQL',
           host: '主机',
@@ -928,6 +939,8 @@ export default {
         },
         s3: {
           enabled: '启用 S3 上传',
+          profileID: '账号 ID（唯一）',
+          profileName: '账号名称',
           endpoint: 'Endpoint（可选）',
           region: 'Region',
           bucket: 'Bucket',
@@ -935,7 +948,36 @@ export default {
           secretAccessKey: 'Secret Access Key',
           prefix: '对象前缀',
           forcePathStyle: '强制 path-style',
-          useSSL: '使用 SSL'
+          useSSL: '使用 SSL',
+          setActive: '创建后立即设为激活账号'
+        }
+      },
+      sourceProfiles: {
+        createTitle: '创建数据源配置',
+        editTitle: '编辑数据源配置',
+        empty: '暂无配置，请先创建',
+        deleteConfirm: '确定删除配置 {profileID} 吗？',
+        columns: {
+          profile: '配置',
+          active: '激活状态',
+          connection: '连接信息',
+          database: '数据库',
+          updatedAt: '更新时间',
+          actions: '操作'
+        }
+      },
+      s3Profiles: {
+        createTitle: '创建 S3 账号',
+        editTitle: '编辑 S3 账号',
+        empty: '暂无 S3 账号，请先创建',
+        editHint: '点击“编辑”将在右侧抽屉中修改账号信息。',
+        deleteConfirm: '确定删除 S3 账号 {profileID} 吗？',
+        columns: {
+          profile: '账号',
+          active: '激活状态',
+          storage: '存储配置',
+          updatedAt: '更新时间',
+          actions: '操作'
         }
       },
       history: {
@@ -946,6 +988,9 @@ export default {
           type: '类型',
           status: '状态',
           triggeredBy: '触发人',
+          pgProfile: 'PostgreSQL 配置',
+          redisProfile: 'Redis 配置',
+          s3Profile: 'S3 账号',
           finishedAt: '完成时间',
           artifact: '产物',
           error: '错误'
@@ -962,11 +1007,28 @@ export default {
         refresh: '刷新状态',
         disabledHint: '请先启动 backupd 并确认 Socket 可连通。',
         reloadConfig: '加载配置',
+        reloadSourceProfiles: '刷新数据源配置',
+        reloadProfiles: '刷新账号列表',
+        newSourceProfile: '新建数据源配置',
         saveConfig: '保存配置',
         configSaved: '配置保存成功',
         testS3: '测试 S3 连接',
         s3TestOK: 'S3 连接测试成功',
         s3TestFailed: 'S3 连接测试失败',
+        newProfile: '新建账号',
+        saveProfile: '保存账号',
+        activateProfile: '设为激活',
+        profileIDRequired: '请输入账号 ID',
+        profileNameRequired: '请输入账号名称',
+        profileSelectRequired: '请先选择要编辑的账号',
+        profileCreated: 'S3 账号创建成功',
+        profileSaved: 'S3 账号保存成功',
+        profileActivated: 'S3 账号已切换为激活',
+        profileDeleted: 'S3 账号删除成功',
+        sourceProfileCreated: '数据源配置创建成功',
+        sourceProfileSaved: '数据源配置保存成功',
+        sourceProfileActivated: '数据源配置已切换为激活',
+        sourceProfileDeleted: '数据源配置删除成功',
         createBackup: '创建备份任务',
         jobCreated: '备份任务已创建：{jobID}（{status}）',
         refreshJobs: '刷新任务',

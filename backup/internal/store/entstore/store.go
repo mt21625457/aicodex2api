@@ -23,8 +23,20 @@ import (
 )
 
 const (
-	defaultSQLitePath = "/tmp/sub2api-backupd.db"
-	idempotencyWindow = 10 * time.Minute
+	defaultSQLitePath  = "/tmp/sub2api-backupd.db"
+	idempotencyWindow  = 10 * time.Minute
+	defaultS3ProfileID = "default"
+	defaultSourceID    = "default"
+)
+
+var (
+	ErrS3ProfileInUse    = errors.New("s3 profile has queued/running jobs")
+	ErrActiveS3Profile   = errors.New("active s3 profile cannot be deleted")
+	ErrS3ProfileRequired = errors.New("s3 profile_id is required")
+	ErrSourceTypeInvalid = errors.New("source_type must be postgres or redis")
+	ErrSourceIDRequired  = errors.New("source profile_id is required")
+	ErrSourceActive      = errors.New("active source profile cannot be deleted")
+	ErrSourceInUse       = errors.New("source profile has queued/running jobs")
 )
 
 type SourceConfig struct {
@@ -53,14 +65,66 @@ type S3Config struct {
 }
 
 type ConfigSnapshot struct {
-	SourceMode    string
-	BackupRoot    string
-	SQLitePath    string
-	RetentionDays int32
-	KeepLast      int32
-	Postgres      SourceConfig
-	Redis         SourceConfig
-	S3            S3Config
+	SourceMode        string
+	BackupRoot        string
+	SQLitePath        string
+	RetentionDays     int32
+	KeepLast          int32
+	Postgres          SourceConfig
+	Redis             SourceConfig
+	S3                S3Config
+	ActivePostgresID  string
+	ActiveRedisID     string
+	ActiveS3ProfileID string
+}
+
+type SourceProfileSnapshot struct {
+	SourceType         string
+	ProfileID          string
+	Name               string
+	IsActive           bool
+	Config             SourceConfig
+	PasswordConfigured bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+type CreateSourceProfileInput struct {
+	SourceType string
+	ProfileID  string
+	Name       string
+	Config     SourceConfig
+	SetActive  bool
+}
+
+type UpdateSourceProfileInput struct {
+	SourceType string
+	ProfileID  string
+	Name       string
+	Config     SourceConfig
+}
+
+type S3ProfileSnapshot struct {
+	ProfileID                 string
+	Name                      string
+	IsActive                  bool
+	S3                        S3Config
+	SecretAccessKeyConfigured bool
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+}
+
+type CreateS3ProfileInput struct {
+	ProfileID string
+	Name      string
+	S3        S3Config
+	SetActive bool
+}
+
+type UpdateS3ProfileInput struct {
+	ProfileID string
+	Name      string
+	S3        S3Config
 }
 
 type CreateBackupJobInput struct {
@@ -68,6 +132,9 @@ type CreateBackupJobInput struct {
 	UploadToS3     bool
 	TriggeredBy    string
 	IdempotencyKey string
+	S3ProfileID    string
+	PostgresID     string
+	RedisID        string
 }
 
 type ListBackupJobsInput struct {
@@ -156,15 +223,15 @@ func (s *Store) GetConfig(ctx context.Context) (*ConfigSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	postgresCfg, err := s.getSourceConfig(ctx, backupsourceconfig.SourceTypePostgres)
+	postgresCfg, err := s.getActiveSourceConfigEntity(ctx, backupsourceconfig.SourceTypePostgres.String())
 	if err != nil {
 		return nil, err
 	}
-	redisCfg, err := s.getSourceConfig(ctx, backupsourceconfig.SourceTypeRedis)
+	redisCfg, err := s.getActiveSourceConfigEntity(ctx, backupsourceconfig.SourceTypeRedis.String())
 	if err != nil {
 		return nil, err
 	}
-	s3Cfg, err := s.client.BackupS3Config.Query().Order(ent.Asc(backups3config.FieldID)).First(ctx)
+	s3Cfg, err := s.getActiveS3ConfigEntity(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -202,6 +269,9 @@ func (s *Store) GetConfig(ctx context.Context) (*ConfigSnapshot, error) {
 			ForcePathStyle:  s3Cfg.ForcePathStyle,
 			UseSSL:          s3Cfg.UseSsl,
 		},
+		ActivePostgresID:  postgresCfg.ProfileID,
+		ActiveRedisID:     redisCfg.ProfileID,
+		ActiveS3ProfileID: s3Cfg.ProfileID,
 	}
 	return cfg, nil
 }
@@ -235,14 +305,29 @@ func (s *Store) UpdateConfig(ctx context.Context, cfg ConfigSnapshot) (*ConfigSn
 		return nil, err
 	}
 
-	if err = s.upsertSourceConfigTx(ctx, tx, backupsourceconfig.SourceTypePostgres, cfg.Postgres); err != nil {
+	if err = s.updateSourceConfigTx(
+		ctx,
+		tx,
+		backupsourceconfig.SourceTypePostgres.String(),
+		strings.TrimSpace(cfg.ActivePostgresID),
+		cfg.Postgres,
+	); err != nil {
 		return nil, err
 	}
-	if err = s.upsertSourceConfigTx(ctx, tx, backupsourceconfig.SourceTypeRedis, cfg.Redis); err != nil {
+	if err = s.updateSourceConfigTx(
+		ctx,
+		tx,
+		backupsourceconfig.SourceTypeRedis.String(),
+		strings.TrimSpace(cfg.ActiveRedisID),
+		cfg.Redis,
+	); err != nil {
 		return nil, err
 	}
 
-	s3Entity, err := tx.BackupS3Config.Query().Order(ent.Asc(backups3config.FieldID)).First(ctx)
+	s3Entity, err := tx.BackupS3Config.Query().
+		Where(backups3config.IsActiveEQ(true)).
+		Order(ent.Asc(backups3config.FieldID)).
+		First(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -268,9 +353,571 @@ func (s *Store) UpdateConfig(ctx context.Context, cfg ConfigSnapshot) (*ConfigSn
 	return s.GetConfig(ctx)
 }
 
+func (s *Store) ListS3Profiles(ctx context.Context) ([]*S3ProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	items, err := s.client.BackupS3Config.Query().
+		Order(ent.Desc(backups3config.FieldIsActive), ent.Asc(backups3config.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*S3ProfileSnapshot, 0, len(items))
+	for _, item := range items {
+		out = append(out, toS3ProfileSnapshot(item))
+	}
+	return out, nil
+}
+
+func (s *Store) GetS3Profile(ctx context.Context, profileID string) (*S3ProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return nil, ErrS3ProfileRequired
+	}
+	entity, err := s.client.BackupS3Config.Query().
+		Where(backups3config.ProfileIDEQ(profileID)).
+		First(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return toS3ProfileSnapshot(entity), nil
+}
+
+func (s *Store) CreateS3Profile(ctx context.Context, input CreateS3ProfileInput) (*S3ProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	profileID := strings.TrimSpace(input.ProfileID)
+	if profileID == "" {
+		return nil, ErrS3ProfileRequired
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, errors.New("s3 profile name is required")
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	activeCount, err := tx.BackupS3Config.Query().Where(backups3config.IsActiveEQ(true)).Count(ctx)
+	if err != nil {
+		return nil, err
+	}
+	setActive := input.SetActive || activeCount == 0
+	if setActive {
+		if _, err = tx.BackupS3Config.Update().
+			Where(backups3config.IsActiveEQ(true)).
+			SetIsActive(false).
+			Save(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	builder := tx.BackupS3Config.Create().
+		SetProfileID(profileID).
+		SetName(name).
+		SetIsActive(setActive).
+		SetEnabled(input.S3.Enabled).
+		SetEndpoint(strings.TrimSpace(input.S3.Endpoint)).
+		SetRegion(strings.TrimSpace(input.S3.Region)).
+		SetBucket(strings.TrimSpace(input.S3.Bucket)).
+		SetAccessKeyID(strings.TrimSpace(input.S3.AccessKeyID)).
+		SetPrefix(strings.Trim(strings.TrimSpace(input.S3.Prefix), "/")).
+		SetForcePathStyle(input.S3.ForcePathStyle).
+		SetUseSsl(input.S3.UseSSL)
+	if secret := strings.TrimSpace(input.S3.SecretAccessKey); secret != "" {
+		builder.SetSecretAccessKeyEncrypted(secret)
+	}
+
+	if _, err = builder.Save(ctx); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetS3Profile(ctx, profileID)
+}
+
+func (s *Store) UpdateS3Profile(ctx context.Context, input UpdateS3ProfileInput) (*S3ProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	profileID := strings.TrimSpace(input.ProfileID)
+	if profileID == "" {
+		return nil, ErrS3ProfileRequired
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, errors.New("s3 profile name is required")
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	entity, err := tx.BackupS3Config.Query().
+		Where(backups3config.ProfileIDEQ(profileID)).
+		First(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	updater := tx.BackupS3Config.UpdateOneID(entity.ID).
+		SetName(name).
+		SetEnabled(input.S3.Enabled).
+		SetEndpoint(strings.TrimSpace(input.S3.Endpoint)).
+		SetRegion(strings.TrimSpace(input.S3.Region)).
+		SetBucket(strings.TrimSpace(input.S3.Bucket)).
+		SetAccessKeyID(strings.TrimSpace(input.S3.AccessKeyID)).
+		SetPrefix(strings.Trim(strings.TrimSpace(input.S3.Prefix), "/")).
+		SetForcePathStyle(input.S3.ForcePathStyle).
+		SetUseSsl(input.S3.UseSSL)
+	if secret := strings.TrimSpace(input.S3.SecretAccessKey); secret != "" {
+		updater.SetSecretAccessKeyEncrypted(secret)
+	}
+	if _, err = updater.Save(ctx); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetS3Profile(ctx, profileID)
+}
+
+func (s *Store) DeleteS3Profile(ctx context.Context, profileID string) error {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return err
+	}
+
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return ErrS3ProfileRequired
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	entity, err := tx.BackupS3Config.Query().
+		Where(backups3config.ProfileIDEQ(profileID)).
+		First(ctx)
+	if err != nil {
+		return err
+	}
+	if entity.IsActive {
+		_ = tx.Rollback()
+		return ErrActiveS3Profile
+	}
+
+	pendingCount, err := tx.BackupJob.Query().
+		Where(
+			backupjob.S3ProfileIDEQ(profileID),
+			backupjob.UploadToS3EQ(true),
+			backupjob.Or(
+				backupjob.StatusEQ(backupjob.StatusQueued),
+				backupjob.StatusEQ(backupjob.StatusRunning),
+			),
+		).
+		Count(ctx)
+	if err != nil {
+		return err
+	}
+	if pendingCount > 0 {
+		_ = tx.Rollback()
+		return ErrS3ProfileInUse
+	}
+
+	if err = tx.BackupS3Config.DeleteOneID(entity.ID).Exec(ctx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SetActiveS3Profile(ctx context.Context, profileID string) (*S3ProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return nil, ErrS3ProfileRequired
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	entity, err := tx.BackupS3Config.Query().
+		Where(backups3config.ProfileIDEQ(profileID)).
+		First(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if !entity.IsActive {
+		if _, err = tx.BackupS3Config.Update().
+			Where(backups3config.IsActiveEQ(true)).
+			SetIsActive(false).
+			Save(ctx); err != nil {
+			return nil, err
+		}
+		if _, err = tx.BackupS3Config.UpdateOneID(entity.ID).
+			SetIsActive(true).
+			Save(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetS3Profile(ctx, profileID)
+}
+
+func (s *Store) ListSourceProfiles(ctx context.Context, sourceType string) ([]*SourceProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	enumType, err := parseSourceType(sourceType)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.client.BackupSourceConfig.Query().
+		Where(backupsourceconfig.SourceTypeEQ(enumType)).
+		Order(ent.Desc(backupsourceconfig.FieldIsActive), ent.Asc(backupsourceconfig.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*SourceProfileSnapshot, 0, len(items))
+	for _, item := range items {
+		out = append(out, toSourceProfileSnapshot(item))
+	}
+	return out, nil
+}
+
+func (s *Store) GetSourceProfile(ctx context.Context, sourceType, profileID string) (*SourceProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	enumType, err := parseSourceType(sourceType)
+	if err != nil {
+		return nil, err
+	}
+	normalizedProfileID := strings.TrimSpace(profileID)
+	if normalizedProfileID == "" {
+		return nil, ErrSourceIDRequired
+	}
+
+	entity, err := s.client.BackupSourceConfig.Query().
+		Where(
+			backupsourceconfig.SourceTypeEQ(enumType),
+			backupsourceconfig.ProfileIDEQ(normalizedProfileID),
+		).
+		First(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return toSourceProfileSnapshot(entity), nil
+}
+
+func (s *Store) CreateSourceProfile(ctx context.Context, input CreateSourceProfileInput) (*SourceProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	enumType, err := parseSourceType(input.SourceType)
+	if err != nil {
+		return nil, err
+	}
+	profileID := strings.TrimSpace(input.ProfileID)
+	if profileID == "" {
+		return nil, ErrSourceIDRequired
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, errors.New("source profile name is required")
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	activeCount, err := tx.BackupSourceConfig.Query().
+		Where(
+			backupsourceconfig.SourceTypeEQ(enumType),
+			backupsourceconfig.IsActiveEQ(true),
+		).
+		Count(ctx)
+	if err != nil {
+		return nil, err
+	}
+	setActive := input.SetActive || activeCount == 0
+	if setActive {
+		if _, err = tx.BackupSourceConfig.Update().
+			Where(backupsourceconfig.SourceTypeEQ(enumType), backupsourceconfig.IsActiveEQ(true)).
+			SetIsActive(false).
+			Save(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	create := tx.BackupSourceConfig.Create().
+		SetSourceType(enumType).
+		SetProfileID(profileID).
+		SetName(name).
+		SetIsActive(setActive)
+	applySourceConfigCreate(create, enumType, input.Config)
+	if _, err = create.Save(ctx); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetSourceProfile(ctx, enumType.String(), profileID)
+}
+
+func (s *Store) UpdateSourceProfile(ctx context.Context, input UpdateSourceProfileInput) (*SourceProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	enumType, err := parseSourceType(input.SourceType)
+	if err != nil {
+		return nil, err
+	}
+	profileID := strings.TrimSpace(input.ProfileID)
+	if profileID == "" {
+		return nil, ErrSourceIDRequired
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, errors.New("source profile name is required")
+	}
+
+	entity, err := s.client.BackupSourceConfig.Query().
+		Where(
+			backupsourceconfig.SourceTypeEQ(enumType),
+			backupsourceconfig.ProfileIDEQ(profileID),
+		).
+		First(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	updater := s.client.BackupSourceConfig.UpdateOneID(entity.ID).
+		SetName(name)
+	applySourceConfigUpdate(updater, enumType, input.Config)
+	if _, err = updater.Save(ctx); err != nil {
+		return nil, err
+	}
+	return s.GetSourceProfile(ctx, enumType.String(), profileID)
+}
+
+func (s *Store) DeleteSourceProfile(ctx context.Context, sourceType, profileID string) error {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return err
+	}
+
+	enumType, err := parseSourceType(sourceType)
+	if err != nil {
+		return err
+	}
+	normalizedProfileID := strings.TrimSpace(profileID)
+	if normalizedProfileID == "" {
+		return ErrSourceIDRequired
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	entity, err := tx.BackupSourceConfig.Query().
+		Where(
+			backupsourceconfig.SourceTypeEQ(enumType),
+			backupsourceconfig.ProfileIDEQ(normalizedProfileID),
+		).
+		First(ctx)
+	if err != nil {
+		return err
+	}
+	if entity.IsActive {
+		_ = tx.Rollback()
+		return ErrSourceActive
+	}
+
+	inUseCount := 0
+	switch enumType {
+	case backupsourceconfig.SourceTypePostgres:
+		inUseCount, err = tx.BackupJob.Query().
+			Where(
+				backupjob.PostgresProfileIDEQ(normalizedProfileID),
+				backupjob.Or(
+					backupjob.StatusEQ(backupjob.StatusQueued),
+					backupjob.StatusEQ(backupjob.StatusRunning),
+				),
+			).
+			Count(ctx)
+	case backupsourceconfig.SourceTypeRedis:
+		inUseCount, err = tx.BackupJob.Query().
+			Where(
+				backupjob.RedisProfileIDEQ(normalizedProfileID),
+				backupjob.Or(
+					backupjob.StatusEQ(backupjob.StatusQueued),
+					backupjob.StatusEQ(backupjob.StatusRunning),
+				),
+			).
+			Count(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	if inUseCount > 0 {
+		_ = tx.Rollback()
+		return ErrSourceInUse
+	}
+
+	if err = tx.BackupSourceConfig.DeleteOneID(entity.ID).Exec(ctx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SetActiveSourceProfile(ctx context.Context, sourceType, profileID string) (*SourceProfileSnapshot, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, err
+	}
+
+	enumType, err := parseSourceType(sourceType)
+	if err != nil {
+		return nil, err
+	}
+	normalizedProfileID := strings.TrimSpace(profileID)
+	if normalizedProfileID == "" {
+		return nil, ErrSourceIDRequired
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	entity, err := tx.BackupSourceConfig.Query().
+		Where(
+			backupsourceconfig.SourceTypeEQ(enumType),
+			backupsourceconfig.ProfileIDEQ(normalizedProfileID),
+		).
+		First(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if !entity.IsActive {
+		if _, err = tx.BackupSourceConfig.Update().
+			Where(backupsourceconfig.SourceTypeEQ(enumType), backupsourceconfig.IsActiveEQ(true)).
+			SetIsActive(false).
+			Save(ctx); err != nil {
+			return nil, err
+		}
+		if _, err = tx.BackupSourceConfig.UpdateOneID(entity.ID).
+			SetIsActive(true).
+			Save(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetSourceProfile(ctx, enumType.String(), normalizedProfileID)
+}
+
 func (s *Store) CreateBackupJob(ctx context.Context, input CreateBackupJobInput) (*ent.BackupJob, bool, error) {
+	if err := s.ensureDefaults(ctx); err != nil {
+		return nil, false, err
+	}
 	if strings.TrimSpace(input.TriggeredBy) == "" {
 		input.TriggeredBy = "admin:unknown"
+	}
+	input.BackupType = strings.TrimSpace(input.BackupType)
+	input.S3ProfileID = strings.TrimSpace(input.S3ProfileID)
+	input.PostgresID = strings.TrimSpace(input.PostgresID)
+	input.RedisID = strings.TrimSpace(input.RedisID)
+
+	if backupTypeNeedsPostgres(input.BackupType) {
+		resolvedID, resolveErr := s.resolveSourceProfileID(ctx, backupsourceconfig.SourceTypePostgres.String(), input.PostgresID)
+		if resolveErr != nil {
+			return nil, false, resolveErr
+		}
+		input.PostgresID = resolvedID
+	}
+	if backupTypeNeedsRedis(input.BackupType) {
+		resolvedID, resolveErr := s.resolveSourceProfileID(ctx, backupsourceconfig.SourceTypeRedis.String(), input.RedisID)
+		if resolveErr != nil {
+			return nil, false, resolveErr
+		}
+		input.RedisID = resolvedID
+	}
+
+	if input.S3ProfileID != "" {
+		if _, err := s.client.BackupS3Config.Query().
+			Where(backups3config.ProfileIDEQ(input.S3ProfileID)).
+			First(ctx); err != nil {
+			return nil, false, err
+		}
 	}
 	now := time.Now()
 
@@ -299,6 +946,15 @@ func (s *Store) CreateBackupJob(ctx context.Context, input CreateBackupJobInput)
 		SetStatus(backupjob.StatusQueued).
 		SetTriggeredBy(strings.TrimSpace(input.TriggeredBy)).
 		SetUploadToS3(input.UploadToS3)
+	if input.S3ProfileID != "" {
+		builder.SetS3ProfileID(input.S3ProfileID)
+	}
+	if input.PostgresID != "" {
+		builder.SetPostgresProfileID(input.PostgresID)
+	}
+	if input.RedisID != "" {
+		builder.SetRedisProfileID(input.RedisID)
+	}
 	if strings.TrimSpace(input.IdempotencyKey) != "" {
 		builder.SetIdempotencyKey(strings.TrimSpace(input.IdempotencyKey))
 	}
@@ -508,8 +1164,112 @@ func (s *Store) GetBackupJob(ctx context.Context, jobID string) (*ent.BackupJob,
 	return s.client.BackupJob.Query().Where(backupjob.JobIDEQ(strings.TrimSpace(jobID))).First(ctx)
 }
 
-func (s *Store) getSourceConfig(ctx context.Context, sourceType backupsourceconfig.SourceType) (*ent.BackupSourceConfig, error) {
-	return s.client.BackupSourceConfig.Query().Where(backupsourceconfig.SourceTypeEQ(sourceType)).First(ctx)
+func (s *Store) getSourceConfigEntity(ctx context.Context, sourceType, profileID string) (*ent.BackupSourceConfig, error) {
+	enumType, err := parseSourceType(sourceType)
+	if err != nil {
+		return nil, err
+	}
+	normalizedProfileID := strings.TrimSpace(profileID)
+	if normalizedProfileID == "" {
+		return nil, ErrSourceIDRequired
+	}
+	return s.client.BackupSourceConfig.Query().
+		Where(
+			backupsourceconfig.SourceTypeEQ(enumType),
+			backupsourceconfig.ProfileIDEQ(normalizedProfileID),
+		).
+		First(ctx)
+}
+
+func (s *Store) getActiveSourceConfigEntity(ctx context.Context, sourceType string) (*ent.BackupSourceConfig, error) {
+	enumType, err := parseSourceType(sourceType)
+	if err != nil {
+		return nil, err
+	}
+	entity, err := s.client.BackupSourceConfig.Query().
+		Where(
+			backupsourceconfig.SourceTypeEQ(enumType),
+			backupsourceconfig.IsActiveEQ(true),
+		).
+		Order(ent.Asc(backupsourceconfig.FieldID)).
+		First(ctx)
+	if err == nil {
+		return entity, nil
+	}
+	if !ent.IsNotFound(err) {
+		return nil, err
+	}
+	return s.client.BackupSourceConfig.Query().
+		Where(backupsourceconfig.SourceTypeEQ(enumType)).
+		Order(ent.Asc(backupsourceconfig.FieldID)).
+		First(ctx)
+}
+
+func (s *Store) getActiveS3ConfigEntity(ctx context.Context) (*ent.BackupS3Config, error) {
+	entity, err := s.client.BackupS3Config.Query().
+		Where(backups3config.IsActiveEQ(true)).
+		Order(ent.Asc(backups3config.FieldID)).
+		First(ctx)
+	if err == nil {
+		return entity, nil
+	}
+	if !ent.IsNotFound(err) {
+		return nil, err
+	}
+	return s.client.BackupS3Config.Query().Order(ent.Asc(backups3config.FieldID)).First(ctx)
+}
+
+func toS3ProfileSnapshot(entity *ent.BackupS3Config) *S3ProfileSnapshot {
+	if entity == nil {
+		return &S3ProfileSnapshot{}
+	}
+	return &S3ProfileSnapshot{
+		ProfileID: entity.ProfileID,
+		Name:      entity.Name,
+		IsActive:  entity.IsActive,
+		S3: S3Config{
+			Enabled:         entity.Enabled,
+			Endpoint:        entity.Endpoint,
+			Region:          entity.Region,
+			Bucket:          entity.Bucket,
+			AccessKeyID:     entity.AccessKeyID,
+			SecretAccessKey: entity.SecretAccessKeyEncrypted,
+			Prefix:          entity.Prefix,
+			ForcePathStyle:  entity.ForcePathStyle,
+			UseSSL:          entity.UseSsl,
+		},
+		SecretAccessKeyConfigured: strings.TrimSpace(entity.SecretAccessKeyEncrypted) != "",
+		CreatedAt:                 entity.CreatedAt,
+		UpdatedAt:                 entity.UpdatedAt,
+	}
+}
+
+func toSourceProfileSnapshot(entity *ent.BackupSourceConfig) *SourceProfileSnapshot {
+	if entity == nil {
+		return &SourceProfileSnapshot{}
+	}
+	config := SourceConfig{
+		Host:          entity.Host,
+		Port:          int32(nillableInt(entity.Port)),
+		User:          entity.Username,
+		Username:      entity.Username,
+		Password:      entity.PasswordEncrypted,
+		Database:      entity.Database,
+		SSLMode:       entity.SslMode,
+		Addr:          entity.Addr,
+		DB:            int32(nillableInt(entity.RedisDb)),
+		ContainerName: entity.ContainerName,
+	}
+	return &SourceProfileSnapshot{
+		SourceType:         entity.SourceType.String(),
+		ProfileID:          entity.ProfileID,
+		Name:               entity.Name,
+		IsActive:           entity.IsActive,
+		Config:             config,
+		PasswordConfigured: strings.TrimSpace(entity.PasswordEncrypted) != "",
+		CreatedAt:          entity.CreatedAt,
+		UpdatedAt:          entity.UpdatedAt,
+	}
 }
 
 func (s *Store) appendJobEventByEntityID(ctx context.Context, backupJobID int, level backupjobevent.Level, eventType, message, payload string) error {
@@ -525,29 +1285,160 @@ func (s *Store) appendJobEventByEntityID(ctx context.Context, backupJobID int, l
 	return err
 }
 
-func (s *Store) upsertSourceConfigTx(ctx context.Context, tx *ent.Tx, sourceType backupsourceconfig.SourceType, cfg SourceConfig) error {
-	entity, err := tx.BackupSourceConfig.Query().Where(backupsourceconfig.SourceTypeEQ(sourceType)).First(ctx)
+func (s *Store) updateSourceConfigTx(ctx context.Context, tx *ent.Tx, sourceType, profileID string, cfg SourceConfig) error {
+	entity, enumType, err := s.resolveSourceEntityTx(ctx, tx, sourceType, profileID)
 	if err != nil {
 		return err
 	}
 
-	updater := tx.BackupSourceConfig.UpdateOneID(entity.ID).
-		SetHost(strings.TrimSpace(cfg.Host)).
-		SetPort(int(cfg.Port)).
-		SetUsername(strings.TrimSpace(cfg.User)).
-		SetDatabase(strings.TrimSpace(cfg.Database)).
-		SetSslMode(strings.TrimSpace(cfg.SSLMode)).
-		SetAddr(strings.TrimSpace(cfg.Addr)).
-		SetRedisDb(int(cfg.DB)).
-		SetContainerName(strings.TrimSpace(cfg.ContainerName))
-	if strings.TrimSpace(cfg.Username) != "" {
-		updater.SetUsername(strings.TrimSpace(cfg.Username))
-	}
-	if strings.TrimSpace(cfg.Password) != "" {
-		updater.SetPasswordEncrypted(strings.TrimSpace(cfg.Password))
-	}
+	updater := tx.BackupSourceConfig.UpdateOneID(entity.ID)
+	applySourceConfigUpdate(updater, enumType, cfg)
 	_, err = updater.Save(ctx)
 	return err
+}
+
+func (s *Store) resolveSourceEntityTx(
+	ctx context.Context,
+	tx *ent.Tx,
+	sourceType,
+	profileID string,
+) (*ent.BackupSourceConfig, backupsourceconfig.SourceType, error) {
+	enumType, err := parseSourceType(sourceType)
+	if err != nil {
+		return nil, "", err
+	}
+	normalizedProfileID := strings.TrimSpace(profileID)
+	if normalizedProfileID != "" {
+		entity, queryErr := tx.BackupSourceConfig.Query().
+			Where(
+				backupsourceconfig.SourceTypeEQ(enumType),
+				backupsourceconfig.ProfileIDEQ(normalizedProfileID),
+			).
+			First(ctx)
+		return entity, enumType, queryErr
+	}
+
+	entity, queryErr := tx.BackupSourceConfig.Query().
+		Where(
+			backupsourceconfig.SourceTypeEQ(enumType),
+			backupsourceconfig.IsActiveEQ(true),
+		).
+		Order(ent.Asc(backupsourceconfig.FieldID)).
+		First(ctx)
+	if queryErr == nil {
+		return entity, enumType, nil
+	}
+	if !ent.IsNotFound(queryErr) {
+		return nil, "", queryErr
+	}
+	entity, queryErr = tx.BackupSourceConfig.Query().
+		Where(backupsourceconfig.SourceTypeEQ(enumType)).
+		Order(ent.Asc(backupsourceconfig.FieldID)).
+		First(ctx)
+	return entity, enumType, queryErr
+}
+
+func applySourceConfigCreate(builder *ent.BackupSourceConfigCreate, sourceType backupsourceconfig.SourceType, cfg SourceConfig) {
+	applySourceConfigCore(sourceType, cfg, func(host, username, database, sslMode, addr, containerName string, port, redisDB *int) {
+		builder.
+			SetHost(host).
+			SetUsername(username).
+			SetDatabase(database).
+			SetSslMode(sslMode).
+			SetAddr(addr).
+			SetContainerName(containerName)
+		if port != nil {
+			builder.SetPort(*port)
+		}
+		if redisDB != nil {
+			builder.SetRedisDb(*redisDB)
+		}
+	})
+	if password := strings.TrimSpace(cfg.Password); password != "" {
+		builder.SetPasswordEncrypted(password)
+	}
+}
+
+func applySourceConfigUpdate(builder *ent.BackupSourceConfigUpdateOne, sourceType backupsourceconfig.SourceType, cfg SourceConfig) {
+	applySourceConfigCore(sourceType, cfg, func(host, username, database, sslMode, addr, containerName string, port, redisDB *int) {
+		builder.
+			SetHost(host).
+			SetUsername(username).
+			SetDatabase(database).
+			SetSslMode(sslMode).
+			SetAddr(addr).
+			SetContainerName(containerName)
+		if port != nil {
+			builder.SetPort(*port)
+		} else {
+			builder.ClearPort()
+		}
+		if redisDB != nil {
+			builder.SetRedisDb(*redisDB)
+		} else {
+			builder.ClearRedisDb()
+		}
+	})
+	if password := strings.TrimSpace(cfg.Password); password != "" {
+		builder.SetPasswordEncrypted(password)
+	}
+}
+
+func applySourceConfigCore(
+	sourceType backupsourceconfig.SourceType,
+	cfg SourceConfig,
+	apply func(host, username, database, sslMode, addr, containerName string, port, redisDB *int),
+) {
+	host := strings.TrimSpace(cfg.Host)
+	username := strings.TrimSpace(cfg.User)
+	if username == "" {
+		username = strings.TrimSpace(cfg.Username)
+	}
+	database := strings.TrimSpace(cfg.Database)
+	sslMode := strings.TrimSpace(cfg.SSLMode)
+	addr := strings.TrimSpace(cfg.Addr)
+	containerName := strings.TrimSpace(cfg.ContainerName)
+
+	var portPtr *int
+	if cfg.Port > 0 {
+		portValue := int(cfg.Port)
+		portPtr = &portValue
+	}
+	var redisDBPtr *int
+	if cfg.DB >= 0 {
+		dbValue := int(cfg.DB)
+		redisDBPtr = &dbValue
+	}
+
+	switch sourceType {
+	case backupsourceconfig.SourceTypePostgres:
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if username == "" {
+			username = "postgres"
+		}
+		if database == "" {
+			database = "sub2api"
+		}
+		if sslMode == "" {
+			sslMode = "disable"
+		}
+		if portPtr == nil {
+			portValue := 5432
+			portPtr = &portValue
+		}
+	case backupsourceconfig.SourceTypeRedis:
+		if addr == "" {
+			addr = "127.0.0.1:6379"
+		}
+		if redisDBPtr == nil {
+			dbValue := 0
+			redisDBPtr = &dbValue
+		}
+	}
+
+	apply(host, username, database, sslMode, addr, containerName, portPtr, redisDBPtr)
 }
 
 func (s *Store) ensureDefaults(ctx context.Context) error {
@@ -566,42 +1457,33 @@ func (s *Store) ensureDefaults(ctx context.Context) error {
 		}
 	}
 
-	if _, err := s.getSourceConfig(ctx, backupsourceconfig.SourceTypePostgres); err != nil {
-		if !ent.IsNotFound(err) {
-			return err
-		}
-		if _, err := s.client.BackupSourceConfig.Create().
-			SetSourceType(backupsourceconfig.SourceTypePostgres).
-			SetHost("127.0.0.1").
-			SetPort(5432).
-			SetUsername("postgres").
-			SetDatabase("sub2api").
-			SetSslMode("disable").
-			SetContainerName("").
-			Save(ctx); err != nil {
-			return err
-		}
+	if err := s.ensureSourceDefaultsByType(ctx, backupsourceconfig.SourceTypePostgres, "默认 PostgreSQL", SourceConfig{
+		Host:     "127.0.0.1",
+		Port:     5432,
+		User:     "postgres",
+		Database: "sub2api",
+		SSLMode:  "disable",
+	}); err != nil {
+		return err
+	}
+	if err := s.ensureSourceDefaultsByType(ctx, backupsourceconfig.SourceTypeRedis, "默认 Redis", SourceConfig{
+		Addr: "127.0.0.1:6379",
+		DB:   0,
+	}); err != nil {
+		return err
 	}
 
-	if _, err := s.getSourceConfig(ctx, backupsourceconfig.SourceTypeRedis); err != nil {
-		if !ent.IsNotFound(err) {
-			return err
-		}
-		if _, err := s.client.BackupSourceConfig.Create().
-			SetSourceType(backupsourceconfig.SourceTypeRedis).
-			SetAddr("127.0.0.1:6379").
-			SetRedisDb(0).
-			SetContainerName("").
-			Save(ctx); err != nil {
-			return err
-		}
+	profiles, err := s.client.BackupS3Config.Query().
+		Order(ent.Asc(backups3config.FieldID)).
+		All(ctx)
+	if err != nil {
+		return err
 	}
-
-	if _, err := s.client.BackupS3Config.Query().First(ctx); err != nil {
-		if !ent.IsNotFound(err) {
-			return err
-		}
-		if _, err := s.client.BackupS3Config.Create().
+	if len(profiles) == 0 {
+		_, err = s.client.BackupS3Config.Create().
+			SetProfileID(defaultS3ProfileID).
+			SetName("默认账号").
+			SetIsActive(true).
 			SetEnabled(false).
 			SetEndpoint("").
 			SetRegion("").
@@ -610,11 +1492,253 @@ func (s *Store) ensureDefaults(ctx context.Context) error {
 			SetPrefix("").
 			SetForcePathStyle(false).
 			SetUseSsl(true).
-			Save(ctx); err != nil {
+			Save(ctx)
+		return err
+	}
+
+	used := make(map[string]struct{}, len(profiles))
+	normalizedIDs := make([]string, len(profiles))
+	normalizedNames := make([]string, len(profiles))
+	activeIndex := -1
+	needFix := false
+
+	for idx, profile := range profiles {
+		profileID := strings.TrimSpace(profile.ProfileID)
+		if profileID == "" {
+			needFix = true
+			if idx == 0 {
+				profileID = defaultS3ProfileID
+			} else {
+				profileID = fmt.Sprintf("profile-%d", profile.ID)
+			}
+		}
+		base := profileID
+		seq := 2
+		for {
+			if _, exists := used[profileID]; !exists {
+				break
+			}
+			needFix = true
+			profileID = fmt.Sprintf("%s-%d", base, seq)
+			seq++
+		}
+		used[profileID] = struct{}{}
+		normalizedIDs[idx] = profileID
+
+		name := strings.TrimSpace(profile.Name)
+		if name == "" {
+			needFix = true
+			name = profileID
+		}
+		normalizedNames[idx] = name
+
+		if profile.IsActive {
+			if activeIndex == -1 {
+				activeIndex = idx
+			} else {
+				needFix = true
+			}
+		}
+	}
+	if activeIndex == -1 {
+		needFix = true
+		activeIndex = 0
+	}
+	if !needFix {
+		return nil
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	for idx, profile := range profiles {
+		changed := false
+		updater := tx.BackupS3Config.UpdateOneID(profile.ID)
+
+		if profile.ProfileID != normalizedIDs[idx] {
+			updater.SetProfileID(normalizedIDs[idx])
+			changed = true
+		}
+		if strings.TrimSpace(profile.Name) != normalizedNames[idx] {
+			updater.SetName(normalizedNames[idx])
+			changed = true
+		}
+		shouldActive := idx == activeIndex
+		if profile.IsActive != shouldActive {
+			updater.SetIsActive(shouldActive)
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		if _, err = updater.Save(ctx); err != nil {
+			_ = tx.Rollback()
 			return err
 		}
 	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) ensureSourceDefaultsByType(
+	ctx context.Context,
+	sourceType backupsourceconfig.SourceType,
+	defaultName string,
+	defaultCfg SourceConfig,
+) error {
+	items, err := s.client.BackupSourceConfig.Query().
+		Where(backupsourceconfig.SourceTypeEQ(sourceType)).
+		Order(ent.Asc(backupsourceconfig.FieldID)).
+		All(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(items) == 0 {
+		builder := s.client.BackupSourceConfig.Create().
+			SetSourceType(sourceType).
+			SetProfileID(defaultSourceID).
+			SetName(defaultName).
+			SetIsActive(true)
+		applySourceConfigCreate(builder, sourceType, defaultCfg)
+		_, err = builder.Save(ctx)
+		return err
+	}
+
+	used := make(map[string]struct{}, len(items))
+	normalizedIDs := make([]string, len(items))
+	normalizedNames := make([]string, len(items))
+	activeIndex := -1
+	needFix := false
+
+	for idx, item := range items {
+		profileID := strings.TrimSpace(item.ProfileID)
+		if profileID == "" {
+			needFix = true
+			if idx == 0 {
+				profileID = defaultSourceID
+			} else {
+				profileID = fmt.Sprintf("profile-%d", item.ID)
+			}
+		}
+		base := profileID
+		seq := 2
+		for {
+			if _, exists := used[profileID]; !exists {
+				break
+			}
+			needFix = true
+			profileID = fmt.Sprintf("%s-%d", base, seq)
+			seq++
+		}
+		used[profileID] = struct{}{}
+		normalizedIDs[idx] = profileID
+
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			needFix = true
+			name = profileID
+		}
+		normalizedNames[idx] = name
+
+		if item.IsActive {
+			if activeIndex == -1 {
+				activeIndex = idx
+			} else {
+				needFix = true
+			}
+		}
+	}
+	if activeIndex == -1 {
+		needFix = true
+		activeIndex = 0
+	}
+	if !needFix {
+		return nil
+	}
+
+	tx, err := s.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	for idx, item := range items {
+		changed := false
+		updater := tx.BackupSourceConfig.UpdateOneID(item.ID)
+
+		if item.ProfileID != normalizedIDs[idx] {
+			updater.SetProfileID(normalizedIDs[idx])
+			changed = true
+		}
+		if strings.TrimSpace(item.Name) != normalizedNames[idx] {
+			updater.SetName(normalizedNames[idx])
+			changed = true
+		}
+		shouldActive := idx == activeIndex
+		if item.IsActive != shouldActive {
+			updater.SetIsActive(shouldActive)
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		if _, err = updater.Save(ctx); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func parseSourceType(sourceType string) (backupsourceconfig.SourceType, error) {
+	switch strings.TrimSpace(sourceType) {
+	case backupsourceconfig.SourceTypePostgres.String():
+		return backupsourceconfig.SourceTypePostgres, nil
+	case backupsourceconfig.SourceTypeRedis.String():
+		return backupsourceconfig.SourceTypeRedis, nil
+	default:
+		return "", ErrSourceTypeInvalid
+	}
+}
+
+func (s *Store) resolveSourceProfileID(ctx context.Context, sourceType, requestedProfileID string) (string, error) {
+	requestedProfileID = strings.TrimSpace(requestedProfileID)
+	if requestedProfileID != "" {
+		entity, err := s.getSourceConfigEntity(ctx, sourceType, requestedProfileID)
+		if err != nil {
+			return "", err
+		}
+		return entity.ProfileID, nil
+	}
+
+	entity, err := s.getActiveSourceConfigEntity(ctx, sourceType)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(entity.ProfileID), nil
+}
+
+func backupTypeNeedsPostgres(backupType string) bool {
+	switch strings.TrimSpace(backupType) {
+	case backupjob.BackupTypePostgres.String(), backupjob.BackupTypeFull.String():
+		return true
+	default:
+		return false
+	}
+}
+
+func backupTypeNeedsRedis(backupType string) bool {
+	switch strings.TrimSpace(backupType) {
+	case backupjob.BackupTypeRedis.String(), backupjob.BackupTypeFull.String():
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeSQLitePath(sqlitePath string) string {

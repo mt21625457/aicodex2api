@@ -71,6 +71,8 @@ type bundleManifest struct {
 	JobID      string          `json:"job_id"`
 	BackupType string          `json:"backup_type"`
 	SourceMode string          `json:"source_mode"`
+	PostgresID string          `json:"postgres_profile_id,omitempty"`
+	RedisID    string          `json:"redis_profile_id,omitempty"`
 	CreatedAt  string          `json:"created_at"`
 	Files      []generatedFile `json:"files"`
 }
@@ -239,6 +241,39 @@ func (r *Runner) run(ctx context.Context, job *ent.BackupJob) (*runResult, error
 	if err != nil {
 		return nil, fmt.Errorf("load config failed: %w", err)
 	}
+	backupType := strings.TrimSpace(job.BackupType.String())
+
+	effectiveConfig := *cfg
+	if backupType == backupjob.BackupTypePostgres.String() || backupType == backupjob.BackupTypeFull.String() {
+		postgresProfileID := strings.TrimSpace(job.PostgresProfileID)
+		if postgresProfileID != "" && postgresProfileID != strings.TrimSpace(cfg.ActivePostgresID) {
+			postgresProfile, profileErr := r.store.GetSourceProfile(ctx, "postgres", postgresProfileID)
+			if profileErr != nil {
+				return nil, fmt.Errorf("load postgres source profile failed: %w", profileErr)
+			}
+			effectiveConfig.Postgres = postgresProfile.Config
+		}
+	}
+	if backupType == backupjob.BackupTypeRedis.String() || backupType == backupjob.BackupTypeFull.String() {
+		redisProfileID := strings.TrimSpace(job.RedisProfileID)
+		if redisProfileID != "" && redisProfileID != strings.TrimSpace(cfg.ActiveRedisID) {
+			redisProfile, profileErr := r.store.GetSourceProfile(ctx, "redis", redisProfileID)
+			if profileErr != nil {
+				return nil, fmt.Errorf("load redis source profile failed: %w", profileErr)
+			}
+			effectiveConfig.Redis = redisProfile.Config
+		}
+	}
+
+	uploadS3Config := cfg.S3
+	profileID := strings.TrimSpace(job.S3ProfileID)
+	if profileID != "" && profileID != cfg.ActiveS3ProfileID {
+		profile, profileErr := r.store.GetS3Profile(ctx, profileID)
+		if profileErr != nil {
+			return nil, fmt.Errorf("load s3 profile failed: %w", profileErr)
+		}
+		uploadS3Config = profile.S3
+	}
 
 	backupRoot := normalizeBackupRoot(cfg.BackupRoot)
 	jobDir := filepath.Join(
@@ -253,11 +288,10 @@ func (r *Runner) run(ctx context.Context, job *ent.BackupJob) (*runResult, error
 	}
 
 	generated := make([]generatedFile, 0, 4)
-	backupType := strings.TrimSpace(job.BackupType.String())
 
 	if backupType == backupjob.BackupTypePostgres.String() || backupType == backupjob.BackupTypeFull.String() {
 		postgresPath := filepath.Join(jobDir, "postgres.dump")
-		if err := runPostgresBackup(ctx, cfg, postgresPath); err != nil {
+		if err := runPostgresBackup(ctx, &effectiveConfig, postgresPath); err != nil {
 			return nil, fmt.Errorf("postgres backup failed: %w", err)
 		}
 		gf, err := buildGeneratedFile("postgres.dump", postgresPath)
@@ -270,7 +304,7 @@ func (r *Runner) run(ctx context.Context, job *ent.BackupJob) (*runResult, error
 
 	if backupType == backupjob.BackupTypeRedis.String() || backupType == backupjob.BackupTypeFull.String() {
 		redisPath := filepath.Join(jobDir, "redis.rdb")
-		if err := runRedisBackup(ctx, cfg, redisPath, job.JobID); err != nil {
+		if err := runRedisBackup(ctx, &effectiveConfig, redisPath, job.JobID); err != nil {
 			return nil, fmt.Errorf("redis backup failed: %w", err)
 		}
 		gf, err := buildGeneratedFile("redis.rdb", redisPath)
@@ -284,7 +318,9 @@ func (r *Runner) run(ctx context.Context, job *ent.BackupJob) (*runResult, error
 	manifest := bundleManifest{
 		JobID:      job.JobID,
 		BackupType: backupType,
-		SourceMode: strings.TrimSpace(cfg.SourceMode),
+		SourceMode: strings.TrimSpace(effectiveConfig.SourceMode),
+		PostgresID: strings.TrimSpace(job.PostgresProfileID),
+		RedisID:    strings.TrimSpace(job.RedisProfileID),
 		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
 		Files:      generated,
 	}
@@ -318,7 +354,7 @@ func (r *Runner) run(ctx context.Context, job *ent.BackupJob) (*runResult, error
 
 	if job.UploadToS3 {
 		r.logEvent(job.JobID, "info", "s3", "start upload to s3", "")
-		s3Object, uploadErr := uploadToS3(ctx, cfg, job.JobID, bundlePath)
+		s3Object, uploadErr := uploadToS3(ctx, uploadS3Config, job.JobID, bundlePath)
 		if uploadErr != nil {
 			result.PartialErr = fmt.Errorf("upload s3 failed: %w", uploadErr)
 			r.logEvent(job.JobID, "warning", "s3", "upload to s3 failed", shortenError(uploadErr))
@@ -328,7 +364,7 @@ func (r *Runner) run(ctx context.Context, job *ent.BackupJob) (*runResult, error
 		}
 	}
 
-	if err := applyRetentionPolicy(ctx, r.store, cfg); err != nil {
+	if err := applyRetentionPolicy(ctx, r.store, &effectiveConfig); err != nil {
 		r.logger.Printf("retention cleanup failed: %v", err)
 	}
 
@@ -461,29 +497,26 @@ func runRedisBackup(ctx context.Context, cfg *entstore.ConfigSnapshot, destinati
 	}
 }
 
-func uploadToS3(ctx context.Context, cfg *entstore.ConfigSnapshot, jobID, bundlePath string) (*entstore.BackupS3ObjectSnapshot, error) {
-	if cfg == nil {
-		return nil, errors.New("config is nil")
-	}
-	if !cfg.S3.Enabled {
+func uploadToS3(ctx context.Context, s3Cfg entstore.S3Config, jobID, bundlePath string) (*entstore.BackupS3ObjectSnapshot, error) {
+	if !s3Cfg.Enabled {
 		return nil, errors.New("s3 is disabled")
 	}
-	if strings.TrimSpace(cfg.S3.Bucket) == "" {
+	if strings.TrimSpace(s3Cfg.Bucket) == "" {
 		return nil, errors.New("s3.bucket is required")
 	}
-	if strings.TrimSpace(cfg.S3.Region) == "" {
+	if strings.TrimSpace(s3Cfg.Region) == "" {
 		return nil, errors.New("s3.region is required")
 	}
 
 	client, err := s3client.New(ctx, s3client.Config{
-		Endpoint:        strings.TrimSpace(cfg.S3.Endpoint),
-		Region:          strings.TrimSpace(cfg.S3.Region),
-		AccessKeyID:     strings.TrimSpace(cfg.S3.AccessKeyID),
-		SecretAccessKey: strings.TrimSpace(cfg.S3.SecretAccessKey),
-		Bucket:          strings.TrimSpace(cfg.S3.Bucket),
-		Prefix:          strings.Trim(strings.TrimSpace(cfg.S3.Prefix), "/"),
-		ForcePathStyle:  cfg.S3.ForcePathStyle,
-		UseSSL:          cfg.S3.UseSSL,
+		Endpoint:        strings.TrimSpace(s3Cfg.Endpoint),
+		Region:          strings.TrimSpace(s3Cfg.Region),
+		AccessKeyID:     strings.TrimSpace(s3Cfg.AccessKeyID),
+		SecretAccessKey: strings.TrimSpace(s3Cfg.SecretAccessKey),
+		Bucket:          strings.TrimSpace(s3Cfg.Bucket),
+		Prefix:          strings.Trim(strings.TrimSpace(s3Cfg.Prefix), "/"),
+		ForcePathStyle:  s3Cfg.ForcePathStyle,
+		UseSSL:          s3Cfg.UseSSL,
 	})
 	if err != nil {
 		return nil, err

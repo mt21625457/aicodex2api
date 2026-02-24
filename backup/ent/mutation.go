@@ -47,6 +47,9 @@ type BackupJobMutation struct {
 	triggered_by           *string
 	idempotency_key        *string
 	upload_to_s3           *bool
+	s3_profile_id          *string
+	postgres_profile_id    *string
+	redis_profile_id       *string
 	started_at             *time.Time
 	finished_at            *time.Time
 	error_message          *string
@@ -393,6 +396,153 @@ func (m *BackupJobMutation) OldUploadToS3(ctx context.Context) (v bool, err erro
 // ResetUploadToS3 resets all changes to the "upload_to_s3" field.
 func (m *BackupJobMutation) ResetUploadToS3() {
 	m.upload_to_s3 = nil
+}
+
+// SetS3ProfileID sets the "s3_profile_id" field.
+func (m *BackupJobMutation) SetS3ProfileID(s string) {
+	m.s3_profile_id = &s
+}
+
+// S3ProfileID returns the value of the "s3_profile_id" field in the mutation.
+func (m *BackupJobMutation) S3ProfileID() (r string, exists bool) {
+	v := m.s3_profile_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldS3ProfileID returns the old "s3_profile_id" field's value of the BackupJob entity.
+// If the BackupJob object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupJobMutation) OldS3ProfileID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldS3ProfileID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldS3ProfileID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldS3ProfileID: %w", err)
+	}
+	return oldValue.S3ProfileID, nil
+}
+
+// ClearS3ProfileID clears the value of the "s3_profile_id" field.
+func (m *BackupJobMutation) ClearS3ProfileID() {
+	m.s3_profile_id = nil
+	m.clearedFields[backupjob.FieldS3ProfileID] = struct{}{}
+}
+
+// S3ProfileIDCleared returns if the "s3_profile_id" field was cleared in this mutation.
+func (m *BackupJobMutation) S3ProfileIDCleared() bool {
+	_, ok := m.clearedFields[backupjob.FieldS3ProfileID]
+	return ok
+}
+
+// ResetS3ProfileID resets all changes to the "s3_profile_id" field.
+func (m *BackupJobMutation) ResetS3ProfileID() {
+	m.s3_profile_id = nil
+	delete(m.clearedFields, backupjob.FieldS3ProfileID)
+}
+
+// SetPostgresProfileID sets the "postgres_profile_id" field.
+func (m *BackupJobMutation) SetPostgresProfileID(s string) {
+	m.postgres_profile_id = &s
+}
+
+// PostgresProfileID returns the value of the "postgres_profile_id" field in the mutation.
+func (m *BackupJobMutation) PostgresProfileID() (r string, exists bool) {
+	v := m.postgres_profile_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPostgresProfileID returns the old "postgres_profile_id" field's value of the BackupJob entity.
+// If the BackupJob object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupJobMutation) OldPostgresProfileID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPostgresProfileID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPostgresProfileID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPostgresProfileID: %w", err)
+	}
+	return oldValue.PostgresProfileID, nil
+}
+
+// ClearPostgresProfileID clears the value of the "postgres_profile_id" field.
+func (m *BackupJobMutation) ClearPostgresProfileID() {
+	m.postgres_profile_id = nil
+	m.clearedFields[backupjob.FieldPostgresProfileID] = struct{}{}
+}
+
+// PostgresProfileIDCleared returns if the "postgres_profile_id" field was cleared in this mutation.
+func (m *BackupJobMutation) PostgresProfileIDCleared() bool {
+	_, ok := m.clearedFields[backupjob.FieldPostgresProfileID]
+	return ok
+}
+
+// ResetPostgresProfileID resets all changes to the "postgres_profile_id" field.
+func (m *BackupJobMutation) ResetPostgresProfileID() {
+	m.postgres_profile_id = nil
+	delete(m.clearedFields, backupjob.FieldPostgresProfileID)
+}
+
+// SetRedisProfileID sets the "redis_profile_id" field.
+func (m *BackupJobMutation) SetRedisProfileID(s string) {
+	m.redis_profile_id = &s
+}
+
+// RedisProfileID returns the value of the "redis_profile_id" field in the mutation.
+func (m *BackupJobMutation) RedisProfileID() (r string, exists bool) {
+	v := m.redis_profile_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRedisProfileID returns the old "redis_profile_id" field's value of the BackupJob entity.
+// If the BackupJob object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupJobMutation) OldRedisProfileID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRedisProfileID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRedisProfileID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRedisProfileID: %w", err)
+	}
+	return oldValue.RedisProfileID, nil
+}
+
+// ClearRedisProfileID clears the value of the "redis_profile_id" field.
+func (m *BackupJobMutation) ClearRedisProfileID() {
+	m.redis_profile_id = nil
+	m.clearedFields[backupjob.FieldRedisProfileID] = struct{}{}
+}
+
+// RedisProfileIDCleared returns if the "redis_profile_id" field was cleared in this mutation.
+func (m *BackupJobMutation) RedisProfileIDCleared() bool {
+	_, ok := m.clearedFields[backupjob.FieldRedisProfileID]
+	return ok
+}
+
+// ResetRedisProfileID resets all changes to the "redis_profile_id" field.
+func (m *BackupJobMutation) ResetRedisProfileID() {
+	m.redis_profile_id = nil
+	delete(m.clearedFields, backupjob.FieldRedisProfileID)
 }
 
 // SetStartedAt sets the "started_at" field.
@@ -1017,7 +1167,7 @@ func (m *BackupJobMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *BackupJobMutation) Fields() []string {
-	fields := make([]string, 0, 17)
+	fields := make([]string, 0, 20)
 	if m.job_id != nil {
 		fields = append(fields, backupjob.FieldJobID)
 	}
@@ -1035,6 +1185,15 @@ func (m *BackupJobMutation) Fields() []string {
 	}
 	if m.upload_to_s3 != nil {
 		fields = append(fields, backupjob.FieldUploadToS3)
+	}
+	if m.s3_profile_id != nil {
+		fields = append(fields, backupjob.FieldS3ProfileID)
+	}
+	if m.postgres_profile_id != nil {
+		fields = append(fields, backupjob.FieldPostgresProfileID)
+	}
+	if m.redis_profile_id != nil {
+		fields = append(fields, backupjob.FieldRedisProfileID)
 	}
 	if m.started_at != nil {
 		fields = append(fields, backupjob.FieldStartedAt)
@@ -1089,6 +1248,12 @@ func (m *BackupJobMutation) Field(name string) (ent.Value, bool) {
 		return m.IdempotencyKey()
 	case backupjob.FieldUploadToS3:
 		return m.UploadToS3()
+	case backupjob.FieldS3ProfileID:
+		return m.S3ProfileID()
+	case backupjob.FieldPostgresProfileID:
+		return m.PostgresProfileID()
+	case backupjob.FieldRedisProfileID:
+		return m.RedisProfileID()
 	case backupjob.FieldStartedAt:
 		return m.StartedAt()
 	case backupjob.FieldFinishedAt:
@@ -1132,6 +1297,12 @@ func (m *BackupJobMutation) OldField(ctx context.Context, name string) (ent.Valu
 		return m.OldIdempotencyKey(ctx)
 	case backupjob.FieldUploadToS3:
 		return m.OldUploadToS3(ctx)
+	case backupjob.FieldS3ProfileID:
+		return m.OldS3ProfileID(ctx)
+	case backupjob.FieldPostgresProfileID:
+		return m.OldPostgresProfileID(ctx)
+	case backupjob.FieldRedisProfileID:
+		return m.OldRedisProfileID(ctx)
 	case backupjob.FieldStartedAt:
 		return m.OldStartedAt(ctx)
 	case backupjob.FieldFinishedAt:
@@ -1204,6 +1375,27 @@ func (m *BackupJobMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetUploadToS3(v)
+		return nil
+	case backupjob.FieldS3ProfileID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetS3ProfileID(v)
+		return nil
+	case backupjob.FieldPostgresProfileID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPostgresProfileID(v)
+		return nil
+	case backupjob.FieldRedisProfileID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRedisProfileID(v)
 		return nil
 	case backupjob.FieldStartedAt:
 		v, ok := value.(time.Time)
@@ -1330,6 +1522,15 @@ func (m *BackupJobMutation) ClearedFields() []string {
 	if m.FieldCleared(backupjob.FieldIdempotencyKey) {
 		fields = append(fields, backupjob.FieldIdempotencyKey)
 	}
+	if m.FieldCleared(backupjob.FieldS3ProfileID) {
+		fields = append(fields, backupjob.FieldS3ProfileID)
+	}
+	if m.FieldCleared(backupjob.FieldPostgresProfileID) {
+		fields = append(fields, backupjob.FieldPostgresProfileID)
+	}
+	if m.FieldCleared(backupjob.FieldRedisProfileID) {
+		fields = append(fields, backupjob.FieldRedisProfileID)
+	}
 	if m.FieldCleared(backupjob.FieldStartedAt) {
 		fields = append(fields, backupjob.FieldStartedAt)
 	}
@@ -1373,6 +1574,15 @@ func (m *BackupJobMutation) ClearField(name string) error {
 	switch name {
 	case backupjob.FieldIdempotencyKey:
 		m.ClearIdempotencyKey()
+		return nil
+	case backupjob.FieldS3ProfileID:
+		m.ClearS3ProfileID()
+		return nil
+	case backupjob.FieldPostgresProfileID:
+		m.ClearPostgresProfileID()
+		return nil
+	case backupjob.FieldRedisProfileID:
+		m.ClearRedisProfileID()
 		return nil
 	case backupjob.FieldStartedAt:
 		m.ClearStartedAt()
@@ -1426,6 +1636,15 @@ func (m *BackupJobMutation) ResetField(name string) error {
 		return nil
 	case backupjob.FieldUploadToS3:
 		m.ResetUploadToS3()
+		return nil
+	case backupjob.FieldS3ProfileID:
+		m.ResetS3ProfileID()
+		return nil
+	case backupjob.FieldPostgresProfileID:
+		m.ResetPostgresProfileID()
+		return nil
+	case backupjob.FieldRedisProfileID:
+		m.ResetRedisProfileID()
 		return nil
 	case backupjob.FieldStartedAt:
 		m.ResetStartedAt()
@@ -2296,6 +2515,9 @@ type BackupS3ConfigMutation struct {
 	op                          Op
 	typ                         string
 	id                          *int
+	profile_id                  *string
+	name                        *string
+	is_active                   *bool
 	enabled                     *bool
 	endpoint                    *string
 	region                      *string
@@ -2409,6 +2631,114 @@ func (m *BackupS3ConfigMutation) IDs(ctx context.Context) ([]int, error) {
 	default:
 		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
 	}
+}
+
+// SetProfileID sets the "profile_id" field.
+func (m *BackupS3ConfigMutation) SetProfileID(s string) {
+	m.profile_id = &s
+}
+
+// ProfileID returns the value of the "profile_id" field in the mutation.
+func (m *BackupS3ConfigMutation) ProfileID() (r string, exists bool) {
+	v := m.profile_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldProfileID returns the old "profile_id" field's value of the BackupS3Config entity.
+// If the BackupS3Config object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupS3ConfigMutation) OldProfileID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldProfileID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldProfileID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldProfileID: %w", err)
+	}
+	return oldValue.ProfileID, nil
+}
+
+// ResetProfileID resets all changes to the "profile_id" field.
+func (m *BackupS3ConfigMutation) ResetProfileID() {
+	m.profile_id = nil
+}
+
+// SetName sets the "name" field.
+func (m *BackupS3ConfigMutation) SetName(s string) {
+	m.name = &s
+}
+
+// Name returns the value of the "name" field in the mutation.
+func (m *BackupS3ConfigMutation) Name() (r string, exists bool) {
+	v := m.name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldName returns the old "name" field's value of the BackupS3Config entity.
+// If the BackupS3Config object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupS3ConfigMutation) OldName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldName: %w", err)
+	}
+	return oldValue.Name, nil
+}
+
+// ResetName resets all changes to the "name" field.
+func (m *BackupS3ConfigMutation) ResetName() {
+	m.name = nil
+}
+
+// SetIsActive sets the "is_active" field.
+func (m *BackupS3ConfigMutation) SetIsActive(b bool) {
+	m.is_active = &b
+}
+
+// IsActive returns the value of the "is_active" field in the mutation.
+func (m *BackupS3ConfigMutation) IsActive() (r bool, exists bool) {
+	v := m.is_active
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldIsActive returns the old "is_active" field's value of the BackupS3Config entity.
+// If the BackupS3Config object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupS3ConfigMutation) OldIsActive(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldIsActive is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldIsActive requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldIsActive: %w", err)
+	}
+	return oldValue.IsActive, nil
+}
+
+// ResetIsActive resets all changes to the "is_active" field.
+func (m *BackupS3ConfigMutation) ResetIsActive() {
+	m.is_active = nil
 }
 
 // SetEnabled sets the "enabled" field.
@@ -2854,7 +3184,16 @@ func (m *BackupS3ConfigMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *BackupS3ConfigMutation) Fields() []string {
-	fields := make([]string, 0, 11)
+	fields := make([]string, 0, 14)
+	if m.profile_id != nil {
+		fields = append(fields, backups3config.FieldProfileID)
+	}
+	if m.name != nil {
+		fields = append(fields, backups3config.FieldName)
+	}
+	if m.is_active != nil {
+		fields = append(fields, backups3config.FieldIsActive)
+	}
 	if m.enabled != nil {
 		fields = append(fields, backups3config.FieldEnabled)
 	}
@@ -2896,6 +3235,12 @@ func (m *BackupS3ConfigMutation) Fields() []string {
 // schema.
 func (m *BackupS3ConfigMutation) Field(name string) (ent.Value, bool) {
 	switch name {
+	case backups3config.FieldProfileID:
+		return m.ProfileID()
+	case backups3config.FieldName:
+		return m.Name()
+	case backups3config.FieldIsActive:
+		return m.IsActive()
 	case backups3config.FieldEnabled:
 		return m.Enabled()
 	case backups3config.FieldEndpoint:
@@ -2927,6 +3272,12 @@ func (m *BackupS3ConfigMutation) Field(name string) (ent.Value, bool) {
 // database failed.
 func (m *BackupS3ConfigMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
 	switch name {
+	case backups3config.FieldProfileID:
+		return m.OldProfileID(ctx)
+	case backups3config.FieldName:
+		return m.OldName(ctx)
+	case backups3config.FieldIsActive:
+		return m.OldIsActive(ctx)
 	case backups3config.FieldEnabled:
 		return m.OldEnabled(ctx)
 	case backups3config.FieldEndpoint:
@@ -2958,6 +3309,27 @@ func (m *BackupS3ConfigMutation) OldField(ctx context.Context, name string) (ent
 // type.
 func (m *BackupS3ConfigMutation) SetField(name string, value ent.Value) error {
 	switch name {
+	case backups3config.FieldProfileID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetProfileID(v)
+		return nil
+	case backups3config.FieldName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetName(v)
+		return nil
+	case backups3config.FieldIsActive:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetIsActive(v)
+		return nil
 	case backups3config.FieldEnabled:
 		v, ok := value.(bool)
 		if !ok {
@@ -3093,6 +3465,15 @@ func (m *BackupS3ConfigMutation) ClearField(name string) error {
 // It returns an error if the field is not defined in the schema.
 func (m *BackupS3ConfigMutation) ResetField(name string) error {
 	switch name {
+	case backups3config.FieldProfileID:
+		m.ResetProfileID()
+		return nil
+	case backups3config.FieldName:
+		m.ResetName()
+		return nil
+	case backups3config.FieldIsActive:
+		m.ResetIsActive()
+		return nil
 	case backups3config.FieldEnabled:
 		m.ResetEnabled()
 		return nil
@@ -3904,6 +4285,9 @@ type BackupSourceConfigMutation struct {
 	typ                string
 	id                 *int
 	source_type        *backupsourceconfig.SourceType
+	profile_id         *string
+	name               *string
+	is_active          *bool
 	host               *string
 	port               *int
 	addport            *int
@@ -4055,6 +4439,114 @@ func (m *BackupSourceConfigMutation) OldSourceType(ctx context.Context) (v backu
 // ResetSourceType resets all changes to the "source_type" field.
 func (m *BackupSourceConfigMutation) ResetSourceType() {
 	m.source_type = nil
+}
+
+// SetProfileID sets the "profile_id" field.
+func (m *BackupSourceConfigMutation) SetProfileID(s string) {
+	m.profile_id = &s
+}
+
+// ProfileID returns the value of the "profile_id" field in the mutation.
+func (m *BackupSourceConfigMutation) ProfileID() (r string, exists bool) {
+	v := m.profile_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldProfileID returns the old "profile_id" field's value of the BackupSourceConfig entity.
+// If the BackupSourceConfig object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupSourceConfigMutation) OldProfileID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldProfileID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldProfileID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldProfileID: %w", err)
+	}
+	return oldValue.ProfileID, nil
+}
+
+// ResetProfileID resets all changes to the "profile_id" field.
+func (m *BackupSourceConfigMutation) ResetProfileID() {
+	m.profile_id = nil
+}
+
+// SetName sets the "name" field.
+func (m *BackupSourceConfigMutation) SetName(s string) {
+	m.name = &s
+}
+
+// Name returns the value of the "name" field in the mutation.
+func (m *BackupSourceConfigMutation) Name() (r string, exists bool) {
+	v := m.name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldName returns the old "name" field's value of the BackupSourceConfig entity.
+// If the BackupSourceConfig object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupSourceConfigMutation) OldName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldName: %w", err)
+	}
+	return oldValue.Name, nil
+}
+
+// ResetName resets all changes to the "name" field.
+func (m *BackupSourceConfigMutation) ResetName() {
+	m.name = nil
+}
+
+// SetIsActive sets the "is_active" field.
+func (m *BackupSourceConfigMutation) SetIsActive(b bool) {
+	m.is_active = &b
+}
+
+// IsActive returns the value of the "is_active" field in the mutation.
+func (m *BackupSourceConfigMutation) IsActive() (r bool, exists bool) {
+	v := m.is_active
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldIsActive returns the old "is_active" field's value of the BackupSourceConfig entity.
+// If the BackupSourceConfig object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BackupSourceConfigMutation) OldIsActive(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldIsActive is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldIsActive requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldIsActive: %w", err)
+	}
+	return oldValue.IsActive, nil
+}
+
+// ResetIsActive resets all changes to the "is_active" field.
+func (m *BackupSourceConfigMutation) ResetIsActive() {
+	m.is_active = nil
 }
 
 // SetHost sets the "host" field.
@@ -4633,9 +5125,18 @@ func (m *BackupSourceConfigMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *BackupSourceConfigMutation) Fields() []string {
-	fields := make([]string, 0, 12)
+	fields := make([]string, 0, 15)
 	if m.source_type != nil {
 		fields = append(fields, backupsourceconfig.FieldSourceType)
+	}
+	if m.profile_id != nil {
+		fields = append(fields, backupsourceconfig.FieldProfileID)
+	}
+	if m.name != nil {
+		fields = append(fields, backupsourceconfig.FieldName)
+	}
+	if m.is_active != nil {
+		fields = append(fields, backupsourceconfig.FieldIsActive)
 	}
 	if m.host != nil {
 		fields = append(fields, backupsourceconfig.FieldHost)
@@ -4680,6 +5181,12 @@ func (m *BackupSourceConfigMutation) Field(name string) (ent.Value, bool) {
 	switch name {
 	case backupsourceconfig.FieldSourceType:
 		return m.SourceType()
+	case backupsourceconfig.FieldProfileID:
+		return m.ProfileID()
+	case backupsourceconfig.FieldName:
+		return m.Name()
+	case backupsourceconfig.FieldIsActive:
+		return m.IsActive()
 	case backupsourceconfig.FieldHost:
 		return m.Host()
 	case backupsourceconfig.FieldPort:
@@ -4713,6 +5220,12 @@ func (m *BackupSourceConfigMutation) OldField(ctx context.Context, name string) 
 	switch name {
 	case backupsourceconfig.FieldSourceType:
 		return m.OldSourceType(ctx)
+	case backupsourceconfig.FieldProfileID:
+		return m.OldProfileID(ctx)
+	case backupsourceconfig.FieldName:
+		return m.OldName(ctx)
+	case backupsourceconfig.FieldIsActive:
+		return m.OldIsActive(ctx)
 	case backupsourceconfig.FieldHost:
 		return m.OldHost(ctx)
 	case backupsourceconfig.FieldPort:
@@ -4750,6 +5263,27 @@ func (m *BackupSourceConfigMutation) SetField(name string, value ent.Value) erro
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetSourceType(v)
+		return nil
+	case backupsourceconfig.FieldProfileID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetProfileID(v)
+		return nil
+	case backupsourceconfig.FieldName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetName(v)
+		return nil
+	case backupsourceconfig.FieldIsActive:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetIsActive(v)
 		return nil
 	case backupsourceconfig.FieldHost:
 		v, ok := value.(string)
@@ -4957,6 +5491,15 @@ func (m *BackupSourceConfigMutation) ResetField(name string) error {
 	switch name {
 	case backupsourceconfig.FieldSourceType:
 		m.ResetSourceType()
+		return nil
+	case backupsourceconfig.FieldProfileID:
+		m.ResetProfileID()
+		return nil
+	case backupsourceconfig.FieldName:
+		m.ResetName()
+		return nil
+	case backupsourceconfig.FieldIsActive:
+		m.ResetIsActive()
 		return nil
 	case backupsourceconfig.FieldHost:
 		m.ResetHost()

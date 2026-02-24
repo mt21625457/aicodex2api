@@ -27,6 +27,12 @@ const (
 	FieldIdempotencyKey = "idempotency_key"
 	// FieldUploadToS3 holds the string denoting the upload_to_s3 field in the database.
 	FieldUploadToS3 = "upload_to_s3"
+	// FieldS3ProfileID holds the string denoting the s3_profile_id field in the database.
+	FieldS3ProfileID = "s3_profile_id"
+	// FieldPostgresProfileID holds the string denoting the postgres_profile_id field in the database.
+	FieldPostgresProfileID = "postgres_profile_id"
+	// FieldRedisProfileID holds the string denoting the redis_profile_id field in the database.
+	FieldRedisProfileID = "redis_profile_id"
 	// FieldStartedAt holds the string denoting the started_at field in the database.
 	FieldStartedAt = "started_at"
 	// FieldFinishedAt holds the string denoting the finished_at field in the database.
@@ -71,6 +77,9 @@ var Columns = []string{
 	FieldTriggeredBy,
 	FieldIdempotencyKey,
 	FieldUploadToS3,
+	FieldS3ProfileID,
+	FieldPostgresProfileID,
+	FieldRedisProfileID,
 	FieldStartedAt,
 	FieldFinishedAt,
 	FieldErrorMessage,
@@ -196,6 +205,21 @@ func ByIdempotencyKey(opts ...sql.OrderTermOption) OrderOption {
 // ByUploadToS3 orders the results by the upload_to_s3 field.
 func ByUploadToS3(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldUploadToS3, opts...).ToFunc()
+}
+
+// ByS3ProfileID orders the results by the s3_profile_id field.
+func ByS3ProfileID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldS3ProfileID, opts...).ToFunc()
+}
+
+// ByPostgresProfileID orders the results by the postgres_profile_id field.
+func ByPostgresProfileID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldPostgresProfileID, opts...).ToFunc()
+}
+
+// ByRedisProfileID orders the results by the redis_profile_id field.
+func ByRedisProfileID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRedisProfileID, opts...).ToFunc()
 }
 
 // ByStartedAt orders the results by the started_at field.

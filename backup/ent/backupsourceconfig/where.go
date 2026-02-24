@@ -54,6 +54,21 @@ func IDLTE(id int) predicate.BackupSourceConfig {
 	return predicate.BackupSourceConfig(sql.FieldLTE(FieldID, id))
 }
 
+// ProfileID applies equality check predicate on the "profile_id" field. It's identical to ProfileIDEQ.
+func ProfileID(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldEQ(FieldProfileID, v))
+}
+
+// Name applies equality check predicate on the "name" field. It's identical to NameEQ.
+func Name(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldEQ(FieldName, v))
+}
+
+// IsActive applies equality check predicate on the "is_active" field. It's identical to IsActiveEQ.
+func IsActive(v bool) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldEQ(FieldIsActive, v))
+}
+
 // Host applies equality check predicate on the "host" field. It's identical to HostEQ.
 func Host(v string) predicate.BackupSourceConfig {
 	return predicate.BackupSourceConfig(sql.FieldEQ(FieldHost, v))
@@ -127,6 +142,146 @@ func SourceTypeIn(vs ...SourceType) predicate.BackupSourceConfig {
 // SourceTypeNotIn applies the NotIn predicate on the "source_type" field.
 func SourceTypeNotIn(vs ...SourceType) predicate.BackupSourceConfig {
 	return predicate.BackupSourceConfig(sql.FieldNotIn(FieldSourceType, vs...))
+}
+
+// ProfileIDEQ applies the EQ predicate on the "profile_id" field.
+func ProfileIDEQ(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldEQ(FieldProfileID, v))
+}
+
+// ProfileIDNEQ applies the NEQ predicate on the "profile_id" field.
+func ProfileIDNEQ(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldNEQ(FieldProfileID, v))
+}
+
+// ProfileIDIn applies the In predicate on the "profile_id" field.
+func ProfileIDIn(vs ...string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldIn(FieldProfileID, vs...))
+}
+
+// ProfileIDNotIn applies the NotIn predicate on the "profile_id" field.
+func ProfileIDNotIn(vs ...string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldNotIn(FieldProfileID, vs...))
+}
+
+// ProfileIDGT applies the GT predicate on the "profile_id" field.
+func ProfileIDGT(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldGT(FieldProfileID, v))
+}
+
+// ProfileIDGTE applies the GTE predicate on the "profile_id" field.
+func ProfileIDGTE(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldGTE(FieldProfileID, v))
+}
+
+// ProfileIDLT applies the LT predicate on the "profile_id" field.
+func ProfileIDLT(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldLT(FieldProfileID, v))
+}
+
+// ProfileIDLTE applies the LTE predicate on the "profile_id" field.
+func ProfileIDLTE(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldLTE(FieldProfileID, v))
+}
+
+// ProfileIDContains applies the Contains predicate on the "profile_id" field.
+func ProfileIDContains(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldContains(FieldProfileID, v))
+}
+
+// ProfileIDHasPrefix applies the HasPrefix predicate on the "profile_id" field.
+func ProfileIDHasPrefix(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldHasPrefix(FieldProfileID, v))
+}
+
+// ProfileIDHasSuffix applies the HasSuffix predicate on the "profile_id" field.
+func ProfileIDHasSuffix(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldHasSuffix(FieldProfileID, v))
+}
+
+// ProfileIDEqualFold applies the EqualFold predicate on the "profile_id" field.
+func ProfileIDEqualFold(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldEqualFold(FieldProfileID, v))
+}
+
+// ProfileIDContainsFold applies the ContainsFold predicate on the "profile_id" field.
+func ProfileIDContainsFold(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldContainsFold(FieldProfileID, v))
+}
+
+// NameEQ applies the EQ predicate on the "name" field.
+func NameEQ(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldEQ(FieldName, v))
+}
+
+// NameNEQ applies the NEQ predicate on the "name" field.
+func NameNEQ(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldNEQ(FieldName, v))
+}
+
+// NameIn applies the In predicate on the "name" field.
+func NameIn(vs ...string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldIn(FieldName, vs...))
+}
+
+// NameNotIn applies the NotIn predicate on the "name" field.
+func NameNotIn(vs ...string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldNotIn(FieldName, vs...))
+}
+
+// NameGT applies the GT predicate on the "name" field.
+func NameGT(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldGT(FieldName, v))
+}
+
+// NameGTE applies the GTE predicate on the "name" field.
+func NameGTE(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldGTE(FieldName, v))
+}
+
+// NameLT applies the LT predicate on the "name" field.
+func NameLT(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldLT(FieldName, v))
+}
+
+// NameLTE applies the LTE predicate on the "name" field.
+func NameLTE(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldLTE(FieldName, v))
+}
+
+// NameContains applies the Contains predicate on the "name" field.
+func NameContains(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldContains(FieldName, v))
+}
+
+// NameHasPrefix applies the HasPrefix predicate on the "name" field.
+func NameHasPrefix(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldHasPrefix(FieldName, v))
+}
+
+// NameHasSuffix applies the HasSuffix predicate on the "name" field.
+func NameHasSuffix(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldHasSuffix(FieldName, v))
+}
+
+// NameEqualFold applies the EqualFold predicate on the "name" field.
+func NameEqualFold(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldEqualFold(FieldName, v))
+}
+
+// NameContainsFold applies the ContainsFold predicate on the "name" field.
+func NameContainsFold(v string) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldContainsFold(FieldName, v))
+}
+
+// IsActiveEQ applies the EQ predicate on the "is_active" field.
+func IsActiveEQ(v bool) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldEQ(FieldIsActive, v))
+}
+
+// IsActiveNEQ applies the NEQ predicate on the "is_active" field.
+func IsActiveNEQ(v bool) predicate.BackupSourceConfig {
+	return predicate.BackupSourceConfig(sql.FieldNEQ(FieldIsActive, v))
 }
 
 // HostEQ applies the EQ predicate on the "host" field.
