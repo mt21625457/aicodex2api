@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -139,6 +141,195 @@ func TestOpenAIEnsureForwardErrorResponse_DoesNotOverrideWrittenResponse(t *test
 	require.False(t, wrote)
 	require.Equal(t, http.StatusTeapot, w.Code)
 	assert.Equal(t, "already written", w.Body.String())
+}
+
+func TestOpenAIRecoverResponsesPanic_WritesFallbackResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	h := &OpenAIGatewayHandler{}
+	streamStarted := false
+	require.NotPanics(t, func() {
+		func() {
+			defer h.recoverResponsesPanic(c, &streamStarted)
+			panic("test panic")
+		}()
+	})
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+
+	var parsed map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &parsed)
+	require.NoError(t, err)
+
+	errorObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "upstream_error", errorObj["type"])
+	assert.Equal(t, "Upstream request failed", errorObj["message"])
+}
+
+func TestOpenAIRecoverResponsesPanic_NoPanicNoWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	h := &OpenAIGatewayHandler{}
+	streamStarted := false
+	require.NotPanics(t, func() {
+		func() {
+			defer h.recoverResponsesPanic(c, &streamStarted)
+		}()
+	})
+
+	require.False(t, c.Writer.Written())
+	assert.Equal(t, "", w.Body.String())
+}
+
+func TestOpenAIRecoverResponsesPanic_DoesNotOverrideWrittenResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.String(http.StatusTeapot, "already written")
+
+	h := &OpenAIGatewayHandler{}
+	streamStarted := false
+	require.NotPanics(t, func() {
+		func() {
+			defer h.recoverResponsesPanic(c, &streamStarted)
+			panic("test panic")
+		}()
+	})
+
+	require.Equal(t, http.StatusTeapot, w.Code)
+	assert.Equal(t, "already written", w.Body.String())
+}
+
+func TestOpenAIMissingResponsesDependencies(t *testing.T) {
+	t.Run("nil_handler", func(t *testing.T) {
+		var h *OpenAIGatewayHandler
+		require.Equal(t, []string{"handler"}, h.missingResponsesDependencies())
+	})
+
+	t.Run("all_dependencies_missing", func(t *testing.T) {
+		h := &OpenAIGatewayHandler{}
+		require.Equal(t,
+			[]string{"gatewayService", "billingCacheService", "apiKeyService", "concurrencyHelper"},
+			h.missingResponsesDependencies(),
+		)
+	})
+
+	t.Run("all_dependencies_present", func(t *testing.T) {
+		h := &OpenAIGatewayHandler{
+			gatewayService:      &service.OpenAIGatewayService{},
+			billingCacheService: &service.BillingCacheService{},
+			apiKeyService:       &service.APIKeyService{},
+			concurrencyHelper: &ConcurrencyHelper{
+				concurrencyService: &service.ConcurrencyService{},
+			},
+		}
+		require.Empty(t, h.missingResponsesDependencies())
+	})
+}
+
+func TestOpenAIEnsureResponsesDependencies(t *testing.T) {
+	t.Run("missing_dependencies_returns_503", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+		h := &OpenAIGatewayHandler{}
+		ok := h.ensureResponsesDependencies(c, nil)
+
+		require.False(t, ok)
+		require.Equal(t, http.StatusServiceUnavailable, w.Code)
+		var parsed map[string]any
+		err := json.Unmarshal(w.Body.Bytes(), &parsed)
+		require.NoError(t, err)
+		errorObj, exists := parsed["error"].(map[string]any)
+		require.True(t, exists)
+		assert.Equal(t, "api_error", errorObj["type"])
+		assert.Equal(t, "Service temporarily unavailable", errorObj["message"])
+	})
+
+	t.Run("already_written_response_not_overridden", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		c.String(http.StatusTeapot, "already written")
+
+		h := &OpenAIGatewayHandler{}
+		ok := h.ensureResponsesDependencies(c, nil)
+
+		require.False(t, ok)
+		require.Equal(t, http.StatusTeapot, w.Code)
+		assert.Equal(t, "already written", w.Body.String())
+	})
+
+	t.Run("dependencies_ready_returns_true_and_no_write", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+		h := &OpenAIGatewayHandler{
+			gatewayService:      &service.OpenAIGatewayService{},
+			billingCacheService: &service.BillingCacheService{},
+			apiKeyService:       &service.APIKeyService{},
+			concurrencyHelper: &ConcurrencyHelper{
+				concurrencyService: &service.ConcurrencyService{},
+			},
+		}
+		ok := h.ensureResponsesDependencies(c, nil)
+
+		require.True(t, ok)
+		require.False(t, c.Writer.Written())
+		assert.Equal(t, "", w.Body.String())
+	})
+}
+
+func TestOpenAIResponses_MissingDependencies_ReturnsServiceUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5","stream":false}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	groupID := int64(2)
+	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
+		ID:      10,
+		GroupID: &groupID,
+	})
+	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{
+		UserID:      1,
+		Concurrency: 1,
+	})
+
+	// 故意使用未初始化依赖，验证快速失败而不是崩溃。
+	h := &OpenAIGatewayHandler{}
+	require.NotPanics(t, func() {
+		h.Responses(c)
+	})
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+	var parsed map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &parsed)
+	require.NoError(t, err)
+
+	errorObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "api_error", errorObj["type"])
+	assert.Equal(t, "Service temporarily unavailable", errorObj["message"])
 }
 
 // TestOpenAIHandler_GjsonExtraction 验证 gjson 从请求体中提取 model/stream 的正确性
