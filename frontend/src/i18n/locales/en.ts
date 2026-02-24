@@ -270,6 +270,7 @@ export default {
     redeemCodes: 'Redeem Codes',
     ops: 'Ops',
     promoCodes: 'Promo Codes',
+    dataManagement: 'Data Management',
     settings: 'Settings',
     myAccount: 'My Account',
     lightMode: 'Light Mode',
@@ -837,6 +838,117 @@ export default {
       noDataAvailable: 'No data available',
       recentUsage: 'Recent Usage',
       failedToLoad: 'Failed to load dashboard statistics'
+    },
+
+    dataManagement: {
+      title: 'Data Management',
+      description: 'Manage backup agent status, object storage settings, and backup jobs in one place',
+      agent: {
+        title: 'Backup Agent Status',
+        description: 'The system probes a fixed Unix socket and enables data management only when reachable.',
+        enabled: 'Backup agent is ready. Data management operations are available.',
+        disabled: 'Backup agent is unavailable. Only diagnostic information is available now.',
+        socketPath: 'Socket Path',
+        version: 'Version',
+        status: 'Status',
+        uptime: 'Uptime',
+        reasonLabel: 'Unavailable Reason',
+        reason: {
+          BACKUP_AGENT_SOCKET_MISSING: 'Backup socket file is missing',
+          BACKUP_AGENT_UNAVAILABLE: 'Backup agent is unreachable',
+          UNKNOWN: 'Unknown reason'
+        }
+      },
+      sections: {
+        config: {
+          title: 'Backup Configuration',
+          description: 'Configure backup source, retention policy, and S3 settings.'
+        },
+        s3: {
+          title: 'S3 Object Storage',
+          description: 'Configure and test uploads of backup artifacts to a standard S3-compatible storage.'
+        },
+        backup: {
+          title: 'Backup Operations',
+          description: 'Trigger PostgreSQL, Redis, and full backup jobs.'
+        },
+        history: {
+          title: 'Backup History',
+          description: 'Review backup job status, errors, and artifact metadata.'
+        }
+      },
+      form: {
+        sourceMode: 'Source Mode',
+        backupRoot: 'Backup Root',
+        retentionDays: 'Retention Days',
+        keepLast: 'Keep Last Jobs',
+        uploadToS3: 'Upload to S3',
+        idempotencyKey: 'Idempotency Key (Optional)',
+        secretConfigured: 'Configured already, leave empty to keep unchanged',
+        postgres: {
+          title: 'PostgreSQL',
+          host: 'Host',
+          port: 'Port',
+          user: 'User',
+          password: 'Password',
+          database: 'Database',
+          sslMode: 'SSL Mode',
+          containerName: 'Container Name (docker_exec mode)'
+        },
+        redis: {
+          title: 'Redis',
+          addr: 'Address (host:port)',
+          username: 'Username',
+          password: 'Password',
+          db: 'Database Index',
+          containerName: 'Container Name (docker_exec mode)'
+        },
+        s3: {
+          enabled: 'Enable S3 Upload',
+          endpoint: 'Endpoint (Optional)',
+          region: 'Region',
+          bucket: 'Bucket',
+          accessKeyID: 'Access Key ID',
+          secretAccessKey: 'Secret Access Key',
+          prefix: 'Object Prefix',
+          forcePathStyle: 'Force Path Style',
+          useSSL: 'Use SSL'
+        }
+      },
+      history: {
+        total: '{count} jobs',
+        empty: 'No backup jobs yet',
+        columns: {
+          jobID: 'Job ID',
+          type: 'Type',
+          status: 'Status',
+          triggeredBy: 'Triggered By',
+          finishedAt: 'Finished At',
+          artifact: 'Artifact',
+          error: 'Error'
+        },
+        status: {
+          queued: 'Queued',
+          running: 'Running',
+          succeeded: 'Succeeded',
+          failed: 'Failed',
+          partial_succeeded: 'Partial Succeeded'
+        }
+      },
+      actions: {
+        refresh: 'Refresh Status',
+        disabledHint: 'Start backupd first and ensure the socket is reachable.',
+        reloadConfig: 'Reload Config',
+        saveConfig: 'Save Config',
+        configSaved: 'Configuration saved',
+        testS3: 'Test S3 Connection',
+        s3TestOK: 'S3 connection test succeeded',
+        s3TestFailed: 'S3 connection test failed',
+        createBackup: 'Create Backup Job',
+        jobCreated: 'Backup job created: {jobID} ({status})',
+        refreshJobs: 'Refresh Jobs',
+        loadMore: 'Load More'
+      }
     },
 
     // Users

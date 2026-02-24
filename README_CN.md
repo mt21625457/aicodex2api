@@ -246,6 +246,18 @@ docker-compose -f docker-compose.local.yml logs -f sub2api
 
 **推荐：** 使用 `docker-compose.local.yml`（脚本部署）以便更轻松地管理数据。
 
+#### 启用“数据管理”功能（backupd）
+
+如需启用管理后台“数据管理”，需要额外部署宿主机备份进程 `backupd`。
+
+关键点：
+
+- 主进程固定探测：`/tmp/sub2api-backup.sock`
+- 只有该 Socket 可连通时，数据管理功能才会开启
+- Docker 场景需将宿主机 Socket 挂载到容器同路径
+
+详细部署步骤见：`deploy/BACKUPD_CN.md`
+
 #### 访问
 
 在浏览器中打开 `http://你的服务器IP:8080`

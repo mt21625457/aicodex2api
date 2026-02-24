@@ -270,6 +270,7 @@ export default {
     redeemCodes: '兑换码',
     ops: '运维监控',
     promoCodes: '优惠码',
+    dataManagement: '数据管理',
     settings: '系统设置',
     myAccount: '我的账户',
     lightMode: '浅色模式',
@@ -860,6 +861,117 @@ export default {
       systemSettings: '系统设置',
       configureSystem: '配置系统设置',
       failedToLoad: '加载仪表盘数据失败'
+    },
+
+    dataManagement: {
+      title: '数据管理',
+      description: '统一管理备份代理状态、对象存储配置和备份任务',
+      agent: {
+        title: '备份代理状态',
+        description: '系统会自动探测固定 Unix Socket，仅在可连通时启用数据管理功能。',
+        enabled: '备份代理已就绪，可继续进行数据管理操作。',
+        disabled: '备份代理不可用，当前仅可查看诊断信息。',
+        socketPath: 'Socket 路径',
+        version: '版本',
+        status: '状态',
+        uptime: '运行时长',
+        reasonLabel: '不可用原因',
+        reason: {
+          BACKUP_AGENT_SOCKET_MISSING: '未检测到备份 Socket 文件',
+          BACKUP_AGENT_UNAVAILABLE: '备份代理不可连通',
+          UNKNOWN: '未知原因'
+        }
+      },
+      sections: {
+        config: {
+          title: '备份配置',
+          description: '配置备份源、保留策略与 S3 存储参数。'
+        },
+        s3: {
+          title: 'S3 对象存储',
+          description: '配置并测试备份产物上传到标准 S3 对象存储。'
+        },
+        backup: {
+          title: '备份操作',
+          description: '触发 PostgreSQL、Redis 与全量备份任务。'
+        },
+        history: {
+          title: '备份历史',
+          description: '查看备份任务执行状态、错误与产物信息。'
+        }
+      },
+      form: {
+        sourceMode: '源模式',
+        backupRoot: '备份根目录',
+        retentionDays: '保留天数',
+        keepLast: '至少保留最近任务数',
+        uploadToS3: '上传到 S3',
+        idempotencyKey: '幂等键（可选）',
+        secretConfigured: '已配置，留空不变',
+        postgres: {
+          title: 'PostgreSQL',
+          host: '主机',
+          port: '端口',
+          user: '用户名',
+          password: '密码',
+          database: '数据库',
+          sslMode: 'SSL 模式',
+          containerName: '容器名（docker_exec 模式）'
+        },
+        redis: {
+          title: 'Redis',
+          addr: '地址（host:port）',
+          username: '用户名',
+          password: '密码',
+          db: '数据库编号',
+          containerName: '容器名（docker_exec 模式）'
+        },
+        s3: {
+          enabled: '启用 S3 上传',
+          endpoint: 'Endpoint（可选）',
+          region: 'Region',
+          bucket: 'Bucket',
+          accessKeyID: 'Access Key ID',
+          secretAccessKey: 'Secret Access Key',
+          prefix: '对象前缀',
+          forcePathStyle: '强制 path-style',
+          useSSL: '使用 SSL'
+        }
+      },
+      history: {
+        total: '共 {count} 条',
+        empty: '暂无备份任务',
+        columns: {
+          jobID: '任务 ID',
+          type: '类型',
+          status: '状态',
+          triggeredBy: '触发人',
+          finishedAt: '完成时间',
+          artifact: '产物',
+          error: '错误'
+        },
+        status: {
+          queued: '排队中',
+          running: '执行中',
+          succeeded: '成功',
+          failed: '失败',
+          partial_succeeded: '部分成功'
+        }
+      },
+      actions: {
+        refresh: '刷新状态',
+        disabledHint: '请先启动 backupd 并确认 Socket 可连通。',
+        reloadConfig: '加载配置',
+        saveConfig: '保存配置',
+        configSaved: '配置保存成功',
+        testS3: '测试 S3 连接',
+        s3TestOK: 'S3 连接测试成功',
+        s3TestFailed: 'S3 连接测试失败',
+        createBackup: '创建备份任务',
+        jobCreated: '备份任务已创建：{jobID}（{status}）',
+        refreshJobs: '刷新任务',
+        loadMore: '加载更多'
+      }
     },
 
     // Users Management
