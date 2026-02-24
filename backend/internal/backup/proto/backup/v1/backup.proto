@@ -8,7 +8,17 @@ service BackupService {
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
   rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
+  rpc ListSourceProfiles(ListSourceProfilesRequest) returns (ListSourceProfilesResponse);
+  rpc CreateSourceProfile(CreateSourceProfileRequest) returns (CreateSourceProfileResponse);
+  rpc UpdateSourceProfile(UpdateSourceProfileRequest) returns (UpdateSourceProfileResponse);
+  rpc DeleteSourceProfile(DeleteSourceProfileRequest) returns (DeleteSourceProfileResponse);
+  rpc SetActiveSourceProfile(SetActiveSourceProfileRequest) returns (SetActiveSourceProfileResponse);
   rpc ValidateS3(ValidateS3Request) returns (ValidateS3Response);
+  rpc ListS3Profiles(ListS3ProfilesRequest) returns (ListS3ProfilesResponse);
+  rpc CreateS3Profile(CreateS3ProfileRequest) returns (CreateS3ProfileResponse);
+  rpc UpdateS3Profile(UpdateS3ProfileRequest) returns (UpdateS3ProfileResponse);
+  rpc DeleteS3Profile(DeleteS3ProfileRequest) returns (DeleteS3ProfileResponse);
+  rpc SetActiveS3Profile(SetActiveS3ProfileRequest) returns (SetActiveS3ProfileResponse);
   rpc CreateBackupJob(CreateBackupJobRequest) returns (CreateBackupJobResponse);
   rpc ListBackupJobs(ListBackupJobsRequest) returns (ListBackupJobsResponse);
   rpc GetBackupJob(GetBackupJobRequest) returns (GetBackupJobResponse);
@@ -56,6 +66,9 @@ message BackupConfig {
   SourceConfig postgres = 6;
   SourceConfig redis = 7;
   S3Config s3 = 8;
+  string active_s3_profile_id = 9;
+  string active_postgres_profile_id = 10;
+  string active_redis_profile_id = 11;
 }
 
 message GetConfigRequest {}
@@ -72,6 +85,64 @@ message UpdateConfigResponse {
   BackupConfig config = 1;
 }
 
+message SourceProfile {
+  string source_type = 1;
+  string profile_id = 2;
+  string name = 3;
+  bool is_active = 4;
+  SourceConfig config = 5;
+  bool password_configured = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+message ListSourceProfilesRequest {
+  string source_type = 1;
+}
+
+message ListSourceProfilesResponse {
+  repeated SourceProfile items = 1;
+}
+
+message CreateSourceProfileRequest {
+  string source_type = 1;
+  string profile_id = 2;
+  string name = 3;
+  SourceConfig config = 4;
+  bool set_active = 5;
+}
+
+message CreateSourceProfileResponse {
+  SourceProfile profile = 1;
+}
+
+message UpdateSourceProfileRequest {
+  string source_type = 1;
+  string profile_id = 2;
+  string name = 3;
+  SourceConfig config = 4;
+}
+
+message UpdateSourceProfileResponse {
+  SourceProfile profile = 1;
+}
+
+message DeleteSourceProfileRequest {
+  string source_type = 1;
+  string profile_id = 2;
+}
+
+message DeleteSourceProfileResponse {}
+
+message SetActiveSourceProfileRequest {
+  string source_type = 1;
+  string profile_id = 2;
+}
+
+message SetActiveSourceProfileResponse {
+  SourceProfile profile = 1;
+}
+
 message ValidateS3Request {
   S3Config s3 = 1;
 }
@@ -81,11 +152,65 @@ message ValidateS3Response {
   string message = 2;
 }
 
+message S3Profile {
+  string profile_id = 1;
+  string name = 2;
+  bool is_active = 3;
+  S3Config s3 = 4;
+  bool secret_access_key_configured = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message ListS3ProfilesRequest {}
+
+message ListS3ProfilesResponse {
+  repeated S3Profile items = 1;
+}
+
+message CreateS3ProfileRequest {
+  string profile_id = 1;
+  string name = 2;
+  S3Config s3 = 3;
+  bool set_active = 4;
+}
+
+message CreateS3ProfileResponse {
+  S3Profile profile = 1;
+}
+
+message UpdateS3ProfileRequest {
+  string profile_id = 1;
+  string name = 2;
+  S3Config s3 = 3;
+}
+
+message UpdateS3ProfileResponse {
+  S3Profile profile = 1;
+}
+
+message DeleteS3ProfileRequest {
+  string profile_id = 1;
+}
+
+message DeleteS3ProfileResponse {}
+
+message SetActiveS3ProfileRequest {
+  string profile_id = 1;
+}
+
+message SetActiveS3ProfileResponse {
+  S3Profile profile = 1;
+}
+
 message CreateBackupJobRequest {
   string backup_type = 1;
   bool upload_to_s3 = 2;
   string triggered_by = 3;
   string idempotency_key = 4;
+  string s3_profile_id = 5;
+  string postgres_profile_id = 6;
+  string redis_profile_id = 7;
 }
 
 message BackupArtifact {
@@ -112,6 +237,9 @@ message BackupJob {
   string error_message = 9;
   BackupArtifact artifact = 10;
   BackupS3Object s3_object = 11;
+  string s3_profile_id = 12;
+  string postgres_profile_id = 13;
+  string redis_profile_id = 14;
 }
 
 message CreateBackupJobResponse {

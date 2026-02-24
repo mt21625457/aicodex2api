@@ -89,6 +89,48 @@ func (_c *BackupJobCreate) SetNillableUploadToS3(v *bool) *BackupJobCreate {
 	return _c
 }
 
+// SetS3ProfileID sets the "s3_profile_id" field.
+func (_c *BackupJobCreate) SetS3ProfileID(v string) *BackupJobCreate {
+	_c.mutation.SetS3ProfileID(v)
+	return _c
+}
+
+// SetNillableS3ProfileID sets the "s3_profile_id" field if the given value is not nil.
+func (_c *BackupJobCreate) SetNillableS3ProfileID(v *string) *BackupJobCreate {
+	if v != nil {
+		_c.SetS3ProfileID(*v)
+	}
+	return _c
+}
+
+// SetPostgresProfileID sets the "postgres_profile_id" field.
+func (_c *BackupJobCreate) SetPostgresProfileID(v string) *BackupJobCreate {
+	_c.mutation.SetPostgresProfileID(v)
+	return _c
+}
+
+// SetNillablePostgresProfileID sets the "postgres_profile_id" field if the given value is not nil.
+func (_c *BackupJobCreate) SetNillablePostgresProfileID(v *string) *BackupJobCreate {
+	if v != nil {
+		_c.SetPostgresProfileID(*v)
+	}
+	return _c
+}
+
+// SetRedisProfileID sets the "redis_profile_id" field.
+func (_c *BackupJobCreate) SetRedisProfileID(v string) *BackupJobCreate {
+	_c.mutation.SetRedisProfileID(v)
+	return _c
+}
+
+// SetNillableRedisProfileID sets the "redis_profile_id" field if the given value is not nil.
+func (_c *BackupJobCreate) SetNillableRedisProfileID(v *string) *BackupJobCreate {
+	if v != nil {
+		_c.SetRedisProfileID(*v)
+	}
+	return _c
+}
+
 // SetStartedAt sets the "started_at" field.
 func (_c *BackupJobCreate) SetStartedAt(v time.Time) *BackupJobCreate {
 	_c.mutation.SetStartedAt(v)
@@ -397,6 +439,18 @@ func (_c *BackupJobCreate) createSpec() (*BackupJob, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.UploadToS3(); ok {
 		_spec.SetField(backupjob.FieldUploadToS3, field.TypeBool, value)
 		_node.UploadToS3 = value
+	}
+	if value, ok := _c.mutation.S3ProfileID(); ok {
+		_spec.SetField(backupjob.FieldS3ProfileID, field.TypeString, value)
+		_node.S3ProfileID = value
+	}
+	if value, ok := _c.mutation.PostgresProfileID(); ok {
+		_spec.SetField(backupjob.FieldPostgresProfileID, field.TypeString, value)
+		_node.PostgresProfileID = value
+	}
+	if value, ok := _c.mutation.RedisProfileID(); ok {
+		_spec.SetField(backupjob.FieldRedisProfileID, field.TypeString, value)
+		_node.RedisProfileID = value
 	}
 	if value, ok := _c.mutation.StartedAt(); ok {
 		_spec.SetField(backupjob.FieldStartedAt, field.TypeTime, value)

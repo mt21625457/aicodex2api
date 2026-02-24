@@ -20,6 +20,48 @@ type BackupS3ConfigCreate struct {
 	hooks    []Hook
 }
 
+// SetProfileID sets the "profile_id" field.
+func (_c *BackupS3ConfigCreate) SetProfileID(v string) *BackupS3ConfigCreate {
+	_c.mutation.SetProfileID(v)
+	return _c
+}
+
+// SetNillableProfileID sets the "profile_id" field if the given value is not nil.
+func (_c *BackupS3ConfigCreate) SetNillableProfileID(v *string) *BackupS3ConfigCreate {
+	if v != nil {
+		_c.SetProfileID(*v)
+	}
+	return _c
+}
+
+// SetName sets the "name" field.
+func (_c *BackupS3ConfigCreate) SetName(v string) *BackupS3ConfigCreate {
+	_c.mutation.SetName(v)
+	return _c
+}
+
+// SetNillableName sets the "name" field if the given value is not nil.
+func (_c *BackupS3ConfigCreate) SetNillableName(v *string) *BackupS3ConfigCreate {
+	if v != nil {
+		_c.SetName(*v)
+	}
+	return _c
+}
+
+// SetIsActive sets the "is_active" field.
+func (_c *BackupS3ConfigCreate) SetIsActive(v bool) *BackupS3ConfigCreate {
+	_c.mutation.SetIsActive(v)
+	return _c
+}
+
+// SetNillableIsActive sets the "is_active" field if the given value is not nil.
+func (_c *BackupS3ConfigCreate) SetNillableIsActive(v *bool) *BackupS3ConfigCreate {
+	if v != nil {
+		_c.SetIsActive(*v)
+	}
+	return _c
+}
+
 // SetEnabled sets the "enabled" field.
 func (_c *BackupS3ConfigCreate) SetEnabled(v bool) *BackupS3ConfigCreate {
 	_c.mutation.SetEnabled(v)
@@ -209,6 +251,18 @@ func (_c *BackupS3ConfigCreate) ExecX(ctx context.Context) {
 
 // defaults sets the default values of the builder before save.
 func (_c *BackupS3ConfigCreate) defaults() {
+	if _, ok := _c.mutation.ProfileID(); !ok {
+		v := backups3config.DefaultProfileID
+		_c.mutation.SetProfileID(v)
+	}
+	if _, ok := _c.mutation.Name(); !ok {
+		v := backups3config.DefaultName
+		_c.mutation.SetName(v)
+	}
+	if _, ok := _c.mutation.IsActive(); !ok {
+		v := backups3config.DefaultIsActive
+		_c.mutation.SetIsActive(v)
+	}
 	if _, ok := _c.mutation.Enabled(); !ok {
 		v := backups3config.DefaultEnabled
 		_c.mutation.SetEnabled(v)
@@ -253,6 +307,15 @@ func (_c *BackupS3ConfigCreate) defaults() {
 
 // check runs all checks and user-defined validators on the builder.
 func (_c *BackupS3ConfigCreate) check() error {
+	if _, ok := _c.mutation.ProfileID(); !ok {
+		return &ValidationError{Name: "profile_id", err: errors.New(`ent: missing required field "BackupS3Config.profile_id"`)}
+	}
+	if _, ok := _c.mutation.Name(); !ok {
+		return &ValidationError{Name: "name", err: errors.New(`ent: missing required field "BackupS3Config.name"`)}
+	}
+	if _, ok := _c.mutation.IsActive(); !ok {
+		return &ValidationError{Name: "is_active", err: errors.New(`ent: missing required field "BackupS3Config.is_active"`)}
+	}
 	if _, ok := _c.mutation.Enabled(); !ok {
 		return &ValidationError{Name: "enabled", err: errors.New(`ent: missing required field "BackupS3Config.enabled"`)}
 	}
@@ -309,6 +372,18 @@ func (_c *BackupS3ConfigCreate) createSpec() (*BackupS3Config, *sqlgraph.CreateS
 		_node = &BackupS3Config{config: _c.config}
 		_spec = sqlgraph.NewCreateSpec(backups3config.Table, sqlgraph.NewFieldSpec(backups3config.FieldID, field.TypeInt))
 	)
+	if value, ok := _c.mutation.ProfileID(); ok {
+		_spec.SetField(backups3config.FieldProfileID, field.TypeString, value)
+		_node.ProfileID = value
+	}
+	if value, ok := _c.mutation.Name(); ok {
+		_spec.SetField(backups3config.FieldName, field.TypeString, value)
+		_node.Name = value
+	}
+	if value, ok := _c.mutation.IsActive(); ok {
+		_spec.SetField(backups3config.FieldIsActive, field.TypeBool, value)
+		_node.IsActive = value
+	}
 	if value, ok := _c.mutation.Enabled(); ok {
 		_spec.SetField(backups3config.FieldEnabled, field.TypeBool, value)
 		_node.Enabled = value

@@ -28,11 +28,11 @@ func init() {
 	// backupjob.DefaultUploadToS3 holds the default value on creation for the upload_to_s3 field.
 	backupjob.DefaultUploadToS3 = backupjobDescUploadToS3.Default.(bool)
 	// backupjobDescCreatedAt is the schema descriptor for created_at field.
-	backupjobDescCreatedAt := backupjobFields[15].Descriptor()
+	backupjobDescCreatedAt := backupjobFields[18].Descriptor()
 	// backupjob.DefaultCreatedAt holds the default value on creation for the created_at field.
 	backupjob.DefaultCreatedAt = backupjobDescCreatedAt.Default.(func() time.Time)
 	// backupjobDescUpdatedAt is the schema descriptor for updated_at field.
-	backupjobDescUpdatedAt := backupjobFields[16].Descriptor()
+	backupjobDescUpdatedAt := backupjobFields[19].Descriptor()
 	// backupjob.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	backupjob.DefaultUpdatedAt = backupjobDescUpdatedAt.Default.(func() time.Time)
 	// backupjob.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
@@ -53,44 +53,56 @@ func init() {
 	backupjobevent.DefaultCreatedAt = backupjobeventDescCreatedAt.Default.(func() time.Time)
 	backups3configFields := schema.BackupS3Config{}.Fields()
 	_ = backups3configFields
+	// backups3configDescProfileID is the schema descriptor for profile_id field.
+	backups3configDescProfileID := backups3configFields[0].Descriptor()
+	// backups3config.DefaultProfileID holds the default value on creation for the profile_id field.
+	backups3config.DefaultProfileID = backups3configDescProfileID.Default.(string)
+	// backups3configDescName is the schema descriptor for name field.
+	backups3configDescName := backups3configFields[1].Descriptor()
+	// backups3config.DefaultName holds the default value on creation for the name field.
+	backups3config.DefaultName = backups3configDescName.Default.(string)
+	// backups3configDescIsActive is the schema descriptor for is_active field.
+	backups3configDescIsActive := backups3configFields[2].Descriptor()
+	// backups3config.DefaultIsActive holds the default value on creation for the is_active field.
+	backups3config.DefaultIsActive = backups3configDescIsActive.Default.(bool)
 	// backups3configDescEnabled is the schema descriptor for enabled field.
-	backups3configDescEnabled := backups3configFields[0].Descriptor()
+	backups3configDescEnabled := backups3configFields[3].Descriptor()
 	// backups3config.DefaultEnabled holds the default value on creation for the enabled field.
 	backups3config.DefaultEnabled = backups3configDescEnabled.Default.(bool)
 	// backups3configDescEndpoint is the schema descriptor for endpoint field.
-	backups3configDescEndpoint := backups3configFields[1].Descriptor()
+	backups3configDescEndpoint := backups3configFields[4].Descriptor()
 	// backups3config.DefaultEndpoint holds the default value on creation for the endpoint field.
 	backups3config.DefaultEndpoint = backups3configDescEndpoint.Default.(string)
 	// backups3configDescRegion is the schema descriptor for region field.
-	backups3configDescRegion := backups3configFields[2].Descriptor()
+	backups3configDescRegion := backups3configFields[5].Descriptor()
 	// backups3config.DefaultRegion holds the default value on creation for the region field.
 	backups3config.DefaultRegion = backups3configDescRegion.Default.(string)
 	// backups3configDescBucket is the schema descriptor for bucket field.
-	backups3configDescBucket := backups3configFields[3].Descriptor()
+	backups3configDescBucket := backups3configFields[6].Descriptor()
 	// backups3config.DefaultBucket holds the default value on creation for the bucket field.
 	backups3config.DefaultBucket = backups3configDescBucket.Default.(string)
 	// backups3configDescAccessKeyID is the schema descriptor for access_key_id field.
-	backups3configDescAccessKeyID := backups3configFields[4].Descriptor()
+	backups3configDescAccessKeyID := backups3configFields[7].Descriptor()
 	// backups3config.DefaultAccessKeyID holds the default value on creation for the access_key_id field.
 	backups3config.DefaultAccessKeyID = backups3configDescAccessKeyID.Default.(string)
 	// backups3configDescPrefix is the schema descriptor for prefix field.
-	backups3configDescPrefix := backups3configFields[6].Descriptor()
+	backups3configDescPrefix := backups3configFields[9].Descriptor()
 	// backups3config.DefaultPrefix holds the default value on creation for the prefix field.
 	backups3config.DefaultPrefix = backups3configDescPrefix.Default.(string)
 	// backups3configDescForcePathStyle is the schema descriptor for force_path_style field.
-	backups3configDescForcePathStyle := backups3configFields[7].Descriptor()
+	backups3configDescForcePathStyle := backups3configFields[10].Descriptor()
 	// backups3config.DefaultForcePathStyle holds the default value on creation for the force_path_style field.
 	backups3config.DefaultForcePathStyle = backups3configDescForcePathStyle.Default.(bool)
 	// backups3configDescUseSsl is the schema descriptor for use_ssl field.
-	backups3configDescUseSsl := backups3configFields[8].Descriptor()
+	backups3configDescUseSsl := backups3configFields[11].Descriptor()
 	// backups3config.DefaultUseSsl holds the default value on creation for the use_ssl field.
 	backups3config.DefaultUseSsl = backups3configDescUseSsl.Default.(bool)
 	// backups3configDescCreatedAt is the schema descriptor for created_at field.
-	backups3configDescCreatedAt := backups3configFields[9].Descriptor()
+	backups3configDescCreatedAt := backups3configFields[12].Descriptor()
 	// backups3config.DefaultCreatedAt holds the default value on creation for the created_at field.
 	backups3config.DefaultCreatedAt = backups3configDescCreatedAt.Default.(func() time.Time)
 	// backups3configDescUpdatedAt is the schema descriptor for updated_at field.
-	backups3configDescUpdatedAt := backups3configFields[10].Descriptor()
+	backups3configDescUpdatedAt := backups3configFields[13].Descriptor()
 	// backups3config.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	backups3config.DefaultUpdatedAt = backups3configDescUpdatedAt.Default.(func() time.Time)
 	// backups3config.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
@@ -125,16 +137,20 @@ func init() {
 	backupsetting.UpdateDefaultUpdatedAt = backupsettingDescUpdatedAt.UpdateDefault.(func() time.Time)
 	backupsourceconfigFields := schema.BackupSourceConfig{}.Fields()
 	_ = backupsourceconfigFields
+	// backupsourceconfigDescIsActive is the schema descriptor for is_active field.
+	backupsourceconfigDescIsActive := backupsourceconfigFields[3].Descriptor()
+	// backupsourceconfig.DefaultIsActive holds the default value on creation for the is_active field.
+	backupsourceconfig.DefaultIsActive = backupsourceconfigDescIsActive.Default.(bool)
 	// backupsourceconfigDescContainerName is the schema descriptor for container_name field.
-	backupsourceconfigDescContainerName := backupsourceconfigFields[9].Descriptor()
+	backupsourceconfigDescContainerName := backupsourceconfigFields[12].Descriptor()
 	// backupsourceconfig.DefaultContainerName holds the default value on creation for the container_name field.
 	backupsourceconfig.DefaultContainerName = backupsourceconfigDescContainerName.Default.(string)
 	// backupsourceconfigDescCreatedAt is the schema descriptor for created_at field.
-	backupsourceconfigDescCreatedAt := backupsourceconfigFields[10].Descriptor()
+	backupsourceconfigDescCreatedAt := backupsourceconfigFields[13].Descriptor()
 	// backupsourceconfig.DefaultCreatedAt holds the default value on creation for the created_at field.
 	backupsourceconfig.DefaultCreatedAt = backupsourceconfigDescCreatedAt.Default.(func() time.Time)
 	// backupsourceconfigDescUpdatedAt is the schema descriptor for updated_at field.
-	backupsourceconfigDescUpdatedAt := backupsourceconfigFields[11].Descriptor()
+	backupsourceconfigDescUpdatedAt := backupsourceconfigFields[14].Descriptor()
 	// backupsourceconfig.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	backupsourceconfig.DefaultUpdatedAt = backupsourceconfigDescUpdatedAt.Default.(func() time.Time)
 	// backupsourceconfig.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.

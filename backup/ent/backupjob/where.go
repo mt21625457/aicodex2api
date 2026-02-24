@@ -75,6 +75,21 @@ func UploadToS3(v bool) predicate.BackupJob {
 	return predicate.BackupJob(sql.FieldEQ(FieldUploadToS3, v))
 }
 
+// S3ProfileID applies equality check predicate on the "s3_profile_id" field. It's identical to S3ProfileIDEQ.
+func S3ProfileID(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEQ(FieldS3ProfileID, v))
+}
+
+// PostgresProfileID applies equality check predicate on the "postgres_profile_id" field. It's identical to PostgresProfileIDEQ.
+func PostgresProfileID(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEQ(FieldPostgresProfileID, v))
+}
+
+// RedisProfileID applies equality check predicate on the "redis_profile_id" field. It's identical to RedisProfileIDEQ.
+func RedisProfileID(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEQ(FieldRedisProfileID, v))
+}
+
 // StartedAt applies equality check predicate on the "started_at" field. It's identical to StartedAtEQ.
 func StartedAt(v time.Time) predicate.BackupJob {
 	return predicate.BackupJob(sql.FieldEQ(FieldStartedAt, v))
@@ -383,6 +398,231 @@ func UploadToS3EQ(v bool) predicate.BackupJob {
 // UploadToS3NEQ applies the NEQ predicate on the "upload_to_s3" field.
 func UploadToS3NEQ(v bool) predicate.BackupJob {
 	return predicate.BackupJob(sql.FieldNEQ(FieldUploadToS3, v))
+}
+
+// S3ProfileIDEQ applies the EQ predicate on the "s3_profile_id" field.
+func S3ProfileIDEQ(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEQ(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDNEQ applies the NEQ predicate on the "s3_profile_id" field.
+func S3ProfileIDNEQ(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNEQ(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDIn applies the In predicate on the "s3_profile_id" field.
+func S3ProfileIDIn(vs ...string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldIn(FieldS3ProfileID, vs...))
+}
+
+// S3ProfileIDNotIn applies the NotIn predicate on the "s3_profile_id" field.
+func S3ProfileIDNotIn(vs ...string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNotIn(FieldS3ProfileID, vs...))
+}
+
+// S3ProfileIDGT applies the GT predicate on the "s3_profile_id" field.
+func S3ProfileIDGT(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldGT(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDGTE applies the GTE predicate on the "s3_profile_id" field.
+func S3ProfileIDGTE(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldGTE(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDLT applies the LT predicate on the "s3_profile_id" field.
+func S3ProfileIDLT(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldLT(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDLTE applies the LTE predicate on the "s3_profile_id" field.
+func S3ProfileIDLTE(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldLTE(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDContains applies the Contains predicate on the "s3_profile_id" field.
+func S3ProfileIDContains(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldContains(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDHasPrefix applies the HasPrefix predicate on the "s3_profile_id" field.
+func S3ProfileIDHasPrefix(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldHasPrefix(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDHasSuffix applies the HasSuffix predicate on the "s3_profile_id" field.
+func S3ProfileIDHasSuffix(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldHasSuffix(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDIsNil applies the IsNil predicate on the "s3_profile_id" field.
+func S3ProfileIDIsNil() predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldIsNull(FieldS3ProfileID))
+}
+
+// S3ProfileIDNotNil applies the NotNil predicate on the "s3_profile_id" field.
+func S3ProfileIDNotNil() predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNotNull(FieldS3ProfileID))
+}
+
+// S3ProfileIDEqualFold applies the EqualFold predicate on the "s3_profile_id" field.
+func S3ProfileIDEqualFold(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEqualFold(FieldS3ProfileID, v))
+}
+
+// S3ProfileIDContainsFold applies the ContainsFold predicate on the "s3_profile_id" field.
+func S3ProfileIDContainsFold(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldContainsFold(FieldS3ProfileID, v))
+}
+
+// PostgresProfileIDEQ applies the EQ predicate on the "postgres_profile_id" field.
+func PostgresProfileIDEQ(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEQ(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDNEQ applies the NEQ predicate on the "postgres_profile_id" field.
+func PostgresProfileIDNEQ(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNEQ(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDIn applies the In predicate on the "postgres_profile_id" field.
+func PostgresProfileIDIn(vs ...string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldIn(FieldPostgresProfileID, vs...))
+}
+
+// PostgresProfileIDNotIn applies the NotIn predicate on the "postgres_profile_id" field.
+func PostgresProfileIDNotIn(vs ...string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNotIn(FieldPostgresProfileID, vs...))
+}
+
+// PostgresProfileIDGT applies the GT predicate on the "postgres_profile_id" field.
+func PostgresProfileIDGT(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldGT(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDGTE applies the GTE predicate on the "postgres_profile_id" field.
+func PostgresProfileIDGTE(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldGTE(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDLT applies the LT predicate on the "postgres_profile_id" field.
+func PostgresProfileIDLT(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldLT(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDLTE applies the LTE predicate on the "postgres_profile_id" field.
+func PostgresProfileIDLTE(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldLTE(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDContains applies the Contains predicate on the "postgres_profile_id" field.
+func PostgresProfileIDContains(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldContains(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDHasPrefix applies the HasPrefix predicate on the "postgres_profile_id" field.
+func PostgresProfileIDHasPrefix(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldHasPrefix(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDHasSuffix applies the HasSuffix predicate on the "postgres_profile_id" field.
+func PostgresProfileIDHasSuffix(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldHasSuffix(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDIsNil applies the IsNil predicate on the "postgres_profile_id" field.
+func PostgresProfileIDIsNil() predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldIsNull(FieldPostgresProfileID))
+}
+
+// PostgresProfileIDNotNil applies the NotNil predicate on the "postgres_profile_id" field.
+func PostgresProfileIDNotNil() predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNotNull(FieldPostgresProfileID))
+}
+
+// PostgresProfileIDEqualFold applies the EqualFold predicate on the "postgres_profile_id" field.
+func PostgresProfileIDEqualFold(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEqualFold(FieldPostgresProfileID, v))
+}
+
+// PostgresProfileIDContainsFold applies the ContainsFold predicate on the "postgres_profile_id" field.
+func PostgresProfileIDContainsFold(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldContainsFold(FieldPostgresProfileID, v))
+}
+
+// RedisProfileIDEQ applies the EQ predicate on the "redis_profile_id" field.
+func RedisProfileIDEQ(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEQ(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDNEQ applies the NEQ predicate on the "redis_profile_id" field.
+func RedisProfileIDNEQ(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNEQ(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDIn applies the In predicate on the "redis_profile_id" field.
+func RedisProfileIDIn(vs ...string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldIn(FieldRedisProfileID, vs...))
+}
+
+// RedisProfileIDNotIn applies the NotIn predicate on the "redis_profile_id" field.
+func RedisProfileIDNotIn(vs ...string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNotIn(FieldRedisProfileID, vs...))
+}
+
+// RedisProfileIDGT applies the GT predicate on the "redis_profile_id" field.
+func RedisProfileIDGT(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldGT(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDGTE applies the GTE predicate on the "redis_profile_id" field.
+func RedisProfileIDGTE(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldGTE(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDLT applies the LT predicate on the "redis_profile_id" field.
+func RedisProfileIDLT(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldLT(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDLTE applies the LTE predicate on the "redis_profile_id" field.
+func RedisProfileIDLTE(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldLTE(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDContains applies the Contains predicate on the "redis_profile_id" field.
+func RedisProfileIDContains(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldContains(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDHasPrefix applies the HasPrefix predicate on the "redis_profile_id" field.
+func RedisProfileIDHasPrefix(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldHasPrefix(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDHasSuffix applies the HasSuffix predicate on the "redis_profile_id" field.
+func RedisProfileIDHasSuffix(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldHasSuffix(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDIsNil applies the IsNil predicate on the "redis_profile_id" field.
+func RedisProfileIDIsNil() predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldIsNull(FieldRedisProfileID))
+}
+
+// RedisProfileIDNotNil applies the NotNil predicate on the "redis_profile_id" field.
+func RedisProfileIDNotNil() predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldNotNull(FieldRedisProfileID))
+}
+
+// RedisProfileIDEqualFold applies the EqualFold predicate on the "redis_profile_id" field.
+func RedisProfileIDEqualFold(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldEqualFold(FieldRedisProfileID, v))
+}
+
+// RedisProfileIDContainsFold applies the ContainsFold predicate on the "redis_profile_id" field.
+func RedisProfileIDContainsFold(v string) predicate.BackupJob {
+	return predicate.BackupJob(sql.FieldContainsFold(FieldRedisProfileID, v))
 }
 
 // StartedAtEQ applies the EQ predicate on the "started_at" field.

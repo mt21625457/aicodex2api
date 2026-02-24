@@ -342,17 +342,20 @@ func (x *S3Config) GetUseSsl() bool {
 }
 
 type BackupConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SourceMode    string                 `protobuf:"bytes,1,opt,name=source_mode,json=sourceMode,proto3" json:"source_mode,omitempty"`
-	BackupRoot    string                 `protobuf:"bytes,2,opt,name=backup_root,json=backupRoot,proto3" json:"backup_root,omitempty"`
-	SqlitePath    string                 `protobuf:"bytes,3,opt,name=sqlite_path,json=sqlitePath,proto3" json:"sqlite_path,omitempty"`
-	RetentionDays int32                  `protobuf:"varint,4,opt,name=retention_days,json=retentionDays,proto3" json:"retention_days,omitempty"`
-	KeepLast      int32                  `protobuf:"varint,5,opt,name=keep_last,json=keepLast,proto3" json:"keep_last,omitempty"`
-	Postgres      *SourceConfig          `protobuf:"bytes,6,opt,name=postgres,proto3" json:"postgres,omitempty"`
-	Redis         *SourceConfig          `protobuf:"bytes,7,opt,name=redis,proto3" json:"redis,omitempty"`
-	S3            *S3Config              `protobuf:"bytes,8,opt,name=s3,proto3" json:"s3,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	SourceMode              string                 `protobuf:"bytes,1,opt,name=source_mode,json=sourceMode,proto3" json:"source_mode,omitempty"`
+	BackupRoot              string                 `protobuf:"bytes,2,opt,name=backup_root,json=backupRoot,proto3" json:"backup_root,omitempty"`
+	SqlitePath              string                 `protobuf:"bytes,3,opt,name=sqlite_path,json=sqlitePath,proto3" json:"sqlite_path,omitempty"`
+	RetentionDays           int32                  `protobuf:"varint,4,opt,name=retention_days,json=retentionDays,proto3" json:"retention_days,omitempty"`
+	KeepLast                int32                  `protobuf:"varint,5,opt,name=keep_last,json=keepLast,proto3" json:"keep_last,omitempty"`
+	Postgres                *SourceConfig          `protobuf:"bytes,6,opt,name=postgres,proto3" json:"postgres,omitempty"`
+	Redis                   *SourceConfig          `protobuf:"bytes,7,opt,name=redis,proto3" json:"redis,omitempty"`
+	S3                      *S3Config              `protobuf:"bytes,8,opt,name=s3,proto3" json:"s3,omitempty"`
+	ActiveS3ProfileId       string                 `protobuf:"bytes,9,opt,name=active_s3_profile_id,json=activeS3ProfileId,proto3" json:"active_s3_profile_id,omitempty"`
+	ActivePostgresProfileId string                 `protobuf:"bytes,10,opt,name=active_postgres_profile_id,json=activePostgresProfileId,proto3" json:"active_postgres_profile_id,omitempty"`
+	ActiveRedisProfileId    string                 `protobuf:"bytes,11,opt,name=active_redis_profile_id,json=activeRedisProfileId,proto3" json:"active_redis_profile_id,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *BackupConfig) Reset() {
@@ -439,6 +442,27 @@ func (x *BackupConfig) GetS3() *S3Config {
 		return x.S3
 	}
 	return nil
+}
+
+func (x *BackupConfig) GetActiveS3ProfileId() string {
+	if x != nil {
+		return x.ActiveS3ProfileId
+	}
+	return ""
+}
+
+func (x *BackupConfig) GetActivePostgresProfileId() string {
+	if x != nil {
+		return x.ActivePostgresProfileId
+	}
+	return ""
+}
+
+func (x *BackupConfig) GetActiveRedisProfileId() string {
+	if x != nil {
+		return x.ActiveRedisProfileId
+	}
+	return ""
 }
 
 type GetConfigRequest struct {
@@ -609,6 +633,610 @@ func (x *UpdateConfigResponse) GetConfig() *BackupConfig {
 	return nil
 }
 
+type SourceProfile struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	SourceType         string                 `protobuf:"bytes,1,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	ProfileId          string                 `protobuf:"bytes,2,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	Name               string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	IsActive           bool                   `protobuf:"varint,4,opt,name=is_active,json=isActive,proto3" json:"is_active,omitempty"`
+	Config             *SourceConfig          `protobuf:"bytes,5,opt,name=config,proto3" json:"config,omitempty"`
+	PasswordConfigured bool                   `protobuf:"varint,6,opt,name=password_configured,json=passwordConfigured,proto3" json:"password_configured,omitempty"`
+	CreatedAt          string                 `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt          string                 `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *SourceProfile) Reset() {
+	*x = SourceProfile{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SourceProfile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SourceProfile) ProtoMessage() {}
+
+func (x *SourceProfile) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SourceProfile.ProtoReflect.Descriptor instead.
+func (*SourceProfile) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *SourceProfile) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+func (x *SourceProfile) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+func (x *SourceProfile) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SourceProfile) GetIsActive() bool {
+	if x != nil {
+		return x.IsActive
+	}
+	return false
+}
+
+func (x *SourceProfile) GetConfig() *SourceConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+func (x *SourceProfile) GetPasswordConfigured() bool {
+	if x != nil {
+		return x.PasswordConfigured
+	}
+	return false
+}
+
+func (x *SourceProfile) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *SourceProfile) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
+type ListSourceProfilesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SourceType    string                 `protobuf:"bytes,1,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSourceProfilesRequest) Reset() {
+	*x = ListSourceProfilesRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSourceProfilesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSourceProfilesRequest) ProtoMessage() {}
+
+func (x *ListSourceProfilesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSourceProfilesRequest.ProtoReflect.Descriptor instead.
+func (*ListSourceProfilesRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ListSourceProfilesRequest) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+type ListSourceProfilesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*SourceProfile       `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSourceProfilesResponse) Reset() {
+	*x = ListSourceProfilesResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSourceProfilesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSourceProfilesResponse) ProtoMessage() {}
+
+func (x *ListSourceProfilesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSourceProfilesResponse.ProtoReflect.Descriptor instead.
+func (*ListSourceProfilesResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ListSourceProfilesResponse) GetItems() []*SourceProfile {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type CreateSourceProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SourceType    string                 `protobuf:"bytes,1,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	ProfileId     string                 `protobuf:"bytes,2,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Config        *SourceConfig          `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"`
+	SetActive     bool                   `protobuf:"varint,5,opt,name=set_active,json=setActive,proto3" json:"set_active,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSourceProfileRequest) Reset() {
+	*x = CreateSourceProfileRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSourceProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSourceProfileRequest) ProtoMessage() {}
+
+func (x *CreateSourceProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSourceProfileRequest.ProtoReflect.Descriptor instead.
+func (*CreateSourceProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *CreateSourceProfileRequest) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+func (x *CreateSourceProfileRequest) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+func (x *CreateSourceProfileRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateSourceProfileRequest) GetConfig() *SourceConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+func (x *CreateSourceProfileRequest) GetSetActive() bool {
+	if x != nil {
+		return x.SetActive
+	}
+	return false
+}
+
+type CreateSourceProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *SourceProfile         `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSourceProfileResponse) Reset() {
+	*x = CreateSourceProfileResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSourceProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSourceProfileResponse) ProtoMessage() {}
+
+func (x *CreateSourceProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSourceProfileResponse.ProtoReflect.Descriptor instead.
+func (*CreateSourceProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *CreateSourceProfileResponse) GetProfile() *SourceProfile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+type UpdateSourceProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SourceType    string                 `protobuf:"bytes,1,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	ProfileId     string                 `protobuf:"bytes,2,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Config        *SourceConfig          `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateSourceProfileRequest) Reset() {
+	*x = UpdateSourceProfileRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateSourceProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateSourceProfileRequest) ProtoMessage() {}
+
+func (x *UpdateSourceProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateSourceProfileRequest.ProtoReflect.Descriptor instead.
+func (*UpdateSourceProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *UpdateSourceProfileRequest) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+func (x *UpdateSourceProfileRequest) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+func (x *UpdateSourceProfileRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *UpdateSourceProfileRequest) GetConfig() *SourceConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+type UpdateSourceProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *SourceProfile         `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateSourceProfileResponse) Reset() {
+	*x = UpdateSourceProfileResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateSourceProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateSourceProfileResponse) ProtoMessage() {}
+
+func (x *UpdateSourceProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateSourceProfileResponse.ProtoReflect.Descriptor instead.
+func (*UpdateSourceProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *UpdateSourceProfileResponse) GetProfile() *SourceProfile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+type DeleteSourceProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SourceType    string                 `protobuf:"bytes,1,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	ProfileId     string                 `protobuf:"bytes,2,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSourceProfileRequest) Reset() {
+	*x = DeleteSourceProfileRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSourceProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSourceProfileRequest) ProtoMessage() {}
+
+func (x *DeleteSourceProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSourceProfileRequest.ProtoReflect.Descriptor instead.
+func (*DeleteSourceProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *DeleteSourceProfileRequest) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+func (x *DeleteSourceProfileRequest) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+type DeleteSourceProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSourceProfileResponse) Reset() {
+	*x = DeleteSourceProfileResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSourceProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSourceProfileResponse) ProtoMessage() {}
+
+func (x *DeleteSourceProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSourceProfileResponse.ProtoReflect.Descriptor instead.
+func (*DeleteSourceProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{17}
+}
+
+type SetActiveSourceProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SourceType    string                 `protobuf:"bytes,1,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	ProfileId     string                 `protobuf:"bytes,2,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetActiveSourceProfileRequest) Reset() {
+	*x = SetActiveSourceProfileRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetActiveSourceProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetActiveSourceProfileRequest) ProtoMessage() {}
+
+func (x *SetActiveSourceProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetActiveSourceProfileRequest.ProtoReflect.Descriptor instead.
+func (*SetActiveSourceProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *SetActiveSourceProfileRequest) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+func (x *SetActiveSourceProfileRequest) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+type SetActiveSourceProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *SourceProfile         `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetActiveSourceProfileResponse) Reset() {
+	*x = SetActiveSourceProfileResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetActiveSourceProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetActiveSourceProfileResponse) ProtoMessage() {}
+
+func (x *SetActiveSourceProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetActiveSourceProfileResponse.ProtoReflect.Descriptor instead.
+func (*SetActiveSourceProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *SetActiveSourceProfileResponse) GetProfile() *SourceProfile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
 type ValidateS3Request struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	S3            *S3Config              `protobuf:"bytes,1,opt,name=s3,proto3" json:"s3,omitempty"`
@@ -618,7 +1246,7 @@ type ValidateS3Request struct {
 
 func (x *ValidateS3Request) Reset() {
 	*x = ValidateS3Request{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[9]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -630,7 +1258,7 @@ func (x *ValidateS3Request) String() string {
 func (*ValidateS3Request) ProtoMessage() {}
 
 func (x *ValidateS3Request) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[9]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -643,7 +1271,7 @@ func (x *ValidateS3Request) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateS3Request.ProtoReflect.Descriptor instead.
 func (*ValidateS3Request) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{9}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ValidateS3Request) GetS3() *S3Config {
@@ -663,7 +1291,7 @@ type ValidateS3Response struct {
 
 func (x *ValidateS3Response) Reset() {
 	*x = ValidateS3Response{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[10]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -675,7 +1303,7 @@ func (x *ValidateS3Response) String() string {
 func (*ValidateS3Response) ProtoMessage() {}
 
 func (x *ValidateS3Response) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[10]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -688,7 +1316,7 @@ func (x *ValidateS3Response) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateS3Response.ProtoReflect.Descriptor instead.
 func (*ValidateS3Response) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{10}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ValidateS3Response) GetOk() bool {
@@ -705,19 +1333,578 @@ func (x *ValidateS3Response) GetMessage() string {
 	return ""
 }
 
+type S3Profile struct {
+	state                     protoimpl.MessageState `protogen:"open.v1"`
+	ProfileId                 string                 `protobuf:"bytes,1,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	Name                      string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	IsActive                  bool                   `protobuf:"varint,3,opt,name=is_active,json=isActive,proto3" json:"is_active,omitempty"`
+	S3                        *S3Config              `protobuf:"bytes,4,opt,name=s3,proto3" json:"s3,omitempty"`
+	SecretAccessKeyConfigured bool                   `protobuf:"varint,5,opt,name=secret_access_key_configured,json=secretAccessKeyConfigured,proto3" json:"secret_access_key_configured,omitempty"`
+	CreatedAt                 string                 `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt                 string                 `protobuf:"bytes,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *S3Profile) Reset() {
+	*x = S3Profile{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *S3Profile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*S3Profile) ProtoMessage() {}
+
+func (x *S3Profile) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use S3Profile.ProtoReflect.Descriptor instead.
+func (*S3Profile) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *S3Profile) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+func (x *S3Profile) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *S3Profile) GetIsActive() bool {
+	if x != nil {
+		return x.IsActive
+	}
+	return false
+}
+
+func (x *S3Profile) GetS3() *S3Config {
+	if x != nil {
+		return x.S3
+	}
+	return nil
+}
+
+func (x *S3Profile) GetSecretAccessKeyConfigured() bool {
+	if x != nil {
+		return x.SecretAccessKeyConfigured
+	}
+	return false
+}
+
+func (x *S3Profile) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *S3Profile) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
+type ListS3ProfilesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListS3ProfilesRequest) Reset() {
+	*x = ListS3ProfilesRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListS3ProfilesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListS3ProfilesRequest) ProtoMessage() {}
+
+func (x *ListS3ProfilesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListS3ProfilesRequest.ProtoReflect.Descriptor instead.
+func (*ListS3ProfilesRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{23}
+}
+
+type ListS3ProfilesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*S3Profile           `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListS3ProfilesResponse) Reset() {
+	*x = ListS3ProfilesResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListS3ProfilesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListS3ProfilesResponse) ProtoMessage() {}
+
+func (x *ListS3ProfilesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListS3ProfilesResponse.ProtoReflect.Descriptor instead.
+func (*ListS3ProfilesResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ListS3ProfilesResponse) GetItems() []*S3Profile {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type CreateS3ProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProfileId     string                 `protobuf:"bytes,1,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	S3            *S3Config              `protobuf:"bytes,3,opt,name=s3,proto3" json:"s3,omitempty"`
+	SetActive     bool                   `protobuf:"varint,4,opt,name=set_active,json=setActive,proto3" json:"set_active,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateS3ProfileRequest) Reset() {
+	*x = CreateS3ProfileRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateS3ProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateS3ProfileRequest) ProtoMessage() {}
+
+func (x *CreateS3ProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateS3ProfileRequest.ProtoReflect.Descriptor instead.
+func (*CreateS3ProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *CreateS3ProfileRequest) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+func (x *CreateS3ProfileRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateS3ProfileRequest) GetS3() *S3Config {
+	if x != nil {
+		return x.S3
+	}
+	return nil
+}
+
+func (x *CreateS3ProfileRequest) GetSetActive() bool {
+	if x != nil {
+		return x.SetActive
+	}
+	return false
+}
+
+type CreateS3ProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *S3Profile             `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateS3ProfileResponse) Reset() {
+	*x = CreateS3ProfileResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateS3ProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateS3ProfileResponse) ProtoMessage() {}
+
+func (x *CreateS3ProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateS3ProfileResponse.ProtoReflect.Descriptor instead.
+func (*CreateS3ProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *CreateS3ProfileResponse) GetProfile() *S3Profile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+type UpdateS3ProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProfileId     string                 `protobuf:"bytes,1,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	S3            *S3Config              `protobuf:"bytes,3,opt,name=s3,proto3" json:"s3,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateS3ProfileRequest) Reset() {
+	*x = UpdateS3ProfileRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateS3ProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateS3ProfileRequest) ProtoMessage() {}
+
+func (x *UpdateS3ProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateS3ProfileRequest.ProtoReflect.Descriptor instead.
+func (*UpdateS3ProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *UpdateS3ProfileRequest) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+func (x *UpdateS3ProfileRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *UpdateS3ProfileRequest) GetS3() *S3Config {
+	if x != nil {
+		return x.S3
+	}
+	return nil
+}
+
+type UpdateS3ProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *S3Profile             `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateS3ProfileResponse) Reset() {
+	*x = UpdateS3ProfileResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateS3ProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateS3ProfileResponse) ProtoMessage() {}
+
+func (x *UpdateS3ProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateS3ProfileResponse.ProtoReflect.Descriptor instead.
+func (*UpdateS3ProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *UpdateS3ProfileResponse) GetProfile() *S3Profile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+type DeleteS3ProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProfileId     string                 `protobuf:"bytes,1,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteS3ProfileRequest) Reset() {
+	*x = DeleteS3ProfileRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteS3ProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteS3ProfileRequest) ProtoMessage() {}
+
+func (x *DeleteS3ProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteS3ProfileRequest.ProtoReflect.Descriptor instead.
+func (*DeleteS3ProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *DeleteS3ProfileRequest) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+type DeleteS3ProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteS3ProfileResponse) Reset() {
+	*x = DeleteS3ProfileResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteS3ProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteS3ProfileResponse) ProtoMessage() {}
+
+func (x *DeleteS3ProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteS3ProfileResponse.ProtoReflect.Descriptor instead.
+func (*DeleteS3ProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{30}
+}
+
+type SetActiveS3ProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProfileId     string                 `protobuf:"bytes,1,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetActiveS3ProfileRequest) Reset() {
+	*x = SetActiveS3ProfileRequest{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetActiveS3ProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetActiveS3ProfileRequest) ProtoMessage() {}
+
+func (x *SetActiveS3ProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetActiveS3ProfileRequest.ProtoReflect.Descriptor instead.
+func (*SetActiveS3ProfileRequest) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *SetActiveS3ProfileRequest) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+type SetActiveS3ProfileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Profile       *S3Profile             `protobuf:"bytes,1,opt,name=profile,proto3" json:"profile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetActiveS3ProfileResponse) Reset() {
+	*x = SetActiveS3ProfileResponse{}
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetActiveS3ProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetActiveS3ProfileResponse) ProtoMessage() {}
+
+func (x *SetActiveS3ProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetActiveS3ProfileResponse.ProtoReflect.Descriptor instead.
+func (*SetActiveS3ProfileResponse) Descriptor() ([]byte, []int) {
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *SetActiveS3ProfileResponse) GetProfile() *S3Profile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
 type CreateBackupJobRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	BackupType     string                 `protobuf:"bytes,1,opt,name=backup_type,json=backupType,proto3" json:"backup_type,omitempty"`
-	UploadToS3     bool                   `protobuf:"varint,2,opt,name=upload_to_s3,json=uploadToS3,proto3" json:"upload_to_s3,omitempty"`
-	TriggeredBy    string                 `protobuf:"bytes,3,opt,name=triggered_by,json=triggeredBy,proto3" json:"triggered_by,omitempty"`
-	IdempotencyKey string                 `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	BackupType        string                 `protobuf:"bytes,1,opt,name=backup_type,json=backupType,proto3" json:"backup_type,omitempty"`
+	UploadToS3        bool                   `protobuf:"varint,2,opt,name=upload_to_s3,json=uploadToS3,proto3" json:"upload_to_s3,omitempty"`
+	TriggeredBy       string                 `protobuf:"bytes,3,opt,name=triggered_by,json=triggeredBy,proto3" json:"triggered_by,omitempty"`
+	IdempotencyKey    string                 `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	S3ProfileId       string                 `protobuf:"bytes,5,opt,name=s3_profile_id,json=s3ProfileId,proto3" json:"s3_profile_id,omitempty"`
+	PostgresProfileId string                 `protobuf:"bytes,6,opt,name=postgres_profile_id,json=postgresProfileId,proto3" json:"postgres_profile_id,omitempty"`
+	RedisProfileId    string                 `protobuf:"bytes,7,opt,name=redis_profile_id,json=redisProfileId,proto3" json:"redis_profile_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CreateBackupJobRequest) Reset() {
 	*x = CreateBackupJobRequest{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[11]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -729,7 +1916,7 @@ func (x *CreateBackupJobRequest) String() string {
 func (*CreateBackupJobRequest) ProtoMessage() {}
 
 func (x *CreateBackupJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[11]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -742,7 +1929,7 @@ func (x *CreateBackupJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBackupJobRequest.ProtoReflect.Descriptor instead.
 func (*CreateBackupJobRequest) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{11}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *CreateBackupJobRequest) GetBackupType() string {
@@ -773,6 +1960,27 @@ func (x *CreateBackupJobRequest) GetIdempotencyKey() string {
 	return ""
 }
 
+func (x *CreateBackupJobRequest) GetS3ProfileId() string {
+	if x != nil {
+		return x.S3ProfileId
+	}
+	return ""
+}
+
+func (x *CreateBackupJobRequest) GetPostgresProfileId() string {
+	if x != nil {
+		return x.PostgresProfileId
+	}
+	return ""
+}
+
+func (x *CreateBackupJobRequest) GetRedisProfileId() string {
+	if x != nil {
+		return x.RedisProfileId
+	}
+	return ""
+}
+
 type BackupArtifact struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LocalPath     string                 `protobuf:"bytes,1,opt,name=local_path,json=localPath,proto3" json:"local_path,omitempty"`
@@ -784,7 +1992,7 @@ type BackupArtifact struct {
 
 func (x *BackupArtifact) Reset() {
 	*x = BackupArtifact{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[12]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -796,7 +2004,7 @@ func (x *BackupArtifact) String() string {
 func (*BackupArtifact) ProtoMessage() {}
 
 func (x *BackupArtifact) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[12]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -809,7 +2017,7 @@ func (x *BackupArtifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupArtifact.ProtoReflect.Descriptor instead.
 func (*BackupArtifact) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{12}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *BackupArtifact) GetLocalPath() string {
@@ -844,7 +2052,7 @@ type BackupS3Object struct {
 
 func (x *BackupS3Object) Reset() {
 	*x = BackupS3Object{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[13]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -856,7 +2064,7 @@ func (x *BackupS3Object) String() string {
 func (*BackupS3Object) ProtoMessage() {}
 
 func (x *BackupS3Object) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[13]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -869,7 +2077,7 @@ func (x *BackupS3Object) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupS3Object.ProtoReflect.Descriptor instead.
 func (*BackupS3Object) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{13}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *BackupS3Object) GetBucket() string {
@@ -894,25 +2102,28 @@ func (x *BackupS3Object) GetEtag() string {
 }
 
 type BackupJob struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	JobId          string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	BackupType     string                 `protobuf:"bytes,2,opt,name=backup_type,json=backupType,proto3" json:"backup_type,omitempty"`
-	Status         string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
-	TriggeredBy    string                 `protobuf:"bytes,4,opt,name=triggered_by,json=triggeredBy,proto3" json:"triggered_by,omitempty"`
-	IdempotencyKey string                 `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	UploadToS3     bool                   `protobuf:"varint,6,opt,name=upload_to_s3,json=uploadToS3,proto3" json:"upload_to_s3,omitempty"`
-	StartedAt      string                 `protobuf:"bytes,7,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	FinishedAt     string                 `protobuf:"bytes,8,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
-	ErrorMessage   string                 `protobuf:"bytes,9,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	Artifact       *BackupArtifact        `protobuf:"bytes,10,opt,name=artifact,proto3" json:"artifact,omitempty"`
-	S3Object       *BackupS3Object        `protobuf:"bytes,11,opt,name=s3_object,json=s3Object,proto3" json:"s3_object,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	JobId             string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	BackupType        string                 `protobuf:"bytes,2,opt,name=backup_type,json=backupType,proto3" json:"backup_type,omitempty"`
+	Status            string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	TriggeredBy       string                 `protobuf:"bytes,4,opt,name=triggered_by,json=triggeredBy,proto3" json:"triggered_by,omitempty"`
+	IdempotencyKey    string                 `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	UploadToS3        bool                   `protobuf:"varint,6,opt,name=upload_to_s3,json=uploadToS3,proto3" json:"upload_to_s3,omitempty"`
+	StartedAt         string                 `protobuf:"bytes,7,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	FinishedAt        string                 `protobuf:"bytes,8,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	ErrorMessage      string                 `protobuf:"bytes,9,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	Artifact          *BackupArtifact        `protobuf:"bytes,10,opt,name=artifact,proto3" json:"artifact,omitempty"`
+	S3Object          *BackupS3Object        `protobuf:"bytes,11,opt,name=s3_object,json=s3Object,proto3" json:"s3_object,omitempty"`
+	S3ProfileId       string                 `protobuf:"bytes,12,opt,name=s3_profile_id,json=s3ProfileId,proto3" json:"s3_profile_id,omitempty"`
+	PostgresProfileId string                 `protobuf:"bytes,13,opt,name=postgres_profile_id,json=postgresProfileId,proto3" json:"postgres_profile_id,omitempty"`
+	RedisProfileId    string                 `protobuf:"bytes,14,opt,name=redis_profile_id,json=redisProfileId,proto3" json:"redis_profile_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *BackupJob) Reset() {
 	*x = BackupJob{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[14]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -924,7 +2135,7 @@ func (x *BackupJob) String() string {
 func (*BackupJob) ProtoMessage() {}
 
 func (x *BackupJob) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[14]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -937,7 +2148,7 @@ func (x *BackupJob) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupJob.ProtoReflect.Descriptor instead.
 func (*BackupJob) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{14}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *BackupJob) GetJobId() string {
@@ -1017,6 +2228,27 @@ func (x *BackupJob) GetS3Object() *BackupS3Object {
 	return nil
 }
 
+func (x *BackupJob) GetS3ProfileId() string {
+	if x != nil {
+		return x.S3ProfileId
+	}
+	return ""
+}
+
+func (x *BackupJob) GetPostgresProfileId() string {
+	if x != nil {
+		return x.PostgresProfileId
+	}
+	return ""
+}
+
+func (x *BackupJob) GetRedisProfileId() string {
+	if x != nil {
+		return x.RedisProfileId
+	}
+	return ""
+}
+
 type CreateBackupJobResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Job           *BackupJob             `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
@@ -1026,7 +2258,7 @@ type CreateBackupJobResponse struct {
 
 func (x *CreateBackupJobResponse) Reset() {
 	*x = CreateBackupJobResponse{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[15]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1038,7 +2270,7 @@ func (x *CreateBackupJobResponse) String() string {
 func (*CreateBackupJobResponse) ProtoMessage() {}
 
 func (x *CreateBackupJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[15]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1051,7 +2283,7 @@ func (x *CreateBackupJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBackupJobResponse.ProtoReflect.Descriptor instead.
 func (*CreateBackupJobResponse) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{15}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *CreateBackupJobResponse) GetJob() *BackupJob {
@@ -1073,7 +2305,7 @@ type ListBackupJobsRequest struct {
 
 func (x *ListBackupJobsRequest) Reset() {
 	*x = ListBackupJobsRequest{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[16]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1085,7 +2317,7 @@ func (x *ListBackupJobsRequest) String() string {
 func (*ListBackupJobsRequest) ProtoMessage() {}
 
 func (x *ListBackupJobsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[16]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1098,7 +2330,7 @@ func (x *ListBackupJobsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackupJobsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackupJobsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{16}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListBackupJobsRequest) GetPageSize() int32 {
@@ -1139,7 +2371,7 @@ type ListBackupJobsResponse struct {
 
 func (x *ListBackupJobsResponse) Reset() {
 	*x = ListBackupJobsResponse{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[17]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1151,7 +2383,7 @@ func (x *ListBackupJobsResponse) String() string {
 func (*ListBackupJobsResponse) ProtoMessage() {}
 
 func (x *ListBackupJobsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[17]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1164,7 +2396,7 @@ func (x *ListBackupJobsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackupJobsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackupJobsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{17}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListBackupJobsResponse) GetItems() []*BackupJob {
@@ -1190,7 +2422,7 @@ type GetBackupJobRequest struct {
 
 func (x *GetBackupJobRequest) Reset() {
 	*x = GetBackupJobRequest{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[18]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1202,7 +2434,7 @@ func (x *GetBackupJobRequest) String() string {
 func (*GetBackupJobRequest) ProtoMessage() {}
 
 func (x *GetBackupJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[18]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1215,7 +2447,7 @@ func (x *GetBackupJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBackupJobRequest.ProtoReflect.Descriptor instead.
 func (*GetBackupJobRequest) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{18}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *GetBackupJobRequest) GetJobId() string {
@@ -1234,7 +2466,7 @@ type GetBackupJobResponse struct {
 
 func (x *GetBackupJobResponse) Reset() {
 	*x = GetBackupJobResponse{}
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[19]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1246,7 +2478,7 @@ func (x *GetBackupJobResponse) String() string {
 func (*GetBackupJobResponse) ProtoMessage() {}
 
 func (x *GetBackupJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_backup_v1_backup_proto_msgTypes[19]
+	mi := &file_proto_backup_v1_backup_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1259,7 +2491,7 @@ func (x *GetBackupJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBackupJobResponse.ProtoReflect.Descriptor instead.
 func (*GetBackupJobResponse) Descriptor() ([]byte, []int) {
-	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{19}
+	return file_proto_backup_v1_backup_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *GetBackupJobResponse) GetJob() *BackupJob {
@@ -1300,7 +2532,7 @@ const file_proto_backup_v1_backup_proto_rawDesc = "" +
 	"\x11secret_access_key\x18\x06 \x01(\tR\x0fsecretAccessKey\x12\x16\n" +
 	"\x06prefix\x18\a \x01(\tR\x06prefix\x12(\n" +
 	"\x10force_path_style\x18\b \x01(\bR\x0eforcePathStyle\x12\x17\n" +
-	"\ause_ssl\x18\t \x01(\bR\x06useSsl\"\xbe\x02\n" +
+	"\ause_ssl\x18\t \x01(\bR\x06useSsl\"\xe3\x03\n" +
 	"\fBackupConfig\x12\x1f\n" +
 	"\vsource_mode\x18\x01 \x01(\tR\n" +
 	"sourceMode\x12\x1f\n" +
@@ -1312,26 +2544,123 @@ const file_proto_backup_v1_backup_proto_rawDesc = "" +
 	"\tkeep_last\x18\x05 \x01(\x05R\bkeepLast\x123\n" +
 	"\bpostgres\x18\x06 \x01(\v2\x17.backup.v1.SourceConfigR\bpostgres\x12-\n" +
 	"\x05redis\x18\a \x01(\v2\x17.backup.v1.SourceConfigR\x05redis\x12#\n" +
-	"\x02s3\x18\b \x01(\v2\x13.backup.v1.S3ConfigR\x02s3\"\x12\n" +
+	"\x02s3\x18\b \x01(\v2\x13.backup.v1.S3ConfigR\x02s3\x12/\n" +
+	"\x14active_s3_profile_id\x18\t \x01(\tR\x11activeS3ProfileId\x12;\n" +
+	"\x1aactive_postgres_profile_id\x18\n" +
+	" \x01(\tR\x17activePostgresProfileId\x125\n" +
+	"\x17active_redis_profile_id\x18\v \x01(\tR\x14activeRedisProfileId\"\x12\n" +
 	"\x10GetConfigRequest\"D\n" +
 	"\x11GetConfigResponse\x12/\n" +
 	"\x06config\x18\x01 \x01(\v2\x17.backup.v1.BackupConfigR\x06config\"F\n" +
 	"\x13UpdateConfigRequest\x12/\n" +
 	"\x06config\x18\x01 \x01(\v2\x17.backup.v1.BackupConfigR\x06config\"G\n" +
 	"\x14UpdateConfigResponse\x12/\n" +
-	"\x06config\x18\x01 \x01(\v2\x17.backup.v1.BackupConfigR\x06config\"8\n" +
+	"\x06config\x18\x01 \x01(\v2\x17.backup.v1.BackupConfigR\x06config\"\xa0\x02\n" +
+	"\rSourceProfile\x12\x1f\n" +
+	"\vsource_type\x18\x01 \x01(\tR\n" +
+	"sourceType\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x02 \x01(\tR\tprofileId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x1b\n" +
+	"\tis_active\x18\x04 \x01(\bR\bisActive\x12/\n" +
+	"\x06config\x18\x05 \x01(\v2\x17.backup.v1.SourceConfigR\x06config\x12/\n" +
+	"\x13password_configured\x18\x06 \x01(\bR\x12passwordConfigured\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\b \x01(\tR\tupdatedAt\"<\n" +
+	"\x19ListSourceProfilesRequest\x12\x1f\n" +
+	"\vsource_type\x18\x01 \x01(\tR\n" +
+	"sourceType\"L\n" +
+	"\x1aListSourceProfilesResponse\x12.\n" +
+	"\x05items\x18\x01 \x03(\v2\x18.backup.v1.SourceProfileR\x05items\"\xc0\x01\n" +
+	"\x1aCreateSourceProfileRequest\x12\x1f\n" +
+	"\vsource_type\x18\x01 \x01(\tR\n" +
+	"sourceType\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x02 \x01(\tR\tprofileId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12/\n" +
+	"\x06config\x18\x04 \x01(\v2\x17.backup.v1.SourceConfigR\x06config\x12\x1d\n" +
+	"\n" +
+	"set_active\x18\x05 \x01(\bR\tsetActive\"Q\n" +
+	"\x1bCreateSourceProfileResponse\x122\n" +
+	"\aprofile\x18\x01 \x01(\v2\x18.backup.v1.SourceProfileR\aprofile\"\xa1\x01\n" +
+	"\x1aUpdateSourceProfileRequest\x12\x1f\n" +
+	"\vsource_type\x18\x01 \x01(\tR\n" +
+	"sourceType\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x02 \x01(\tR\tprofileId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12/\n" +
+	"\x06config\x18\x04 \x01(\v2\x17.backup.v1.SourceConfigR\x06config\"Q\n" +
+	"\x1bUpdateSourceProfileResponse\x122\n" +
+	"\aprofile\x18\x01 \x01(\v2\x18.backup.v1.SourceProfileR\aprofile\"\\\n" +
+	"\x1aDeleteSourceProfileRequest\x12\x1f\n" +
+	"\vsource_type\x18\x01 \x01(\tR\n" +
+	"sourceType\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x02 \x01(\tR\tprofileId\"\x1d\n" +
+	"\x1bDeleteSourceProfileResponse\"_\n" +
+	"\x1dSetActiveSourceProfileRequest\x12\x1f\n" +
+	"\vsource_type\x18\x01 \x01(\tR\n" +
+	"sourceType\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x02 \x01(\tR\tprofileId\"T\n" +
+	"\x1eSetActiveSourceProfileResponse\x122\n" +
+	"\aprofile\x18\x01 \x01(\v2\x18.backup.v1.SourceProfileR\aprofile\"8\n" +
 	"\x11ValidateS3Request\x12#\n" +
 	"\x02s3\x18\x01 \x01(\v2\x13.backup.v1.S3ConfigR\x02s3\">\n" +
 	"\x12ValidateS3Response\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xa7\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xff\x01\n" +
+	"\tS3Profile\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x01 \x01(\tR\tprofileId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
+	"\tis_active\x18\x03 \x01(\bR\bisActive\x12#\n" +
+	"\x02s3\x18\x04 \x01(\v2\x13.backup.v1.S3ConfigR\x02s3\x12?\n" +
+	"\x1csecret_access_key_configured\x18\x05 \x01(\bR\x19secretAccessKeyConfigured\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\a \x01(\tR\tupdatedAt\"\x17\n" +
+	"\x15ListS3ProfilesRequest\"D\n" +
+	"\x16ListS3ProfilesResponse\x12*\n" +
+	"\x05items\x18\x01 \x03(\v2\x14.backup.v1.S3ProfileR\x05items\"\x8f\x01\n" +
+	"\x16CreateS3ProfileRequest\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x01 \x01(\tR\tprofileId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12#\n" +
+	"\x02s3\x18\x03 \x01(\v2\x13.backup.v1.S3ConfigR\x02s3\x12\x1d\n" +
+	"\n" +
+	"set_active\x18\x04 \x01(\bR\tsetActive\"I\n" +
+	"\x17CreateS3ProfileResponse\x12.\n" +
+	"\aprofile\x18\x01 \x01(\v2\x14.backup.v1.S3ProfileR\aprofile\"p\n" +
+	"\x16UpdateS3ProfileRequest\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x01 \x01(\tR\tprofileId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12#\n" +
+	"\x02s3\x18\x03 \x01(\v2\x13.backup.v1.S3ConfigR\x02s3\"I\n" +
+	"\x17UpdateS3ProfileResponse\x12.\n" +
+	"\aprofile\x18\x01 \x01(\v2\x14.backup.v1.S3ProfileR\aprofile\"7\n" +
+	"\x16DeleteS3ProfileRequest\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x01 \x01(\tR\tprofileId\"\x19\n" +
+	"\x17DeleteS3ProfileResponse\":\n" +
+	"\x19SetActiveS3ProfileRequest\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\x01 \x01(\tR\tprofileId\"L\n" +
+	"\x1aSetActiveS3ProfileResponse\x12.\n" +
+	"\aprofile\x18\x01 \x01(\v2\x14.backup.v1.S3ProfileR\aprofile\"\xa5\x02\n" +
 	"\x16CreateBackupJobRequest\x12\x1f\n" +
 	"\vbackup_type\x18\x01 \x01(\tR\n" +
 	"backupType\x12 \n" +
 	"\fupload_to_s3\x18\x02 \x01(\bR\n" +
 	"uploadToS3\x12!\n" +
 	"\ftriggered_by\x18\x03 \x01(\tR\vtriggeredBy\x12'\n" +
-	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"f\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12\"\n" +
+	"\rs3_profile_id\x18\x05 \x01(\tR\vs3ProfileId\x12.\n" +
+	"\x13postgres_profile_id\x18\x06 \x01(\tR\x11postgresProfileId\x12(\n" +
+	"\x10redis_profile_id\x18\a \x01(\tR\x0eredisProfileId\"f\n" +
 	"\x0eBackupArtifact\x12\x1d\n" +
 	"\n" +
 	"local_path\x18\x01 \x01(\tR\tlocalPath\x12\x1d\n" +
@@ -1341,7 +2670,7 @@ const file_proto_backup_v1_backup_proto_rawDesc = "" +
 	"\x0eBackupS3Object\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x12\n" +
-	"\x04etag\x18\x03 \x01(\tR\x04etag\"\x9d\x03\n" +
+	"\x04etag\x18\x03 \x01(\tR\x04etag\"\x9b\x04\n" +
 	"\tBackupJob\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1f\n" +
 	"\vbackup_type\x18\x02 \x01(\tR\n" +
@@ -1358,7 +2687,10 @@ const file_proto_backup_v1_backup_proto_rawDesc = "" +
 	"\rerror_message\x18\t \x01(\tR\ferrorMessage\x125\n" +
 	"\bartifact\x18\n" +
 	" \x01(\v2\x19.backup.v1.BackupArtifactR\bartifact\x126\n" +
-	"\ts3_object\x18\v \x01(\v2\x19.backup.v1.BackupS3ObjectR\bs3Object\"A\n" +
+	"\ts3_object\x18\v \x01(\v2\x19.backup.v1.BackupS3ObjectR\bs3Object\x12\"\n" +
+	"\rs3_profile_id\x18\f \x01(\tR\vs3ProfileId\x12.\n" +
+	"\x13postgres_profile_id\x18\r \x01(\tR\x11postgresProfileId\x12(\n" +
+	"\x10redis_profile_id\x18\x0e \x01(\tR\x0eredisProfileId\"A\n" +
 	"\x17CreateBackupJobResponse\x12&\n" +
 	"\x03job\x18\x01 \x01(\v2\x14.backup.v1.BackupJobR\x03job\"\x8c\x01\n" +
 	"\x15ListBackupJobsRequest\x12\x1b\n" +
@@ -1374,13 +2706,23 @@ const file_proto_backup_v1_backup_proto_rawDesc = "" +
 	"\x13GetBackupJobRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\">\n" +
 	"\x14GetBackupJobResponse\x12&\n" +
-	"\x03job\x18\x01 \x01(\v2\x14.backup.v1.BackupJobR\x03job2\xb4\x04\n" +
+	"\x03job\x18\x01 \x01(\v2\x14.backup.v1.BackupJobR\x03job2\x80\f\n" +
 	"\rBackupService\x12=\n" +
 	"\x06Health\x12\x18.backup.v1.HealthRequest\x1a\x19.backup.v1.HealthResponse\x12F\n" +
 	"\tGetConfig\x12\x1b.backup.v1.GetConfigRequest\x1a\x1c.backup.v1.GetConfigResponse\x12O\n" +
-	"\fUpdateConfig\x12\x1e.backup.v1.UpdateConfigRequest\x1a\x1f.backup.v1.UpdateConfigResponse\x12I\n" +
+	"\fUpdateConfig\x12\x1e.backup.v1.UpdateConfigRequest\x1a\x1f.backup.v1.UpdateConfigResponse\x12a\n" +
+	"\x12ListSourceProfiles\x12$.backup.v1.ListSourceProfilesRequest\x1a%.backup.v1.ListSourceProfilesResponse\x12d\n" +
+	"\x13CreateSourceProfile\x12%.backup.v1.CreateSourceProfileRequest\x1a&.backup.v1.CreateSourceProfileResponse\x12d\n" +
+	"\x13UpdateSourceProfile\x12%.backup.v1.UpdateSourceProfileRequest\x1a&.backup.v1.UpdateSourceProfileResponse\x12d\n" +
+	"\x13DeleteSourceProfile\x12%.backup.v1.DeleteSourceProfileRequest\x1a&.backup.v1.DeleteSourceProfileResponse\x12m\n" +
+	"\x16SetActiveSourceProfile\x12(.backup.v1.SetActiveSourceProfileRequest\x1a).backup.v1.SetActiveSourceProfileResponse\x12I\n" +
 	"\n" +
-	"ValidateS3\x12\x1c.backup.v1.ValidateS3Request\x1a\x1d.backup.v1.ValidateS3Response\x12X\n" +
+	"ValidateS3\x12\x1c.backup.v1.ValidateS3Request\x1a\x1d.backup.v1.ValidateS3Response\x12U\n" +
+	"\x0eListS3Profiles\x12 .backup.v1.ListS3ProfilesRequest\x1a!.backup.v1.ListS3ProfilesResponse\x12X\n" +
+	"\x0fCreateS3Profile\x12!.backup.v1.CreateS3ProfileRequest\x1a\".backup.v1.CreateS3ProfileResponse\x12X\n" +
+	"\x0fUpdateS3Profile\x12!.backup.v1.UpdateS3ProfileRequest\x1a\".backup.v1.UpdateS3ProfileResponse\x12X\n" +
+	"\x0fDeleteS3Profile\x12!.backup.v1.DeleteS3ProfileRequest\x1a\".backup.v1.DeleteS3ProfileResponse\x12a\n" +
+	"\x12SetActiveS3Profile\x12$.backup.v1.SetActiveS3ProfileRequest\x1a%.backup.v1.SetActiveS3ProfileResponse\x12X\n" +
 	"\x0fCreateBackupJob\x12!.backup.v1.CreateBackupJobRequest\x1a\".backup.v1.CreateBackupJobResponse\x12U\n" +
 	"\x0eListBackupJobs\x12 .backup.v1.ListBackupJobsRequest\x1a!.backup.v1.ListBackupJobsResponse\x12O\n" +
 	"\fGetBackupJob\x12\x1e.backup.v1.GetBackupJobRequest\x1a\x1f.backup.v1.GetBackupJobResponseB=Z;github.com/Wei-Shaw/sub2api/backup/proto/backup/v1;backupv1b\x06proto3"
@@ -1397,28 +2739,50 @@ func file_proto_backup_v1_backup_proto_rawDescGZIP() []byte {
 	return file_proto_backup_v1_backup_proto_rawDescData
 }
 
-var file_proto_backup_v1_backup_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_proto_backup_v1_backup_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_proto_backup_v1_backup_proto_goTypes = []any{
-	(*HealthRequest)(nil),           // 0: backup.v1.HealthRequest
-	(*HealthResponse)(nil),          // 1: backup.v1.HealthResponse
-	(*SourceConfig)(nil),            // 2: backup.v1.SourceConfig
-	(*S3Config)(nil),                // 3: backup.v1.S3Config
-	(*BackupConfig)(nil),            // 4: backup.v1.BackupConfig
-	(*GetConfigRequest)(nil),        // 5: backup.v1.GetConfigRequest
-	(*GetConfigResponse)(nil),       // 6: backup.v1.GetConfigResponse
-	(*UpdateConfigRequest)(nil),     // 7: backup.v1.UpdateConfigRequest
-	(*UpdateConfigResponse)(nil),    // 8: backup.v1.UpdateConfigResponse
-	(*ValidateS3Request)(nil),       // 9: backup.v1.ValidateS3Request
-	(*ValidateS3Response)(nil),      // 10: backup.v1.ValidateS3Response
-	(*CreateBackupJobRequest)(nil),  // 11: backup.v1.CreateBackupJobRequest
-	(*BackupArtifact)(nil),          // 12: backup.v1.BackupArtifact
-	(*BackupS3Object)(nil),          // 13: backup.v1.BackupS3Object
-	(*BackupJob)(nil),               // 14: backup.v1.BackupJob
-	(*CreateBackupJobResponse)(nil), // 15: backup.v1.CreateBackupJobResponse
-	(*ListBackupJobsRequest)(nil),   // 16: backup.v1.ListBackupJobsRequest
-	(*ListBackupJobsResponse)(nil),  // 17: backup.v1.ListBackupJobsResponse
-	(*GetBackupJobRequest)(nil),     // 18: backup.v1.GetBackupJobRequest
-	(*GetBackupJobResponse)(nil),    // 19: backup.v1.GetBackupJobResponse
+	(*HealthRequest)(nil),                  // 0: backup.v1.HealthRequest
+	(*HealthResponse)(nil),                 // 1: backup.v1.HealthResponse
+	(*SourceConfig)(nil),                   // 2: backup.v1.SourceConfig
+	(*S3Config)(nil),                       // 3: backup.v1.S3Config
+	(*BackupConfig)(nil),                   // 4: backup.v1.BackupConfig
+	(*GetConfigRequest)(nil),               // 5: backup.v1.GetConfigRequest
+	(*GetConfigResponse)(nil),              // 6: backup.v1.GetConfigResponse
+	(*UpdateConfigRequest)(nil),            // 7: backup.v1.UpdateConfigRequest
+	(*UpdateConfigResponse)(nil),           // 8: backup.v1.UpdateConfigResponse
+	(*SourceProfile)(nil),                  // 9: backup.v1.SourceProfile
+	(*ListSourceProfilesRequest)(nil),      // 10: backup.v1.ListSourceProfilesRequest
+	(*ListSourceProfilesResponse)(nil),     // 11: backup.v1.ListSourceProfilesResponse
+	(*CreateSourceProfileRequest)(nil),     // 12: backup.v1.CreateSourceProfileRequest
+	(*CreateSourceProfileResponse)(nil),    // 13: backup.v1.CreateSourceProfileResponse
+	(*UpdateSourceProfileRequest)(nil),     // 14: backup.v1.UpdateSourceProfileRequest
+	(*UpdateSourceProfileResponse)(nil),    // 15: backup.v1.UpdateSourceProfileResponse
+	(*DeleteSourceProfileRequest)(nil),     // 16: backup.v1.DeleteSourceProfileRequest
+	(*DeleteSourceProfileResponse)(nil),    // 17: backup.v1.DeleteSourceProfileResponse
+	(*SetActiveSourceProfileRequest)(nil),  // 18: backup.v1.SetActiveSourceProfileRequest
+	(*SetActiveSourceProfileResponse)(nil), // 19: backup.v1.SetActiveSourceProfileResponse
+	(*ValidateS3Request)(nil),              // 20: backup.v1.ValidateS3Request
+	(*ValidateS3Response)(nil),             // 21: backup.v1.ValidateS3Response
+	(*S3Profile)(nil),                      // 22: backup.v1.S3Profile
+	(*ListS3ProfilesRequest)(nil),          // 23: backup.v1.ListS3ProfilesRequest
+	(*ListS3ProfilesResponse)(nil),         // 24: backup.v1.ListS3ProfilesResponse
+	(*CreateS3ProfileRequest)(nil),         // 25: backup.v1.CreateS3ProfileRequest
+	(*CreateS3ProfileResponse)(nil),        // 26: backup.v1.CreateS3ProfileResponse
+	(*UpdateS3ProfileRequest)(nil),         // 27: backup.v1.UpdateS3ProfileRequest
+	(*UpdateS3ProfileResponse)(nil),        // 28: backup.v1.UpdateS3ProfileResponse
+	(*DeleteS3ProfileRequest)(nil),         // 29: backup.v1.DeleteS3ProfileRequest
+	(*DeleteS3ProfileResponse)(nil),        // 30: backup.v1.DeleteS3ProfileResponse
+	(*SetActiveS3ProfileRequest)(nil),      // 31: backup.v1.SetActiveS3ProfileRequest
+	(*SetActiveS3ProfileResponse)(nil),     // 32: backup.v1.SetActiveS3ProfileResponse
+	(*CreateBackupJobRequest)(nil),         // 33: backup.v1.CreateBackupJobRequest
+	(*BackupArtifact)(nil),                 // 34: backup.v1.BackupArtifact
+	(*BackupS3Object)(nil),                 // 35: backup.v1.BackupS3Object
+	(*BackupJob)(nil),                      // 36: backup.v1.BackupJob
+	(*CreateBackupJobResponse)(nil),        // 37: backup.v1.CreateBackupJobResponse
+	(*ListBackupJobsRequest)(nil),          // 38: backup.v1.ListBackupJobsRequest
+	(*ListBackupJobsResponse)(nil),         // 39: backup.v1.ListBackupJobsResponse
+	(*GetBackupJobRequest)(nil),            // 40: backup.v1.GetBackupJobRequest
+	(*GetBackupJobResponse)(nil),           // 41: backup.v1.GetBackupJobResponse
 }
 var file_proto_backup_v1_backup_proto_depIdxs = []int32{
 	2,  // 0: backup.v1.BackupConfig.postgres:type_name -> backup.v1.SourceConfig
@@ -1427,31 +2791,65 @@ var file_proto_backup_v1_backup_proto_depIdxs = []int32{
 	4,  // 3: backup.v1.GetConfigResponse.config:type_name -> backup.v1.BackupConfig
 	4,  // 4: backup.v1.UpdateConfigRequest.config:type_name -> backup.v1.BackupConfig
 	4,  // 5: backup.v1.UpdateConfigResponse.config:type_name -> backup.v1.BackupConfig
-	3,  // 6: backup.v1.ValidateS3Request.s3:type_name -> backup.v1.S3Config
-	12, // 7: backup.v1.BackupJob.artifact:type_name -> backup.v1.BackupArtifact
-	13, // 8: backup.v1.BackupJob.s3_object:type_name -> backup.v1.BackupS3Object
-	14, // 9: backup.v1.CreateBackupJobResponse.job:type_name -> backup.v1.BackupJob
-	14, // 10: backup.v1.ListBackupJobsResponse.items:type_name -> backup.v1.BackupJob
-	14, // 11: backup.v1.GetBackupJobResponse.job:type_name -> backup.v1.BackupJob
-	0,  // 12: backup.v1.BackupService.Health:input_type -> backup.v1.HealthRequest
-	5,  // 13: backup.v1.BackupService.GetConfig:input_type -> backup.v1.GetConfigRequest
-	7,  // 14: backup.v1.BackupService.UpdateConfig:input_type -> backup.v1.UpdateConfigRequest
-	9,  // 15: backup.v1.BackupService.ValidateS3:input_type -> backup.v1.ValidateS3Request
-	11, // 16: backup.v1.BackupService.CreateBackupJob:input_type -> backup.v1.CreateBackupJobRequest
-	16, // 17: backup.v1.BackupService.ListBackupJobs:input_type -> backup.v1.ListBackupJobsRequest
-	18, // 18: backup.v1.BackupService.GetBackupJob:input_type -> backup.v1.GetBackupJobRequest
-	1,  // 19: backup.v1.BackupService.Health:output_type -> backup.v1.HealthResponse
-	6,  // 20: backup.v1.BackupService.GetConfig:output_type -> backup.v1.GetConfigResponse
-	8,  // 21: backup.v1.BackupService.UpdateConfig:output_type -> backup.v1.UpdateConfigResponse
-	10, // 22: backup.v1.BackupService.ValidateS3:output_type -> backup.v1.ValidateS3Response
-	15, // 23: backup.v1.BackupService.CreateBackupJob:output_type -> backup.v1.CreateBackupJobResponse
-	17, // 24: backup.v1.BackupService.ListBackupJobs:output_type -> backup.v1.ListBackupJobsResponse
-	19, // 25: backup.v1.BackupService.GetBackupJob:output_type -> backup.v1.GetBackupJobResponse
-	19, // [19:26] is the sub-list for method output_type
-	12, // [12:19] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	2,  // 6: backup.v1.SourceProfile.config:type_name -> backup.v1.SourceConfig
+	9,  // 7: backup.v1.ListSourceProfilesResponse.items:type_name -> backup.v1.SourceProfile
+	2,  // 8: backup.v1.CreateSourceProfileRequest.config:type_name -> backup.v1.SourceConfig
+	9,  // 9: backup.v1.CreateSourceProfileResponse.profile:type_name -> backup.v1.SourceProfile
+	2,  // 10: backup.v1.UpdateSourceProfileRequest.config:type_name -> backup.v1.SourceConfig
+	9,  // 11: backup.v1.UpdateSourceProfileResponse.profile:type_name -> backup.v1.SourceProfile
+	9,  // 12: backup.v1.SetActiveSourceProfileResponse.profile:type_name -> backup.v1.SourceProfile
+	3,  // 13: backup.v1.ValidateS3Request.s3:type_name -> backup.v1.S3Config
+	3,  // 14: backup.v1.S3Profile.s3:type_name -> backup.v1.S3Config
+	22, // 15: backup.v1.ListS3ProfilesResponse.items:type_name -> backup.v1.S3Profile
+	3,  // 16: backup.v1.CreateS3ProfileRequest.s3:type_name -> backup.v1.S3Config
+	22, // 17: backup.v1.CreateS3ProfileResponse.profile:type_name -> backup.v1.S3Profile
+	3,  // 18: backup.v1.UpdateS3ProfileRequest.s3:type_name -> backup.v1.S3Config
+	22, // 19: backup.v1.UpdateS3ProfileResponse.profile:type_name -> backup.v1.S3Profile
+	22, // 20: backup.v1.SetActiveS3ProfileResponse.profile:type_name -> backup.v1.S3Profile
+	34, // 21: backup.v1.BackupJob.artifact:type_name -> backup.v1.BackupArtifact
+	35, // 22: backup.v1.BackupJob.s3_object:type_name -> backup.v1.BackupS3Object
+	36, // 23: backup.v1.CreateBackupJobResponse.job:type_name -> backup.v1.BackupJob
+	36, // 24: backup.v1.ListBackupJobsResponse.items:type_name -> backup.v1.BackupJob
+	36, // 25: backup.v1.GetBackupJobResponse.job:type_name -> backup.v1.BackupJob
+	0,  // 26: backup.v1.BackupService.Health:input_type -> backup.v1.HealthRequest
+	5,  // 27: backup.v1.BackupService.GetConfig:input_type -> backup.v1.GetConfigRequest
+	7,  // 28: backup.v1.BackupService.UpdateConfig:input_type -> backup.v1.UpdateConfigRequest
+	10, // 29: backup.v1.BackupService.ListSourceProfiles:input_type -> backup.v1.ListSourceProfilesRequest
+	12, // 30: backup.v1.BackupService.CreateSourceProfile:input_type -> backup.v1.CreateSourceProfileRequest
+	14, // 31: backup.v1.BackupService.UpdateSourceProfile:input_type -> backup.v1.UpdateSourceProfileRequest
+	16, // 32: backup.v1.BackupService.DeleteSourceProfile:input_type -> backup.v1.DeleteSourceProfileRequest
+	18, // 33: backup.v1.BackupService.SetActiveSourceProfile:input_type -> backup.v1.SetActiveSourceProfileRequest
+	20, // 34: backup.v1.BackupService.ValidateS3:input_type -> backup.v1.ValidateS3Request
+	23, // 35: backup.v1.BackupService.ListS3Profiles:input_type -> backup.v1.ListS3ProfilesRequest
+	25, // 36: backup.v1.BackupService.CreateS3Profile:input_type -> backup.v1.CreateS3ProfileRequest
+	27, // 37: backup.v1.BackupService.UpdateS3Profile:input_type -> backup.v1.UpdateS3ProfileRequest
+	29, // 38: backup.v1.BackupService.DeleteS3Profile:input_type -> backup.v1.DeleteS3ProfileRequest
+	31, // 39: backup.v1.BackupService.SetActiveS3Profile:input_type -> backup.v1.SetActiveS3ProfileRequest
+	33, // 40: backup.v1.BackupService.CreateBackupJob:input_type -> backup.v1.CreateBackupJobRequest
+	38, // 41: backup.v1.BackupService.ListBackupJobs:input_type -> backup.v1.ListBackupJobsRequest
+	40, // 42: backup.v1.BackupService.GetBackupJob:input_type -> backup.v1.GetBackupJobRequest
+	1,  // 43: backup.v1.BackupService.Health:output_type -> backup.v1.HealthResponse
+	6,  // 44: backup.v1.BackupService.GetConfig:output_type -> backup.v1.GetConfigResponse
+	8,  // 45: backup.v1.BackupService.UpdateConfig:output_type -> backup.v1.UpdateConfigResponse
+	11, // 46: backup.v1.BackupService.ListSourceProfiles:output_type -> backup.v1.ListSourceProfilesResponse
+	13, // 47: backup.v1.BackupService.CreateSourceProfile:output_type -> backup.v1.CreateSourceProfileResponse
+	15, // 48: backup.v1.BackupService.UpdateSourceProfile:output_type -> backup.v1.UpdateSourceProfileResponse
+	17, // 49: backup.v1.BackupService.DeleteSourceProfile:output_type -> backup.v1.DeleteSourceProfileResponse
+	19, // 50: backup.v1.BackupService.SetActiveSourceProfile:output_type -> backup.v1.SetActiveSourceProfileResponse
+	21, // 51: backup.v1.BackupService.ValidateS3:output_type -> backup.v1.ValidateS3Response
+	24, // 52: backup.v1.BackupService.ListS3Profiles:output_type -> backup.v1.ListS3ProfilesResponse
+	26, // 53: backup.v1.BackupService.CreateS3Profile:output_type -> backup.v1.CreateS3ProfileResponse
+	28, // 54: backup.v1.BackupService.UpdateS3Profile:output_type -> backup.v1.UpdateS3ProfileResponse
+	30, // 55: backup.v1.BackupService.DeleteS3Profile:output_type -> backup.v1.DeleteS3ProfileResponse
+	32, // 56: backup.v1.BackupService.SetActiveS3Profile:output_type -> backup.v1.SetActiveS3ProfileResponse
+	37, // 57: backup.v1.BackupService.CreateBackupJob:output_type -> backup.v1.CreateBackupJobResponse
+	39, // 58: backup.v1.BackupService.ListBackupJobs:output_type -> backup.v1.ListBackupJobsResponse
+	41, // 59: backup.v1.BackupService.GetBackupJob:output_type -> backup.v1.GetBackupJobResponse
+	43, // [43:60] is the sub-list for method output_type
+	26, // [26:43] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_proto_backup_v1_backup_proto_init() }
@@ -1465,7 +2863,7 @@ func file_proto_backup_v1_backup_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_backup_v1_backup_proto_rawDesc), len(file_proto_backup_v1_backup_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

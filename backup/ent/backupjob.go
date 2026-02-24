@@ -29,6 +29,12 @@ type BackupJob struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// UploadToS3 holds the value of the "upload_to_s3" field.
 	UploadToS3 bool `json:"upload_to_s3,omitempty"`
+	// S3ProfileID holds the value of the "s3_profile_id" field.
+	S3ProfileID string `json:"s3_profile_id,omitempty"`
+	// PostgresProfileID holds the value of the "postgres_profile_id" field.
+	PostgresProfileID string `json:"postgres_profile_id,omitempty"`
+	// RedisProfileID holds the value of the "redis_profile_id" field.
+	RedisProfileID string `json:"redis_profile_id,omitempty"`
 	// StartedAt holds the value of the "started_at" field.
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	// FinishedAt holds the value of the "finished_at" field.
@@ -84,7 +90,7 @@ func (*BackupJob) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case backupjob.FieldID, backupjob.FieldArtifactSizeBytes:
 			values[i] = new(sql.NullInt64)
-		case backupjob.FieldJobID, backupjob.FieldBackupType, backupjob.FieldStatus, backupjob.FieldTriggeredBy, backupjob.FieldIdempotencyKey, backupjob.FieldErrorMessage, backupjob.FieldArtifactLocalPath, backupjob.FieldArtifactSha256, backupjob.FieldS3Bucket, backupjob.FieldS3Key, backupjob.FieldS3Etag:
+		case backupjob.FieldJobID, backupjob.FieldBackupType, backupjob.FieldStatus, backupjob.FieldTriggeredBy, backupjob.FieldIdempotencyKey, backupjob.FieldS3ProfileID, backupjob.FieldPostgresProfileID, backupjob.FieldRedisProfileID, backupjob.FieldErrorMessage, backupjob.FieldArtifactLocalPath, backupjob.FieldArtifactSha256, backupjob.FieldS3Bucket, backupjob.FieldS3Key, backupjob.FieldS3Etag:
 			values[i] = new(sql.NullString)
 		case backupjob.FieldStartedAt, backupjob.FieldFinishedAt, backupjob.FieldCreatedAt, backupjob.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -144,6 +150,24 @@ func (_m *BackupJob) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field upload_to_s3", values[i])
 			} else if value.Valid {
 				_m.UploadToS3 = value.Bool
+			}
+		case backupjob.FieldS3ProfileID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field s3_profile_id", values[i])
+			} else if value.Valid {
+				_m.S3ProfileID = value.String
+			}
+		case backupjob.FieldPostgresProfileID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field postgres_profile_id", values[i])
+			} else if value.Valid {
+				_m.PostgresProfileID = value.String
+			}
+		case backupjob.FieldRedisProfileID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field redis_profile_id", values[i])
+			} else if value.Valid {
+				_m.RedisProfileID = value.String
 			}
 		case backupjob.FieldStartedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -272,6 +296,15 @@ func (_m *BackupJob) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("upload_to_s3=")
 	builder.WriteString(fmt.Sprintf("%v", _m.UploadToS3))
+	builder.WriteString(", ")
+	builder.WriteString("s3_profile_id=")
+	builder.WriteString(_m.S3ProfileID)
+	builder.WriteString(", ")
+	builder.WriteString("postgres_profile_id=")
+	builder.WriteString(_m.PostgresProfileID)
+	builder.WriteString(", ")
+	builder.WriteString("redis_profile_id=")
+	builder.WriteString(_m.RedisProfileID)
 	builder.WriteString(", ")
 	if v := _m.StartedAt; v != nil {
 		builder.WriteString("started_at=")

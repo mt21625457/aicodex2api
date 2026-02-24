@@ -119,6 +119,66 @@ func (_u *BackupJobUpdate) SetNillableUploadToS3(v *bool) *BackupJobUpdate {
 	return _u
 }
 
+// SetS3ProfileID sets the "s3_profile_id" field.
+func (_u *BackupJobUpdate) SetS3ProfileID(v string) *BackupJobUpdate {
+	_u.mutation.SetS3ProfileID(v)
+	return _u
+}
+
+// SetNillableS3ProfileID sets the "s3_profile_id" field if the given value is not nil.
+func (_u *BackupJobUpdate) SetNillableS3ProfileID(v *string) *BackupJobUpdate {
+	if v != nil {
+		_u.SetS3ProfileID(*v)
+	}
+	return _u
+}
+
+// ClearS3ProfileID clears the value of the "s3_profile_id" field.
+func (_u *BackupJobUpdate) ClearS3ProfileID() *BackupJobUpdate {
+	_u.mutation.ClearS3ProfileID()
+	return _u
+}
+
+// SetPostgresProfileID sets the "postgres_profile_id" field.
+func (_u *BackupJobUpdate) SetPostgresProfileID(v string) *BackupJobUpdate {
+	_u.mutation.SetPostgresProfileID(v)
+	return _u
+}
+
+// SetNillablePostgresProfileID sets the "postgres_profile_id" field if the given value is not nil.
+func (_u *BackupJobUpdate) SetNillablePostgresProfileID(v *string) *BackupJobUpdate {
+	if v != nil {
+		_u.SetPostgresProfileID(*v)
+	}
+	return _u
+}
+
+// ClearPostgresProfileID clears the value of the "postgres_profile_id" field.
+func (_u *BackupJobUpdate) ClearPostgresProfileID() *BackupJobUpdate {
+	_u.mutation.ClearPostgresProfileID()
+	return _u
+}
+
+// SetRedisProfileID sets the "redis_profile_id" field.
+func (_u *BackupJobUpdate) SetRedisProfileID(v string) *BackupJobUpdate {
+	_u.mutation.SetRedisProfileID(v)
+	return _u
+}
+
+// SetNillableRedisProfileID sets the "redis_profile_id" field if the given value is not nil.
+func (_u *BackupJobUpdate) SetNillableRedisProfileID(v *string) *BackupJobUpdate {
+	if v != nil {
+		_u.SetRedisProfileID(*v)
+	}
+	return _u
+}
+
+// ClearRedisProfileID clears the value of the "redis_profile_id" field.
+func (_u *BackupJobUpdate) ClearRedisProfileID() *BackupJobUpdate {
+	_u.mutation.ClearRedisProfileID()
+	return _u
+}
+
 // SetStartedAt sets the "started_at" field.
 func (_u *BackupJobUpdate) SetStartedAt(v time.Time) *BackupJobUpdate {
 	_u.mutation.SetStartedAt(v)
@@ -437,6 +497,24 @@ func (_u *BackupJobUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.UploadToS3(); ok {
 		_spec.SetField(backupjob.FieldUploadToS3, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.S3ProfileID(); ok {
+		_spec.SetField(backupjob.FieldS3ProfileID, field.TypeString, value)
+	}
+	if _u.mutation.S3ProfileIDCleared() {
+		_spec.ClearField(backupjob.FieldS3ProfileID, field.TypeString)
+	}
+	if value, ok := _u.mutation.PostgresProfileID(); ok {
+		_spec.SetField(backupjob.FieldPostgresProfileID, field.TypeString, value)
+	}
+	if _u.mutation.PostgresProfileIDCleared() {
+		_spec.ClearField(backupjob.FieldPostgresProfileID, field.TypeString)
+	}
+	if value, ok := _u.mutation.RedisProfileID(); ok {
+		_spec.SetField(backupjob.FieldRedisProfileID, field.TypeString, value)
+	}
+	if _u.mutation.RedisProfileIDCleared() {
+		_spec.ClearField(backupjob.FieldRedisProfileID, field.TypeString)
+	}
 	if value, ok := _u.mutation.StartedAt(); ok {
 		_spec.SetField(backupjob.FieldStartedAt, field.TypeTime, value)
 	}
@@ -649,6 +727,66 @@ func (_u *BackupJobUpdateOne) SetNillableUploadToS3(v *bool) *BackupJobUpdateOne
 	if v != nil {
 		_u.SetUploadToS3(*v)
 	}
+	return _u
+}
+
+// SetS3ProfileID sets the "s3_profile_id" field.
+func (_u *BackupJobUpdateOne) SetS3ProfileID(v string) *BackupJobUpdateOne {
+	_u.mutation.SetS3ProfileID(v)
+	return _u
+}
+
+// SetNillableS3ProfileID sets the "s3_profile_id" field if the given value is not nil.
+func (_u *BackupJobUpdateOne) SetNillableS3ProfileID(v *string) *BackupJobUpdateOne {
+	if v != nil {
+		_u.SetS3ProfileID(*v)
+	}
+	return _u
+}
+
+// ClearS3ProfileID clears the value of the "s3_profile_id" field.
+func (_u *BackupJobUpdateOne) ClearS3ProfileID() *BackupJobUpdateOne {
+	_u.mutation.ClearS3ProfileID()
+	return _u
+}
+
+// SetPostgresProfileID sets the "postgres_profile_id" field.
+func (_u *BackupJobUpdateOne) SetPostgresProfileID(v string) *BackupJobUpdateOne {
+	_u.mutation.SetPostgresProfileID(v)
+	return _u
+}
+
+// SetNillablePostgresProfileID sets the "postgres_profile_id" field if the given value is not nil.
+func (_u *BackupJobUpdateOne) SetNillablePostgresProfileID(v *string) *BackupJobUpdateOne {
+	if v != nil {
+		_u.SetPostgresProfileID(*v)
+	}
+	return _u
+}
+
+// ClearPostgresProfileID clears the value of the "postgres_profile_id" field.
+func (_u *BackupJobUpdateOne) ClearPostgresProfileID() *BackupJobUpdateOne {
+	_u.mutation.ClearPostgresProfileID()
+	return _u
+}
+
+// SetRedisProfileID sets the "redis_profile_id" field.
+func (_u *BackupJobUpdateOne) SetRedisProfileID(v string) *BackupJobUpdateOne {
+	_u.mutation.SetRedisProfileID(v)
+	return _u
+}
+
+// SetNillableRedisProfileID sets the "redis_profile_id" field if the given value is not nil.
+func (_u *BackupJobUpdateOne) SetNillableRedisProfileID(v *string) *BackupJobUpdateOne {
+	if v != nil {
+		_u.SetRedisProfileID(*v)
+	}
+	return _u
+}
+
+// ClearRedisProfileID clears the value of the "redis_profile_id" field.
+func (_u *BackupJobUpdateOne) ClearRedisProfileID() *BackupJobUpdateOne {
+	_u.mutation.ClearRedisProfileID()
 	return _u
 }
 
@@ -999,6 +1137,24 @@ func (_u *BackupJobUpdateOne) sqlSave(ctx context.Context) (_node *BackupJob, er
 	}
 	if value, ok := _u.mutation.UploadToS3(); ok {
 		_spec.SetField(backupjob.FieldUploadToS3, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.S3ProfileID(); ok {
+		_spec.SetField(backupjob.FieldS3ProfileID, field.TypeString, value)
+	}
+	if _u.mutation.S3ProfileIDCleared() {
+		_spec.ClearField(backupjob.FieldS3ProfileID, field.TypeString)
+	}
+	if value, ok := _u.mutation.PostgresProfileID(); ok {
+		_spec.SetField(backupjob.FieldPostgresProfileID, field.TypeString, value)
+	}
+	if _u.mutation.PostgresProfileIDCleared() {
+		_spec.ClearField(backupjob.FieldPostgresProfileID, field.TypeString)
+	}
+	if value, ok := _u.mutation.RedisProfileID(); ok {
+		_spec.SetField(backupjob.FieldRedisProfileID, field.TypeString, value)
+	}
+	if _u.mutation.RedisProfileIDCleared() {
+		_spec.ClearField(backupjob.FieldRedisProfileID, field.TypeString)
 	}
 	if value, ok := _u.mutation.StartedAt(); ok {
 		_spec.SetField(backupjob.FieldStartedAt, field.TypeTime, value)

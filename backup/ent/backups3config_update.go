@@ -28,6 +28,48 @@ func (_u *BackupS3ConfigUpdate) Where(ps ...predicate.BackupS3Config) *BackupS3C
 	return _u
 }
 
+// SetProfileID sets the "profile_id" field.
+func (_u *BackupS3ConfigUpdate) SetProfileID(v string) *BackupS3ConfigUpdate {
+	_u.mutation.SetProfileID(v)
+	return _u
+}
+
+// SetNillableProfileID sets the "profile_id" field if the given value is not nil.
+func (_u *BackupS3ConfigUpdate) SetNillableProfileID(v *string) *BackupS3ConfigUpdate {
+	if v != nil {
+		_u.SetProfileID(*v)
+	}
+	return _u
+}
+
+// SetName sets the "name" field.
+func (_u *BackupS3ConfigUpdate) SetName(v string) *BackupS3ConfigUpdate {
+	_u.mutation.SetName(v)
+	return _u
+}
+
+// SetNillableName sets the "name" field if the given value is not nil.
+func (_u *BackupS3ConfigUpdate) SetNillableName(v *string) *BackupS3ConfigUpdate {
+	if v != nil {
+		_u.SetName(*v)
+	}
+	return _u
+}
+
+// SetIsActive sets the "is_active" field.
+func (_u *BackupS3ConfigUpdate) SetIsActive(v bool) *BackupS3ConfigUpdate {
+	_u.mutation.SetIsActive(v)
+	return _u
+}
+
+// SetNillableIsActive sets the "is_active" field if the given value is not nil.
+func (_u *BackupS3ConfigUpdate) SetNillableIsActive(v *bool) *BackupS3ConfigUpdate {
+	if v != nil {
+		_u.SetIsActive(*v)
+	}
+	return _u
+}
+
 // SetEnabled sets the "enabled" field.
 func (_u *BackupS3ConfigUpdate) SetEnabled(v bool) *BackupS3ConfigUpdate {
 	_u.mutation.SetEnabled(v)
@@ -216,6 +258,15 @@ func (_u *BackupS3ConfigUpdate) sqlSave(ctx context.Context) (_node int, err err
 			}
 		}
 	}
+	if value, ok := _u.mutation.ProfileID(); ok {
+		_spec.SetField(backups3config.FieldProfileID, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.Name(); ok {
+		_spec.SetField(backups3config.FieldName, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.IsActive(); ok {
+		_spec.SetField(backups3config.FieldIsActive, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.Enabled(); ok {
 		_spec.SetField(backups3config.FieldEnabled, field.TypeBool, value)
 	}
@@ -267,6 +318,48 @@ type BackupS3ConfigUpdateOne struct {
 	fields   []string
 	hooks    []Hook
 	mutation *BackupS3ConfigMutation
+}
+
+// SetProfileID sets the "profile_id" field.
+func (_u *BackupS3ConfigUpdateOne) SetProfileID(v string) *BackupS3ConfigUpdateOne {
+	_u.mutation.SetProfileID(v)
+	return _u
+}
+
+// SetNillableProfileID sets the "profile_id" field if the given value is not nil.
+func (_u *BackupS3ConfigUpdateOne) SetNillableProfileID(v *string) *BackupS3ConfigUpdateOne {
+	if v != nil {
+		_u.SetProfileID(*v)
+	}
+	return _u
+}
+
+// SetName sets the "name" field.
+func (_u *BackupS3ConfigUpdateOne) SetName(v string) *BackupS3ConfigUpdateOne {
+	_u.mutation.SetName(v)
+	return _u
+}
+
+// SetNillableName sets the "name" field if the given value is not nil.
+func (_u *BackupS3ConfigUpdateOne) SetNillableName(v *string) *BackupS3ConfigUpdateOne {
+	if v != nil {
+		_u.SetName(*v)
+	}
+	return _u
+}
+
+// SetIsActive sets the "is_active" field.
+func (_u *BackupS3ConfigUpdateOne) SetIsActive(v bool) *BackupS3ConfigUpdateOne {
+	_u.mutation.SetIsActive(v)
+	return _u
+}
+
+// SetNillableIsActive sets the "is_active" field if the given value is not nil.
+func (_u *BackupS3ConfigUpdateOne) SetNillableIsActive(v *bool) *BackupS3ConfigUpdateOne {
+	if v != nil {
+		_u.SetIsActive(*v)
+	}
+	return _u
 }
 
 // SetEnabled sets the "enabled" field.
@@ -486,6 +579,15 @@ func (_u *BackupS3ConfigUpdateOne) sqlSave(ctx context.Context) (_node *BackupS3
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.ProfileID(); ok {
+		_spec.SetField(backups3config.FieldProfileID, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.Name(); ok {
+		_spec.SetField(backups3config.FieldName, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.IsActive(); ok {
+		_spec.SetField(backups3config.FieldIsActive, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.Enabled(); ok {
 		_spec.SetField(backups3config.FieldEnabled, field.TypeBool, value)

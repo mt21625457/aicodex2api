@@ -20,6 +20,7 @@ import (
 const (
 	backupInvalidArgumentReason  = "BACKUP_INVALID_ARGUMENT"
 	backupResourceNotFoundReason = "BACKUP_RESOURCE_NOT_FOUND"
+	backupResourceConflictReason = "BACKUP_RESOURCE_CONFLICT"
 	backupFailedPrecondition     = "BACKUP_FAILED_PRECONDITION"
 	backupAgentTimeoutReason     = "BACKUP_AGENT_TIMEOUT"
 	backupAgentInternalReason    = "BACKUP_AGENT_INTERNAL"
@@ -60,14 +61,17 @@ type DataManagementS3Config struct {
 }
 
 type DataManagementConfig struct {
-	SourceMode    string                       `json:"source_mode"`
-	BackupRoot    string                       `json:"backup_root"`
-	SQLitePath    string                       `json:"sqlite_path,omitempty"`
-	RetentionDays int32                        `json:"retention_days"`
-	KeepLast      int32                        `json:"keep_last"`
-	Postgres      DataManagementPostgresConfig `json:"postgres"`
-	Redis         DataManagementRedisConfig    `json:"redis"`
-	S3            DataManagementS3Config       `json:"s3"`
+	SourceMode        string                       `json:"source_mode"`
+	BackupRoot        string                       `json:"backup_root"`
+	SQLitePath        string                       `json:"sqlite_path,omitempty"`
+	RetentionDays     int32                        `json:"retention_days"`
+	KeepLast          int32                        `json:"keep_last"`
+	ActivePostgresID  string                       `json:"active_postgres_profile_id"`
+	ActiveRedisID     string                       `json:"active_redis_profile_id"`
+	Postgres          DataManagementPostgresConfig `json:"postgres"`
+	Redis             DataManagementRedisConfig    `json:"redis"`
+	S3                DataManagementS3Config       `json:"s3"`
+	ActiveS3ProfileID string                       `json:"active_s3_profile_id"`
 }
 
 type DataManagementTestS3Result struct {
@@ -80,6 +84,9 @@ type DataManagementCreateBackupJobInput struct {
 	UploadToS3     bool
 	TriggeredBy    string
 	IdempotencyKey string
+	S3ProfileID    string
+	PostgresID     string
+	RedisID        string
 }
 
 type DataManagementListBackupJobsInput struct {
@@ -108,11 +115,76 @@ type DataManagementBackupJob struct {
 	TriggeredBy    string                     `json:"triggered_by"`
 	IdempotencyKey string                     `json:"idempotency_key,omitempty"`
 	UploadToS3     bool                       `json:"upload_to_s3"`
+	S3ProfileID    string                     `json:"s3_profile_id,omitempty"`
+	PostgresID     string                     `json:"postgres_profile_id,omitempty"`
+	RedisID        string                     `json:"redis_profile_id,omitempty"`
 	StartedAt      string                     `json:"started_at,omitempty"`
 	FinishedAt     string                     `json:"finished_at,omitempty"`
 	ErrorMessage   string                     `json:"error_message,omitempty"`
 	Artifact       DataManagementArtifactInfo `json:"artifact"`
 	S3Object       DataManagementS3ObjectInfo `json:"s3"`
+}
+
+type DataManagementSourceProfile struct {
+	SourceType         string                     `json:"source_type"`
+	ProfileID          string                     `json:"profile_id"`
+	Name               string                     `json:"name"`
+	IsActive           bool                       `json:"is_active"`
+	Config             DataManagementSourceConfig `json:"config"`
+	PasswordConfigured bool                       `json:"password_configured"`
+	CreatedAt          string                     `json:"created_at,omitempty"`
+	UpdatedAt          string                     `json:"updated_at,omitempty"`
+}
+
+type DataManagementSourceConfig struct {
+	Host          string `json:"host"`
+	Port          int32  `json:"port"`
+	User          string `json:"user"`
+	Password      string `json:"password,omitempty"`
+	Database      string `json:"database"`
+	SSLMode       string `json:"ssl_mode"`
+	Addr          string `json:"addr"`
+	Username      string `json:"username"`
+	DB            int32  `json:"db"`
+	ContainerName string `json:"container_name"`
+}
+
+type DataManagementCreateSourceProfileInput struct {
+	SourceType string
+	ProfileID  string
+	Name       string
+	Config     DataManagementSourceConfig
+	SetActive  bool
+}
+
+type DataManagementUpdateSourceProfileInput struct {
+	SourceType string
+	ProfileID  string
+	Name       string
+	Config     DataManagementSourceConfig
+}
+
+type DataManagementS3Profile struct {
+	ProfileID                 string                 `json:"profile_id"`
+	Name                      string                 `json:"name"`
+	IsActive                  bool                   `json:"is_active"`
+	S3                        DataManagementS3Config `json:"s3"`
+	SecretAccessKeyConfigured bool                   `json:"secret_access_key_configured"`
+	CreatedAt                 string                 `json:"created_at,omitempty"`
+	UpdatedAt                 string                 `json:"updated_at,omitempty"`
+}
+
+type DataManagementCreateS3ProfileInput struct {
+	ProfileID string
+	Name      string
+	S3        DataManagementS3Config
+	SetActive bool
+}
+
+type DataManagementUpdateS3ProfileInput struct {
+	ProfileID string
+	Name      string
+	S3        DataManagementS3Config
 }
 
 type DataManagementListBackupJobsResult struct {
@@ -150,6 +222,120 @@ func (s *DataManagementService) UpdateConfig(ctx context.Context, cfg DataManage
 	return mapProtoConfig(resp.GetConfig()), nil
 }
 
+func (s *DataManagementService) ListSourceProfiles(ctx context.Context, sourceType string) ([]DataManagementSourceProfile, error) {
+	sourceType = strings.TrimSpace(sourceType)
+	if sourceType != "postgres" && sourceType != "redis" {
+		return nil, infraerrors.BadRequest(backupInvalidArgumentReason, "source_type must be postgres or redis")
+	}
+
+	var resp *backupv1.ListSourceProfilesResponse
+	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		var callErr error
+		resp, callErr = client.ListSourceProfiles(callCtx, &backupv1.ListSourceProfilesRequest{
+			SourceType: sourceType,
+		})
+		return callErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]DataManagementSourceProfile, 0, len(resp.GetItems()))
+	for _, item := range resp.GetItems() {
+		items = append(items, mapProtoSourceProfile(item))
+	}
+	return items, nil
+}
+
+func (s *DataManagementService) CreateSourceProfile(ctx context.Context, input DataManagementCreateSourceProfileInput) (DataManagementSourceProfile, error) {
+	if err := validateSourceProfileInput(input.SourceType, input.ProfileID, input.Name); err != nil {
+		return DataManagementSourceProfile{}, err
+	}
+
+	var resp *backupv1.CreateSourceProfileResponse
+	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		var callErr error
+		resp, callErr = client.CreateSourceProfile(callCtx, &backupv1.CreateSourceProfileRequest{
+			SourceType: strings.TrimSpace(input.SourceType),
+			ProfileId:  strings.TrimSpace(input.ProfileID),
+			Name:       strings.TrimSpace(input.Name),
+			Config:     mapToProtoSourceConfig(input.Config),
+			SetActive:  input.SetActive,
+		})
+		return callErr
+	})
+	if err != nil {
+		return DataManagementSourceProfile{}, err
+	}
+	return mapProtoSourceProfile(resp.GetProfile()), nil
+}
+
+func (s *DataManagementService) UpdateSourceProfile(ctx context.Context, input DataManagementUpdateSourceProfileInput) (DataManagementSourceProfile, error) {
+	if err := validateSourceProfileInput(input.SourceType, input.ProfileID, input.Name); err != nil {
+		return DataManagementSourceProfile{}, err
+	}
+
+	var resp *backupv1.UpdateSourceProfileResponse
+	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		var callErr error
+		resp, callErr = client.UpdateSourceProfile(callCtx, &backupv1.UpdateSourceProfileRequest{
+			SourceType: strings.TrimSpace(input.SourceType),
+			ProfileId:  strings.TrimSpace(input.ProfileID),
+			Name:       strings.TrimSpace(input.Name),
+			Config:     mapToProtoSourceConfig(input.Config),
+		})
+		return callErr
+	})
+	if err != nil {
+		return DataManagementSourceProfile{}, err
+	}
+	return mapProtoSourceProfile(resp.GetProfile()), nil
+}
+
+func (s *DataManagementService) DeleteSourceProfile(ctx context.Context, sourceType, profileID string) error {
+	sourceType = strings.TrimSpace(sourceType)
+	profileID = strings.TrimSpace(profileID)
+	if sourceType != "postgres" && sourceType != "redis" {
+		return infraerrors.BadRequest(backupInvalidArgumentReason, "source_type must be postgres or redis")
+	}
+	if profileID == "" {
+		return infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+	}
+
+	return s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		_, err := client.DeleteSourceProfile(callCtx, &backupv1.DeleteSourceProfileRequest{
+			SourceType: sourceType,
+			ProfileId:  profileID,
+		})
+		return err
+	})
+}
+
+func (s *DataManagementService) SetActiveSourceProfile(ctx context.Context, sourceType, profileID string) (DataManagementSourceProfile, error) {
+	sourceType = strings.TrimSpace(sourceType)
+	profileID = strings.TrimSpace(profileID)
+	if sourceType != "postgres" && sourceType != "redis" {
+		return DataManagementSourceProfile{}, infraerrors.BadRequest(backupInvalidArgumentReason, "source_type must be postgres or redis")
+	}
+	if profileID == "" {
+		return DataManagementSourceProfile{}, infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+	}
+
+	var resp *backupv1.SetActiveSourceProfileResponse
+	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		var callErr error
+		resp, callErr = client.SetActiveSourceProfile(callCtx, &backupv1.SetActiveSourceProfileRequest{
+			SourceType: sourceType,
+			ProfileId:  profileID,
+		})
+		return callErr
+	})
+	if err != nil {
+		return DataManagementSourceProfile{}, err
+	}
+	return mapProtoSourceProfile(resp.GetProfile()), nil
+}
+
 func (s *DataManagementService) ValidateS3(ctx context.Context, cfg DataManagementS3Config) (DataManagementTestS3Result, error) {
 	if err := validateS3Config(cfg); err != nil {
 		return DataManagementTestS3Result{}, err
@@ -179,15 +365,109 @@ func (s *DataManagementService) ValidateS3(ctx context.Context, cfg DataManageme
 	return DataManagementTestS3Result{OK: resp.GetOk(), Message: resp.GetMessage()}, nil
 }
 
+func (s *DataManagementService) ListS3Profiles(ctx context.Context) ([]DataManagementS3Profile, error) {
+	var resp *backupv1.ListS3ProfilesResponse
+	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		var callErr error
+		resp, callErr = client.ListS3Profiles(callCtx, &backupv1.ListS3ProfilesRequest{})
+		return callErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]DataManagementS3Profile, 0, len(resp.GetItems()))
+	for _, item := range resp.GetItems() {
+		items = append(items, mapProtoS3Profile(item))
+	}
+	return items, nil
+}
+
+func (s *DataManagementService) CreateS3Profile(ctx context.Context, input DataManagementCreateS3ProfileInput) (DataManagementS3Profile, error) {
+	if err := validateS3ProfileInput(input.ProfileID, input.Name, input.S3); err != nil {
+		return DataManagementS3Profile{}, err
+	}
+
+	var resp *backupv1.CreateS3ProfileResponse
+	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		var callErr error
+		resp, callErr = client.CreateS3Profile(callCtx, &backupv1.CreateS3ProfileRequest{
+			ProfileId: strings.TrimSpace(input.ProfileID),
+			Name:      strings.TrimSpace(input.Name),
+			S3:        mapToProtoS3Config(input.S3),
+			SetActive: input.SetActive,
+		})
+		return callErr
+	})
+	if err != nil {
+		return DataManagementS3Profile{}, err
+	}
+	return mapProtoS3Profile(resp.GetProfile()), nil
+}
+
+func (s *DataManagementService) UpdateS3Profile(ctx context.Context, input DataManagementUpdateS3ProfileInput) (DataManagementS3Profile, error) {
+	if err := validateS3ProfileInput(input.ProfileID, input.Name, input.S3); err != nil {
+		return DataManagementS3Profile{}, err
+	}
+
+	var resp *backupv1.UpdateS3ProfileResponse
+	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		var callErr error
+		resp, callErr = client.UpdateS3Profile(callCtx, &backupv1.UpdateS3ProfileRequest{
+			ProfileId: strings.TrimSpace(input.ProfileID),
+			Name:      strings.TrimSpace(input.Name),
+			S3:        mapToProtoS3Config(input.S3),
+		})
+		return callErr
+	})
+	if err != nil {
+		return DataManagementS3Profile{}, err
+	}
+	return mapProtoS3Profile(resp.GetProfile()), nil
+}
+
+func (s *DataManagementService) DeleteS3Profile(ctx context.Context, profileID string) error {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+	}
+
+	return s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		_, err := client.DeleteS3Profile(callCtx, &backupv1.DeleteS3ProfileRequest{ProfileId: profileID})
+		return err
+	})
+}
+
+func (s *DataManagementService) SetActiveS3Profile(ctx context.Context, profileID string) (DataManagementS3Profile, error) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return DataManagementS3Profile{}, infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+	}
+
+	var resp *backupv1.SetActiveS3ProfileResponse
+	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
+		var callErr error
+		resp, callErr = client.SetActiveS3Profile(callCtx, &backupv1.SetActiveS3ProfileRequest{ProfileId: profileID})
+		return callErr
+	})
+	if err != nil {
+		return DataManagementS3Profile{}, err
+	}
+	return mapProtoS3Profile(resp.GetProfile()), nil
+}
+
 func (s *DataManagementService) CreateBackupJob(ctx context.Context, input DataManagementCreateBackupJobInput) (DataManagementBackupJob, error) {
 	var resp *backupv1.CreateBackupJobResponse
 	err := s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
 		var callErr error
 		resp, callErr = client.CreateBackupJob(callCtx, &backupv1.CreateBackupJobRequest{
-			BackupType:     strings.TrimSpace(input.BackupType),
-			UploadToS3:     input.UploadToS3,
-			TriggeredBy:    strings.TrimSpace(input.TriggeredBy),
-			IdempotencyKey: strings.TrimSpace(input.IdempotencyKey),
+			BackupType:        strings.TrimSpace(input.BackupType),
+			UploadToS3:        input.UploadToS3,
+			TriggeredBy:       strings.TrimSpace(input.TriggeredBy),
+			IdempotencyKey:    strings.TrimSpace(input.IdempotencyKey),
+			S3ProfileId:       strings.TrimSpace(input.S3ProfileID),
+			PostgresProfileId: strings.TrimSpace(input.PostgresID),
+			RedisProfileId:    strings.TrimSpace(input.RedisID),
 		})
 		return callErr
 	})
@@ -287,6 +567,8 @@ func mapBackupGRPCError(err error, socketPath string) error {
 	switch st.Code() {
 	case codes.InvalidArgument:
 		return infraerrors.BadRequest(backupInvalidArgumentReason, st.Message())
+	case codes.AlreadyExists:
+		return infraerrors.New(409, backupResourceConflictReason, st.Message())
 	case codes.NotFound:
 		return infraerrors.NotFound(backupResourceNotFoundReason, st.Message())
 	case codes.FailedPrecondition:
@@ -313,11 +595,14 @@ func mapProtoConfig(cfg *backupv1.BackupConfig) DataManagementConfig {
 	redis := cfg.GetRedis()
 	s3Cfg := cfg.GetS3()
 	return DataManagementConfig{
-		SourceMode:    cfg.GetSourceMode(),
-		BackupRoot:    cfg.GetBackupRoot(),
-		SQLitePath:    cfg.GetSqlitePath(),
-		RetentionDays: cfg.GetRetentionDays(),
-		KeepLast:      cfg.GetKeepLast(),
+		SourceMode:        cfg.GetSourceMode(),
+		BackupRoot:        cfg.GetBackupRoot(),
+		SQLitePath:        cfg.GetSqlitePath(),
+		RetentionDays:     cfg.GetRetentionDays(),
+		KeepLast:          cfg.GetKeepLast(),
+		ActivePostgresID:  cfg.GetActivePostgresProfileId(),
+		ActiveRedisID:     cfg.GetActiveRedisProfileId(),
+		ActiveS3ProfileID: cfg.GetActiveS3ProfileId(),
 		Postgres: DataManagementPostgresConfig{
 			Host:               postgres.GetHost(),
 			Port:               postgres.GetPort(),
@@ -350,11 +635,14 @@ func mapProtoConfig(cfg *backupv1.BackupConfig) DataManagementConfig {
 
 func mapToProtoConfig(cfg DataManagementConfig) *backupv1.BackupConfig {
 	return &backupv1.BackupConfig{
-		SourceMode:    strings.TrimSpace(cfg.SourceMode),
-		BackupRoot:    strings.TrimSpace(cfg.BackupRoot),
-		SqlitePath:    strings.TrimSpace(cfg.SQLitePath),
-		RetentionDays: cfg.RetentionDays,
-		KeepLast:      cfg.KeepLast,
+		SourceMode:              strings.TrimSpace(cfg.SourceMode),
+		BackupRoot:              strings.TrimSpace(cfg.BackupRoot),
+		SqlitePath:              strings.TrimSpace(cfg.SQLitePath),
+		RetentionDays:           cfg.RetentionDays,
+		KeepLast:                cfg.KeepLast,
+		ActivePostgresProfileId: strings.TrimSpace(cfg.ActivePostgresID),
+		ActiveRedisProfileId:    strings.TrimSpace(cfg.ActiveRedisID),
+		ActiveS3ProfileId:       strings.TrimSpace(cfg.ActiveS3ProfileID),
 		Postgres: &backupv1.SourceConfig{
 			Host:          strings.TrimSpace(cfg.Postgres.Host),
 			Port:          cfg.Postgres.Port,
@@ -371,17 +659,95 @@ func mapToProtoConfig(cfg DataManagementConfig) *backupv1.BackupConfig {
 			Db:            cfg.Redis.DB,
 			ContainerName: strings.TrimSpace(cfg.Redis.ContainerName),
 		},
-		S3: &backupv1.S3Config{
-			Enabled:         cfg.S3.Enabled,
-			Endpoint:        strings.TrimSpace(cfg.S3.Endpoint),
-			Region:          strings.TrimSpace(cfg.S3.Region),
-			Bucket:          strings.TrimSpace(cfg.S3.Bucket),
-			AccessKeyId:     strings.TrimSpace(cfg.S3.AccessKeyID),
-			SecretAccessKey: strings.TrimSpace(cfg.S3.SecretAccessKey),
-			Prefix:          strings.Trim(strings.TrimSpace(cfg.S3.Prefix), "/"),
-			ForcePathStyle:  cfg.S3.ForcePathStyle,
-			UseSsl:          cfg.S3.UseSSL,
+		S3: mapToProtoS3Config(cfg.S3),
+	}
+}
+
+func mapToProtoS3Config(cfg DataManagementS3Config) *backupv1.S3Config {
+	return &backupv1.S3Config{
+		Enabled:         cfg.Enabled,
+		Endpoint:        strings.TrimSpace(cfg.Endpoint),
+		Region:          strings.TrimSpace(cfg.Region),
+		Bucket:          strings.TrimSpace(cfg.Bucket),
+		AccessKeyId:     strings.TrimSpace(cfg.AccessKeyID),
+		SecretAccessKey: strings.TrimSpace(cfg.SecretAccessKey),
+		Prefix:          strings.Trim(strings.TrimSpace(cfg.Prefix), "/"),
+		ForcePathStyle:  cfg.ForcePathStyle,
+		UseSsl:          cfg.UseSSL,
+	}
+}
+
+func mapToProtoSourceConfig(cfg DataManagementSourceConfig) *backupv1.SourceConfig {
+	return &backupv1.SourceConfig{
+		Host:          strings.TrimSpace(cfg.Host),
+		Port:          cfg.Port,
+		User:          strings.TrimSpace(cfg.User),
+		Password:      strings.TrimSpace(cfg.Password),
+		Database:      strings.TrimSpace(cfg.Database),
+		SslMode:       strings.TrimSpace(cfg.SSLMode),
+		Addr:          strings.TrimSpace(cfg.Addr),
+		Username:      strings.TrimSpace(cfg.Username),
+		Db:            cfg.DB,
+		ContainerName: strings.TrimSpace(cfg.ContainerName),
+	}
+}
+
+func mapProtoS3Profile(profile *backupv1.S3Profile) DataManagementS3Profile {
+	if profile == nil {
+		return DataManagementS3Profile{}
+	}
+	s3Cfg := profile.GetS3()
+	if s3Cfg == nil {
+		s3Cfg = &backupv1.S3Config{}
+	}
+	return DataManagementS3Profile{
+		ProfileID: profile.GetProfileId(),
+		Name:      profile.GetName(),
+		IsActive:  profile.GetIsActive(),
+		S3: DataManagementS3Config{
+			Enabled:                   s3Cfg.GetEnabled(),
+			Endpoint:                  s3Cfg.GetEndpoint(),
+			Region:                    s3Cfg.GetRegion(),
+			Bucket:                    s3Cfg.GetBucket(),
+			AccessKeyID:               s3Cfg.GetAccessKeyId(),
+			SecretAccessKeyConfigured: profile.GetSecretAccessKeyConfigured() || strings.TrimSpace(s3Cfg.GetSecretAccessKey()) != "",
+			Prefix:                    s3Cfg.GetPrefix(),
+			ForcePathStyle:            s3Cfg.GetForcePathStyle(),
+			UseSSL:                    s3Cfg.GetUseSsl(),
 		},
+		SecretAccessKeyConfigured: profile.GetSecretAccessKeyConfigured() || strings.TrimSpace(s3Cfg.GetSecretAccessKey()) != "",
+		CreatedAt:                 strings.TrimSpace(profile.GetCreatedAt()),
+		UpdatedAt:                 strings.TrimSpace(profile.GetUpdatedAt()),
+	}
+}
+
+func mapProtoSourceProfile(profile *backupv1.SourceProfile) DataManagementSourceProfile {
+	if profile == nil {
+		return DataManagementSourceProfile{}
+	}
+	sourceCfg := profile.GetConfig()
+	if sourceCfg == nil {
+		sourceCfg = &backupv1.SourceConfig{}
+	}
+	return DataManagementSourceProfile{
+		SourceType: profile.GetSourceType(),
+		ProfileID:  profile.GetProfileId(),
+		Name:       profile.GetName(),
+		IsActive:   profile.GetIsActive(),
+		Config: DataManagementSourceConfig{
+			Host:          sourceCfg.GetHost(),
+			Port:          sourceCfg.GetPort(),
+			User:          sourceCfg.GetUser(),
+			Database:      sourceCfg.GetDatabase(),
+			SSLMode:       sourceCfg.GetSslMode(),
+			Addr:          sourceCfg.GetAddr(),
+			Username:      sourceCfg.GetUsername(),
+			DB:            sourceCfg.GetDb(),
+			ContainerName: sourceCfg.GetContainerName(),
+		},
+		PasswordConfigured: profile.GetPasswordConfigured(),
+		CreatedAt:          strings.TrimSpace(profile.GetCreatedAt()),
+		UpdatedAt:          strings.TrimSpace(profile.GetUpdatedAt()),
 	}
 }
 
@@ -415,6 +781,9 @@ func mapProtoJob(job *backupv1.BackupJob) DataManagementBackupJob {
 		TriggeredBy:    job.GetTriggeredBy(),
 		IdempotencyKey: job.GetIdempotencyKey(),
 		UploadToS3:     job.GetUploadToS3(),
+		S3ProfileID:    job.GetS3ProfileId(),
+		PostgresID:     job.GetPostgresProfileId(),
+		RedisID:        job.GetRedisProfileId(),
 		StartedAt:      job.GetStartedAt(),
 		FinishedAt:     job.GetFinishedAt(),
 		ErrorMessage:   job.GetErrorMessage(),
@@ -478,6 +847,33 @@ func validateS3Config(cfg DataManagementS3Config) error {
 	}
 	if strings.TrimSpace(cfg.Bucket) == "" {
 		return infraerrors.BadRequest(backupInvalidArgumentReason, "s3.bucket is required")
+	}
+	return nil
+}
+
+func validateS3ProfileInput(profileID, name string, s3Cfg DataManagementS3Config) error {
+	if strings.TrimSpace(profileID) == "" {
+		return infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+	}
+	if strings.TrimSpace(name) == "" {
+		return infraerrors.BadRequest(backupInvalidArgumentReason, "name is required")
+	}
+	if s3Cfg.Enabled {
+		return validateS3Config(s3Cfg)
+	}
+	return nil
+}
+
+func validateSourceProfileInput(sourceType, profileID, name string) error {
+	sourceType = strings.TrimSpace(sourceType)
+	if sourceType != "postgres" && sourceType != "redis" {
+		return infraerrors.BadRequest(backupInvalidArgumentReason, "source_type must be postgres or redis")
+	}
+	if strings.TrimSpace(profileID) == "" {
+		return infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+	}
+	if strings.TrimSpace(name) == "" {
+		return infraerrors.BadRequest(backupInvalidArgumentReason, "name is required")
 	}
 	return nil
 }

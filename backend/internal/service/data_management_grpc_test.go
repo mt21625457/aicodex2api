@@ -33,6 +33,12 @@ func TestMapBackupGRPCError(t *testing.T) {
 			wantReason: backupResourceNotFoundReason,
 		},
 		{
+			name:       "already exists",
+			err:        grpcstatus.Error(codes.AlreadyExists, "exists"),
+			wantCode:   409,
+			wantReason: backupResourceConflictReason,
+		},
+		{
 			name:       "failed precondition",
 			err:        grpcstatus.Error(codes.FailedPrecondition, "precondition failed"),
 			wantCode:   412,

@@ -21,6 +21,9 @@ func (BackupJob) Fields() []ent.Field {
 		field.String("triggered_by").Default("system"),
 		field.String("idempotency_key").Optional(),
 		field.Bool("upload_to_s3").Default(false),
+		field.String("s3_profile_id").Optional(),
+		field.String("postgres_profile_id").Optional(),
+		field.String("redis_profile_id").Optional(),
 		field.Time("started_at").Optional().Nillable(),
 		field.Time("finished_at").Optional().Nillable(),
 		field.String("error_message").Optional(),
@@ -46,5 +49,8 @@ func (BackupJob) Indexes() []ent.Index {
 		index.Fields("status", "created_at"),
 		index.Fields("backup_type", "created_at"),
 		index.Fields("idempotency_key"),
+		index.Fields("s3_profile_id", "status"),
+		index.Fields("postgres_profile_id", "status"),
+		index.Fields("redis_profile_id", "status"),
 	}
 }

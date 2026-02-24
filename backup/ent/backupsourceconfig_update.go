@@ -42,6 +42,48 @@ func (_u *BackupSourceConfigUpdate) SetNillableSourceType(v *backupsourceconfig.
 	return _u
 }
 
+// SetProfileID sets the "profile_id" field.
+func (_u *BackupSourceConfigUpdate) SetProfileID(v string) *BackupSourceConfigUpdate {
+	_u.mutation.SetProfileID(v)
+	return _u
+}
+
+// SetNillableProfileID sets the "profile_id" field if the given value is not nil.
+func (_u *BackupSourceConfigUpdate) SetNillableProfileID(v *string) *BackupSourceConfigUpdate {
+	if v != nil {
+		_u.SetProfileID(*v)
+	}
+	return _u
+}
+
+// SetName sets the "name" field.
+func (_u *BackupSourceConfigUpdate) SetName(v string) *BackupSourceConfigUpdate {
+	_u.mutation.SetName(v)
+	return _u
+}
+
+// SetNillableName sets the "name" field if the given value is not nil.
+func (_u *BackupSourceConfigUpdate) SetNillableName(v *string) *BackupSourceConfigUpdate {
+	if v != nil {
+		_u.SetName(*v)
+	}
+	return _u
+}
+
+// SetIsActive sets the "is_active" field.
+func (_u *BackupSourceConfigUpdate) SetIsActive(v bool) *BackupSourceConfigUpdate {
+	_u.mutation.SetIsActive(v)
+	return _u
+}
+
+// SetNillableIsActive sets the "is_active" field if the given value is not nil.
+func (_u *BackupSourceConfigUpdate) SetNillableIsActive(v *bool) *BackupSourceConfigUpdate {
+	if v != nil {
+		_u.SetIsActive(*v)
+	}
+	return _u
+}
+
 // SetHost sets the "host" field.
 func (_u *BackupSourceConfigUpdate) SetHost(v string) *BackupSourceConfigUpdate {
 	_u.mutation.SetHost(v)
@@ -302,6 +344,15 @@ func (_u *BackupSourceConfigUpdate) sqlSave(ctx context.Context) (_node int, err
 	if value, ok := _u.mutation.SourceType(); ok {
 		_spec.SetField(backupsourceconfig.FieldSourceType, field.TypeEnum, value)
 	}
+	if value, ok := _u.mutation.ProfileID(); ok {
+		_spec.SetField(backupsourceconfig.FieldProfileID, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.Name(); ok {
+		_spec.SetField(backupsourceconfig.FieldName, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.IsActive(); ok {
+		_spec.SetField(backupsourceconfig.FieldIsActive, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.Host(); ok {
 		_spec.SetField(backupsourceconfig.FieldHost, field.TypeString, value)
 	}
@@ -392,6 +443,48 @@ func (_u *BackupSourceConfigUpdateOne) SetSourceType(v backupsourceconfig.Source
 func (_u *BackupSourceConfigUpdateOne) SetNillableSourceType(v *backupsourceconfig.SourceType) *BackupSourceConfigUpdateOne {
 	if v != nil {
 		_u.SetSourceType(*v)
+	}
+	return _u
+}
+
+// SetProfileID sets the "profile_id" field.
+func (_u *BackupSourceConfigUpdateOne) SetProfileID(v string) *BackupSourceConfigUpdateOne {
+	_u.mutation.SetProfileID(v)
+	return _u
+}
+
+// SetNillableProfileID sets the "profile_id" field if the given value is not nil.
+func (_u *BackupSourceConfigUpdateOne) SetNillableProfileID(v *string) *BackupSourceConfigUpdateOne {
+	if v != nil {
+		_u.SetProfileID(*v)
+	}
+	return _u
+}
+
+// SetName sets the "name" field.
+func (_u *BackupSourceConfigUpdateOne) SetName(v string) *BackupSourceConfigUpdateOne {
+	_u.mutation.SetName(v)
+	return _u
+}
+
+// SetNillableName sets the "name" field if the given value is not nil.
+func (_u *BackupSourceConfigUpdateOne) SetNillableName(v *string) *BackupSourceConfigUpdateOne {
+	if v != nil {
+		_u.SetName(*v)
+	}
+	return _u
+}
+
+// SetIsActive sets the "is_active" field.
+func (_u *BackupSourceConfigUpdateOne) SetIsActive(v bool) *BackupSourceConfigUpdateOne {
+	_u.mutation.SetIsActive(v)
+	return _u
+}
+
+// SetNillableIsActive sets the "is_active" field if the given value is not nil.
+func (_u *BackupSourceConfigUpdateOne) SetNillableIsActive(v *bool) *BackupSourceConfigUpdateOne {
+	if v != nil {
+		_u.SetIsActive(*v)
 	}
 	return _u
 }
@@ -685,6 +778,15 @@ func (_u *BackupSourceConfigUpdateOne) sqlSave(ctx context.Context) (_node *Back
 	}
 	if value, ok := _u.mutation.SourceType(); ok {
 		_spec.SetField(backupsourceconfig.FieldSourceType, field.TypeEnum, value)
+	}
+	if value, ok := _u.mutation.ProfileID(); ok {
+		_spec.SetField(backupsourceconfig.FieldProfileID, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.Name(); ok {
+		_spec.SetField(backupsourceconfig.FieldName, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.IsActive(); ok {
+		_spec.SetField(backupsourceconfig.FieldIsActive, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.Host(); ok {
 		_spec.SetField(backupsourceconfig.FieldHost, field.TypeString, value)
