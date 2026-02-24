@@ -55,6 +55,9 @@ func RegisterAdminRoutes(
 		// 系统设置
 		registerSettingsRoutes(admin, h)
 
+		// 数据管理
+		registerDataManagementRoutes(admin, h)
+
 		// 运维监控（Ops）
 		registerOpsRoutes(admin, h)
 
@@ -369,6 +372,19 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)
+	}
+}
+
+func registerDataManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	dataManagement := admin.Group("/data-management")
+	{
+		dataManagement.GET("/agent/health", h.Admin.DataManagement.GetAgentHealth)
+		dataManagement.GET("/config", h.Admin.DataManagement.GetConfig)
+		dataManagement.PUT("/config", h.Admin.DataManagement.UpdateConfig)
+		dataManagement.POST("/s3/test", h.Admin.DataManagement.TestS3)
+		dataManagement.POST("/backups", h.Admin.DataManagement.CreateBackupJob)
+		dataManagement.GET("/backups", h.Admin.DataManagement.ListBackupJobs)
+		dataManagement.GET("/backups/:job_id", h.Admin.DataManagement.GetBackupJob)
 	}
 }
 

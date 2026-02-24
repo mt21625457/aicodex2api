@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package backup.v1;
+
+option go_package = "github.com/Wei-Shaw/sub2api/internal/backup/proto/backup/v1;backupv1";
+
+service BackupService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
+  rpc ValidateS3(ValidateS3Request) returns (ValidateS3Response);
+  rpc CreateBackupJob(CreateBackupJobRequest) returns (CreateBackupJobResponse);
+  rpc ListBackupJobs(ListBackupJobsRequest) returns (ListBackupJobsResponse);
+  rpc GetBackupJob(GetBackupJobRequest) returns (GetBackupJobResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+  int64 uptime_seconds = 3;
+}
+
+message SourceConfig {
+  string host = 1;
+  int32 port = 2;
+  string user = 3;
+  string password = 4;
+  string database = 5;
+  string ssl_mode = 6;
+  string addr = 7;
+  string username = 8;
+  int32 db = 9;
+  string container_name = 10;
+}
+
+message S3Config {
+  bool enabled = 1;
+  string endpoint = 2;
+  string region = 3;
+  string bucket = 4;
+  string access_key_id = 5;
+  string secret_access_key = 6;
+  string prefix = 7;
+  bool force_path_style = 8;
+  bool use_ssl = 9;
+}
+
+message BackupConfig {
+  string source_mode = 1;
+  string backup_root = 2;
+  string sqlite_path = 3;
+  int32 retention_days = 4;
+  int32 keep_last = 5;
+  SourceConfig postgres = 6;
+  SourceConfig redis = 7;
+  S3Config s3 = 8;
+}
+
+message GetConfigRequest {}
+
+message GetConfigResponse {
+  BackupConfig config = 1;
+}
+
+message UpdateConfigRequest {
+  BackupConfig config = 1;
+}
+
+message UpdateConfigResponse {
+  BackupConfig config = 1;
+}
+
+message ValidateS3Request {
+  S3Config s3 = 1;
+}
+
+message ValidateS3Response {
+  bool ok = 1;
+  string message = 2;
+}
+
+message CreateBackupJobRequest {
+  string backup_type = 1;
+  bool upload_to_s3 = 2;
+  string triggered_by = 3;
+  string idempotency_key = 4;
+}
+
+message BackupArtifact {
+  string local_path = 1;
+  int64 size_bytes = 2;
+  string sha256 = 3;
+}
+
+message BackupS3Object {
+  string bucket = 1;
+  string key = 2;
+  string etag = 3;
+}
+
+message BackupJob {
+  string job_id = 1;
+  string backup_type = 2;
+  string status = 3;
+  string triggered_by = 4;
+  string idempotency_key = 5;
+  bool upload_to_s3 = 6;
+  string started_at = 7;
+  string finished_at = 8;
+  string error_message = 9;
+  BackupArtifact artifact = 10;
+  BackupS3Object s3_object = 11;
+}
+
+message CreateBackupJobResponse {
+  BackupJob job = 1;
+}
+
+message ListBackupJobsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string status = 3;
+  string backup_type = 4;
+}
+
+message ListBackupJobsResponse {
+  repeated BackupJob items = 1;
+  string next_page_token = 2;
+}
+
+message GetBackupJobRequest {
+  string job_id = 1;
+}
+
+message GetBackupJobResponse {
+  BackupJob job = 1;
+}
