@@ -438,6 +438,10 @@ func logOpenAIWSModeInfo(format string, args ...any) {
 	logger.LegacyPrintf("service.openai_gateway", "[OpenAI WS Mode] "+format, args...)
 }
 
+func logOpenAIWSModeDebug(format string, args ...any) {
+	logger.LegacyPrintf("service.openai_gateway", "[debug] [OpenAI WS Mode] "+format, args...)
+}
+
 func summarizeOpenAIWSReadCloseError(err error) (status string, reason string) {
 	if err == nil {
 		return "-", "-"
@@ -874,7 +878,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			wsPath = normalizeOpenAIWSLogValue(p)
 		}
 	}
-	logOpenAIWSModeInfo(
+	logOpenAIWSModeDebug(
 		"dial_target account_id=%d account_type=%s ws_host=%s ws_path=%s",
 		account.ID,
 		account.Type,
@@ -946,7 +950,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
 	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
 	wsHeaders, sessionResolution := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
-	logOpenAIWSModeInfo(
+	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
 		account.ID,
 		account.Type,
@@ -1014,7 +1018,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 	defer lease.Release()
 	connID := strings.TrimSpace(lease.ConnID())
-	logOpenAIWSModeInfo(
+	logOpenAIWSModeDebug(
 		"connected account_id=%d account_type=%s transport=%s conn_id=%s conn_reused=%v conn_pick_ms=%d queue_wait_ms=%d has_previous_response_id=%v",
 		account.ID,
 		account.Type,
@@ -1035,7 +1039,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 
 	handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader))
-	logOpenAIWSModeInfo(
+	logOpenAIWSModeDebug(
 		"handshake account_id=%d conn_id=%s has_turn_state=%v turn_state_len=%d",
 		account.ID,
 		connID,
@@ -1076,7 +1080,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		)
 		return nil, wrapOpenAIWSFallback("write_request", err)
 	}
-	logOpenAIWSModeInfo(
+	logOpenAIWSModeDebug(
 		"write_request_sent account_id=%d conn_id=%s stream=%v payload_bytes=%d previous_response_id=%s",
 		account.ID,
 		connID,
@@ -1159,7 +1163,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		bufferedStreamEvents = bufferedStreamEvents[:0]
 		flushStreamWriter(true)
 		flushedBufferedEventCount += flushed
-		logOpenAIWSModeInfo(
+		logOpenAIWSModeDebug(
 			"buffer_flush account_id=%d conn_id=%s reason=%s flushed=%d total_flushed=%d client_disconnected=%v",
 			account.ID,
 			connID,
@@ -1230,7 +1234,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			firstTokenMs = &ms
 		}
 		if shouldLogOpenAIWSEvent(eventCount, eventType) {
-			logOpenAIWSModeInfo(
+			logOpenAIWSModeDebug(
 				"event_received account_id=%d conn_id=%s idx=%d type=%s bytes=%d token=%v terminal=%v buffered_pending=%d",
 				account.ID,
 				connID,
@@ -1299,7 +1303,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				bufferedStreamEvents = append(bufferedStreamEvents, buffered)
 				bufferedEventCount++
 				if shouldLogOpenAIWSBufferedEvent(bufferedEventCount) {
-					logOpenAIWSModeInfo(
+					logOpenAIWSModeDebug(
 						"buffer_enqueue account_id=%d conn_id=%s idx=%d event_idx=%d event_type=%s buffer_size=%d",
 						account.ID,
 						connID,
@@ -1374,7 +1378,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if firstTokenMs != nil {
 		firstTokenMsValue = *firstTokenMs
 	}
-	logOpenAIWSModeInfo(
+	logOpenAIWSModeDebug(
 		"completed account_id=%d conn_id=%s response_id=%s stream=%v duration_ms=%d events=%d token_events=%d terminal_events=%d buffered_events=%d buffered_flushed=%d first_event=%s last_event=%s first_token_ms=%d wrote_downstream=%v client_disconnected=%v",
 		account.ID,
 		connID,

@@ -1251,7 +1251,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		c.Set("openai_ws_transport_reason", wsDecision.Reason)
 	}
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
-		logOpenAIWSModeInfo(
+		logOpenAIWSModeDebug(
 			"selected account_id=%d account_type=%s transport=%s reason=%s model=%s stream=%v",
 			account.ID,
 			account.Type,
@@ -1428,7 +1428,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// 命中 WS 时仅走 WebSocket Mode；不再自动回退 HTTP。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
 		_, hasPreviousResponseID := reqBody["previous_response_id"]
-		logOpenAIWSModeInfo(
+		logOpenAIWSModeDebug(
 			"forward_start account_id=%d account_type=%s model=%s stream=%v has_previous_response_id=%v",
 			account.ID,
 			account.Type,
@@ -1540,7 +1540,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if wsResult != nil {
 				requestID = strings.TrimSpace(wsResult.RequestID)
 			}
-			logOpenAIWSModeInfo(
+			logOpenAIWSModeDebug(
 				"forward_succeeded account_id=%d request_id=%s stream=%v has_first_token_ms=%v first_token_ms=%d ws_attempts=%d",
 				account.ID,
 				requestID,
