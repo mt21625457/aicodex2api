@@ -14,8 +14,6 @@ import (
 const (
 	openAIWSResponseAccountCachePrefix = "openai:response:"
 	openAIWSStateStoreCleanupInterval  = time.Minute
-	// 分桶增量清理，避免在写锁下做全量 map 扫描。
-	openAIWSStateStoreCleanupScanLimit = 128
 )
 
 type openAIWSAccountBinding struct {
@@ -300,84 +298,53 @@ func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cleanupExpiredAccountBindings(s.responseToAccount, now, openAIWSStateStoreCleanupScanLimit)
-	cleanupExpiredConnBindings(s.responseToConn, now, openAIWSStateStoreCleanupScanLimit)
-	cleanupExpiredTurnStateBindings(s.sessionToTurnState, now, openAIWSStateStoreCleanupScanLimit)
-	cleanupExpiredSessionConnBindings(s.sessionToConn, now, openAIWSStateStoreCleanupScanLimit)
+	// 固定采样会在高流量场景下产生清理追不上写入的风险；这里按全量过期扫描兜底。
+	cleanupExpiredAccountBindings(s.responseToAccount, now)
+	cleanupExpiredConnBindings(s.responseToConn, now)
+	cleanupExpiredTurnStateBindings(s.sessionToTurnState, now)
+	cleanupExpiredSessionConnBindings(s.sessionToConn, now)
 }
 
-func cleanupExpiredAccountBindings(bindings map[string]openAIWSAccountBinding, now time.Time, limit int) {
+func cleanupExpiredAccountBindings(bindings map[string]openAIWSAccountBinding, now time.Time) {
 	if len(bindings) == 0 {
 		return
 	}
-	if limit <= 0 {
-		limit = len(bindings)
-	}
-	scanned := 0
 	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
 			delete(bindings, key)
 		}
-		scanned++
-		if scanned >= limit {
-			break
-		}
 	}
 }
 
-func cleanupExpiredConnBindings(bindings map[string]openAIWSConnBinding, now time.Time, limit int) {
+func cleanupExpiredConnBindings(bindings map[string]openAIWSConnBinding, now time.Time) {
 	if len(bindings) == 0 {
 		return
 	}
-	if limit <= 0 {
-		limit = len(bindings)
-	}
-	scanned := 0
 	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
 			delete(bindings, key)
 		}
-		scanned++
-		if scanned >= limit {
-			break
-		}
 	}
 }
 
-func cleanupExpiredTurnStateBindings(bindings map[string]openAIWSTurnStateBinding, now time.Time, limit int) {
+func cleanupExpiredTurnStateBindings(bindings map[string]openAIWSTurnStateBinding, now time.Time) {
 	if len(bindings) == 0 {
 		return
 	}
-	if limit <= 0 {
-		limit = len(bindings)
-	}
-	scanned := 0
 	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
 			delete(bindings, key)
 		}
-		scanned++
-		if scanned >= limit {
-			break
-		}
 	}
 }
 
-func cleanupExpiredSessionConnBindings(bindings map[string]openAIWSSessionConnBinding, now time.Time, limit int) {
+func cleanupExpiredSessionConnBindings(bindings map[string]openAIWSSessionConnBinding, now time.Time) {
 	if len(bindings) == 0 {
 		return
 	}
-	if limit <= 0 {
-		limit = len(bindings)
-	}
-	scanned := 0
 	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
 			delete(bindings, key)
-		}
-		scanned++
-		if scanned >= limit {
-			break
 		}
 	}
 }
