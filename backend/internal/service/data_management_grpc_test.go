@@ -17,10 +17,10 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 )
 
-func TestMapBackupGRPCError(t *testing.T) {
+func TestMapDataManagementGRPCError(t *testing.T) {
 	t.Parallel()
 
-	socketPath := "/tmp/sub2api-backup.sock"
+	socketPath := "/tmp/sub2api-datamanagement.sock"
 	testCases := []struct {
 		name       string
 		err        error
@@ -31,25 +31,25 @@ func TestMapBackupGRPCError(t *testing.T) {
 			name:       "invalid argument",
 			err:        grpcstatus.Error(codes.InvalidArgument, "bad request"),
 			wantCode:   400,
-			wantReason: backupInvalidArgumentReason,
+			wantReason: dataManagementInvalidArgumentReason,
 		},
 		{
 			name:       "not found",
 			err:        grpcstatus.Error(codes.NotFound, "not found"),
 			wantCode:   404,
-			wantReason: backupResourceNotFoundReason,
+			wantReason: dataManagementResourceNotFoundReason,
 		},
 		{
 			name:       "already exists",
 			err:        grpcstatus.Error(codes.AlreadyExists, "exists"),
 			wantCode:   409,
-			wantReason: backupResourceConflictReason,
+			wantReason: dataManagementResourceConflictReason,
 		},
 		{
 			name:       "failed precondition",
 			err:        grpcstatus.Error(codes.FailedPrecondition, "precondition failed"),
 			wantCode:   412,
-			wantReason: backupFailedPrecondition,
+			wantReason: dataManagementFailedPrecondition,
 		},
 		{
 			name:       "unavailable",
@@ -61,19 +61,19 @@ func TestMapBackupGRPCError(t *testing.T) {
 			name:       "deadline exceeded",
 			err:        grpcstatus.Error(codes.DeadlineExceeded, "timeout"),
 			wantCode:   504,
-			wantReason: backupAgentTimeoutReason,
+			wantReason: dataManagementAgentTimeoutReason,
 		},
 		{
 			name:       "internal fallback",
 			err:        grpcstatus.Error(codes.Internal, "internal"),
 			wantCode:   500,
-			wantReason: backupAgentInternalReason,
+			wantReason: dataManagementAgentInternalReason,
 		},
 		{
 			name:       "non grpc error",
 			err:        errors.New("plain error"),
 			wantCode:   500,
-			wantReason: backupAgentInternalReason,
+			wantReason: dataManagementAgentInternalReason,
 		},
 	}
 
@@ -82,7 +82,7 @@ func TestMapBackupGRPCError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			mapped := mapBackupGRPCError(tc.err, socketPath)
+			mapped := mapDataManagementGRPCError(tc.err, socketPath)
 			statusCode, body := infraerrors.ToHTTP(mapped)
 
 			require.Equal(t, tc.wantCode, statusCode)
@@ -100,7 +100,7 @@ func TestValidateDataManagementConfig(t *testing.T) {
 
 	valid := DataManagementConfig{
 		SourceMode:    "direct",
-		BackupRoot:    "/var/lib/sub2api/backups",
+		BackupRoot:    "/var/lib/sub2api/datamanagement",
 		RetentionDays: 7,
 		KeepLast:      30,
 		Postgres: DataManagementPostgresConfig{
@@ -134,7 +134,7 @@ func TestValidateDataManagementConfig(t *testing.T) {
 	require.Error(t, validateDataManagementConfig(s3EnabledMissingBucket))
 }
 
-func TestDataManagementService_DialBackupAgent_TimeoutDisabled(t *testing.T) {
+func TestDataManagementService_DialDataManagementAgent_TimeoutDisabled(t *testing.T) {
 	t.Parallel()
 
 	socketPath := filepath.Join("/tmp", fmt.Sprintf("s2dm0-%d.sock", time.Now().UnixNano()))
@@ -145,13 +145,13 @@ func TestDataManagementService_DialBackupAgent_TimeoutDisabled(t *testing.T) {
 		dialTimeout: 0,
 	}
 
-	conn, err := svc.dialBackupAgent(context.Background(), socketPath)
+	conn, err := svc.dialDataManagementAgent(context.Background(), socketPath)
 	require.NoError(t, err)
 	require.NotNil(t, conn)
 	require.NoError(t, conn.Close())
 }
 
-func TestDataManagementService_DialBackupAgent_TimeoutExceeded(t *testing.T) {
+func TestDataManagementService_DialDataManagementAgent_TimeoutExceeded(t *testing.T) {
 	t.Parallel()
 
 	socketPath := filepath.Join(t.TempDir(), "missing.sock")
@@ -160,7 +160,7 @@ func TestDataManagementService_DialBackupAgent_TimeoutExceeded(t *testing.T) {
 		dialTimeout: 30 * time.Millisecond,
 	}
 
-	conn, err := svc.dialBackupAgent(context.Background(), socketPath)
+	conn, err := svc.dialDataManagementAgent(context.Background(), socketPath)
 	require.Nil(t, conn)
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.DeadlineExceeded)

@@ -865,18 +865,20 @@ export default {
 
     dataManagement: {
       title: '数据管理',
-      description: '统一管理备份代理状态、对象存储配置和备份任务',
+      description: '统一管理数据管理代理状态、对象存储配置和备份任务',
       agent: {
-        title: '备份代理状态',
+        title: '数据管理代理状态',
         description: '系统会自动探测固定 Unix Socket，仅在可连通时启用数据管理功能。',
-        enabled: '备份代理已就绪，可继续进行数据管理操作。',
-        disabled: '备份代理不可用，当前仅可查看诊断信息。',
+        enabled: '数据管理代理已就绪，可继续进行数据管理操作。',
+        disabled: '数据管理代理不可用，当前仅可查看诊断信息。',
         socketPath: 'Socket 路径',
         version: '版本',
         status: '状态',
         uptime: '运行时长',
         reasonLabel: '不可用原因',
         reason: {
+          DATA_MANAGEMENT_AGENT_SOCKET_MISSING: '未检测到数据管理 Socket 文件',
+          DATA_MANAGEMENT_AGENT_UNAVAILABLE: '数据管理代理不可连通',
           BACKUP_AGENT_SOCKET_MISSING: '未检测到备份 Socket 文件',
           BACKUP_AGENT_UNAVAILABLE: '备份代理不可连通',
           UNKNOWN: '未知原因'
@@ -1005,7 +1007,7 @@ export default {
       },
       actions: {
         refresh: '刷新状态',
-        disabledHint: '请先启动 backupd 并确认 Socket 可连通。',
+        disabledHint: '请先启动 datamanagementd 并确认 Socket 可连通。',
         reloadConfig: '加载配置',
         reloadSourceProfiles: '刷新数据源配置',
         reloadProfiles: '刷新账号列表',

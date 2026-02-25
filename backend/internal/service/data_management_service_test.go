@@ -22,7 +22,7 @@ func TestDataManagementService_GetAgentHealth_SocketMissing(t *testing.T) {
 	health := svc.GetAgentHealth(context.Background())
 
 	require.False(t, health.Enabled)
-	require.Equal(t, BackupAgentSocketMissingReason, health.Reason)
+	require.Equal(t, DataManagementAgentSocketMissingReason, health.Reason)
 	require.NotEmpty(t, health.SocketPath)
 }
 
@@ -40,7 +40,7 @@ func TestDataManagementService_GetAgentHealth_SocketReachable(t *testing.T) {
 	require.Equal(t, socketPath, health.SocketPath)
 	require.NotNil(t, health.Agent)
 	require.Equal(t, "SERVING", health.Agent.Status)
-	require.Equal(t, "test-backupd", health.Agent.Version)
+	require.Equal(t, "test-datamanagementd", health.Agent.Version)
 	require.EqualValues(t, 42, health.Agent.UptimeSeconds)
 }
 
@@ -53,7 +53,7 @@ func TestDataManagementService_EnsureAgentEnabled(t *testing.T) {
 
 	statusCode, status := infraerrors.ToHTTP(err)
 	require.Equal(t, 503, statusCode)
-	require.Equal(t, BackupAgentSocketMissingReason, status.Reason)
+	require.Equal(t, DataManagementAgentSocketMissingReason, status.Reason)
 	require.Equal(t, svc.SocketPath(), status.Metadata["socket_path"])
 }
 
@@ -85,7 +85,7 @@ type testBackupHealthServer struct {
 func (s *testBackupHealthServer) Health(context.Context, *backupv1.HealthRequest) (*backupv1.HealthResponse, error) {
 	return &backupv1.HealthResponse{
 		Status:        "SERVING",
-		Version:       "test-backupd",
+		Version:       "test-datamanagementd",
 		UptimeSeconds: 42,
 	}, nil
 }

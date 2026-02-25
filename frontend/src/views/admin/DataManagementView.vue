@@ -755,8 +755,8 @@ const sourceDrawerOpen = ref(false)
 
 const health = ref<BackupAgentHealth>({
   enabled: false,
-  reason: 'BACKUP_AGENT_SOCKET_MISSING',
-  socket_path: '/tmp/sub2api-backup.sock'
+  reason: 'DATA_MANAGEMENT_AGENT_SOCKET_MISSING',
+  socket_path: '/tmp/sub2api-datamanagement.sock'
 })
 
 const config = ref<DataManagementConfig>(newDefaultConfig())
@@ -826,6 +826,9 @@ const reasonMessage = computed(() => {
   }
 
   const reasonKeyMap: Record<string, string> = {
+    DATA_MANAGEMENT_AGENT_SOCKET_MISSING: 'admin.dataManagement.agent.reason.DATA_MANAGEMENT_AGENT_SOCKET_MISSING',
+    DATA_MANAGEMENT_AGENT_UNAVAILABLE: 'admin.dataManagement.agent.reason.DATA_MANAGEMENT_AGENT_UNAVAILABLE',
+    // 向后兼容旧 reason code
     BACKUP_AGENT_SOCKET_MISSING: 'admin.dataManagement.agent.reason.BACKUP_AGENT_SOCKET_MISSING',
     BACKUP_AGENT_UNAVAILABLE: 'admin.dataManagement.agent.reason.BACKUP_AGENT_UNAVAILABLE'
   }
@@ -1389,7 +1392,7 @@ function syncProfileFormWithSelection() {
 function newDefaultConfig(): DataManagementConfig {
   return {
     source_mode: 'direct',
-    backup_root: '/var/lib/sub2api/backups',
+    backup_root: '/var/lib/sub2api/datamanagement',
     retention_days: 7,
     keep_last: 30,
     active_postgres_profile_id: '',

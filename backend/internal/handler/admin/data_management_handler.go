@@ -488,9 +488,9 @@ func (h *DataManagementHandler) GetBackupJob(c *gin.Context) {
 func (h *DataManagementHandler) requireAgentEnabled(c *gin.Context) bool {
 	if h.dataManagementService == nil {
 		err := infraerrors.ServiceUnavailable(
-			service.BackupAgentUnavailableReason,
-			"backup agent service is not configured",
-		).WithMetadata(map[string]string{"socket_path": service.DefaultBackupAgentSocketPath})
+			service.DataManagementAgentUnavailableReason,
+			"data management agent service is not configured",
+		).WithMetadata(map[string]string{"socket_path": service.DefaultDataManagementAgentSocketPath})
 		response.ErrorFrom(c, err)
 		return false
 	}
@@ -507,8 +507,8 @@ func (h *DataManagementHandler) getAgentHealth(c *gin.Context) service.DataManag
 	if h.dataManagementService == nil {
 		return service.DataManagementAgentHealth{
 			Enabled:    false,
-			Reason:     service.BackupAgentUnavailableReason,
-			SocketPath: service.DefaultBackupAgentSocketPath,
+			Reason:     service.DataManagementAgentUnavailableReason,
+			SocketPath: service.DefaultDataManagementAgentSocketPath,
 		}
 	}
 	return h.dataManagementService.GetAgentHealth(c.Request.Context())

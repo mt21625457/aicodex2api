@@ -842,18 +842,20 @@ export default {
 
     dataManagement: {
       title: 'Data Management',
-      description: 'Manage backup agent status, object storage settings, and backup jobs in one place',
+      description: 'Manage data management agent status, object storage settings, and backup jobs in one place',
       agent: {
-        title: 'Backup Agent Status',
+        title: 'Data Management Agent Status',
         description: 'The system probes a fixed Unix socket and enables data management only when reachable.',
-        enabled: 'Backup agent is ready. Data management operations are available.',
-        disabled: 'Backup agent is unavailable. Only diagnostic information is available now.',
+        enabled: 'Data management agent is ready. Data management operations are available.',
+        disabled: 'Data management agent is unavailable. Only diagnostic information is available now.',
         socketPath: 'Socket Path',
         version: 'Version',
         status: 'Status',
         uptime: 'Uptime',
         reasonLabel: 'Unavailable Reason',
         reason: {
+          DATA_MANAGEMENT_AGENT_SOCKET_MISSING: 'Data management socket file is missing',
+          DATA_MANAGEMENT_AGENT_UNAVAILABLE: 'Data management agent is unreachable',
           BACKUP_AGENT_SOCKET_MISSING: 'Backup socket file is missing',
           BACKUP_AGENT_UNAVAILABLE: 'Backup agent is unreachable',
           UNKNOWN: 'Unknown reason'
@@ -982,7 +984,7 @@ export default {
       },
       actions: {
         refresh: 'Refresh Status',
-        disabledHint: 'Start backupd first and ensure the socket is reachable.',
+        disabledHint: 'Start datamanagementd first and ensure the socket is reachable.',
         reloadConfig: 'Reload Config',
         reloadSourceProfiles: 'Reload Source Profiles',
         reloadProfiles: 'Reload Profiles',

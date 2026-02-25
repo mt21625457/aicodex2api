@@ -46,7 +46,7 @@ func TestDataManagementHandler_AgentHealthAlways200(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(envelope.Data, &data))
 	require.False(t, data.Enabled)
-	require.Equal(t, service.BackupAgentSocketMissingReason, data.Reason)
+	require.Equal(t, service.DataManagementAgentSocketMissingReason, data.Reason)
 	require.Equal(t, svc.SocketPath(), data.SocketPath)
 }
 
@@ -68,7 +68,7 @@ func TestDataManagementHandler_NonHealthRouteReturns503WhenDisabled(t *testing.T
 	var envelope apiEnvelope
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &envelope))
 	require.Equal(t, http.StatusServiceUnavailable, envelope.Code)
-	require.Equal(t, service.BackupAgentSocketMissingReason, envelope.Reason)
+	require.Equal(t, service.DataManagementAgentSocketMissingReason, envelope.Reason)
 }
 
 func TestNormalizeBackupIdempotencyKey(t *testing.T) {

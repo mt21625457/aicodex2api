@@ -12,21 +12,31 @@ import (
 )
 
 const (
-	DefaultBackupAgentSocketPath = "/tmp/sub2api-backup.sock"
+	DefaultDataManagementAgentSocketPath = "/tmp/sub2api-datamanagement.sock"
+	LegacyBackupAgentSocketPath          = "/tmp/sub2api-backup.sock"
 
-	BackupAgentSocketMissingReason = "BACKUP_AGENT_SOCKET_MISSING"
-	BackupAgentUnavailableReason   = "BACKUP_AGENT_UNAVAILABLE"
+	DataManagementAgentSocketMissingReason = "DATA_MANAGEMENT_AGENT_SOCKET_MISSING"
+	DataManagementAgentUnavailableReason   = "DATA_MANAGEMENT_AGENT_UNAVAILABLE"
+
+	// Deprecated: keep old names for compatibility.
+	DefaultBackupAgentSocketPath   = DefaultDataManagementAgentSocketPath
+	BackupAgentSocketMissingReason = DataManagementAgentSocketMissingReason
+	BackupAgentUnavailableReason   = DataManagementAgentUnavailableReason
 )
 
 var (
-	ErrBackupAgentSocketMissing = infraerrors.ServiceUnavailable(
-		BackupAgentSocketMissingReason,
-		"backup agent socket is missing",
+	ErrDataManagementAgentSocketMissing = infraerrors.ServiceUnavailable(
+		DataManagementAgentSocketMissingReason,
+		"data management agent socket is missing",
 	)
-	ErrBackupAgentUnavailable = infraerrors.ServiceUnavailable(
-		BackupAgentUnavailableReason,
-		"backup agent is unavailable",
+	ErrDataManagementAgentUnavailable = infraerrors.ServiceUnavailable(
+		DataManagementAgentUnavailableReason,
+		"data management agent is unavailable",
 	)
+
+	// Deprecated: keep old names for compatibility.
+	ErrBackupAgentSocketMissing = ErrDataManagementAgentSocketMissing
+	ErrBackupAgentUnavailable   = ErrDataManagementAgentUnavailable
 )
 
 type DataManagementAgentHealth struct {
@@ -48,13 +58,13 @@ type DataManagementService struct {
 }
 
 func NewDataManagementService() *DataManagementService {
-	return NewDataManagementServiceWithOptions(DefaultBackupAgentSocketPath, 500*time.Millisecond)
+	return NewDataManagementServiceWithOptions(DefaultDataManagementAgentSocketPath, 500*time.Millisecond)
 }
 
 func NewDataManagementServiceWithOptions(socketPath string, dialTimeout time.Duration) *DataManagementService {
 	path := strings.TrimSpace(socketPath)
 	if path == "" {
-		path = DefaultBackupAgentSocketPath
+		path = DefaultDataManagementAgentSocketPath
 	}
 	if dialTimeout <= 0 {
 		dialTimeout = 500 * time.Millisecond
@@ -67,23 +77,41 @@ func NewDataManagementServiceWithOptions(socketPath string, dialTimeout time.Dur
 
 func (s *DataManagementService) SocketPath() string {
 	if s == nil || strings.TrimSpace(s.socketPath) == "" {
-		return DefaultBackupAgentSocketPath
+		return DefaultDataManagementAgentSocketPath
 	}
 	return s.socketPath
 }
 
 func (s *DataManagementService) GetAgentHealth(ctx context.Context) DataManagementAgentHealth {
-	socketPath := s.SocketPath()
+	primaryPath := s.SocketPath()
+	health := s.getAgentHealthBySocket(ctx, primaryPath)
+	if health.Enabled || primaryPath != DefaultDataManagementAgentSocketPath {
+		return health
+	}
+
+	fallbackPath := strings.TrimSpace(LegacyBackupAgentSocketPath)
+	if fallbackPath == "" || fallbackPath == primaryPath {
+		return health
+	}
+
+	fallback := s.getAgentHealthBySocket(ctx, fallbackPath)
+	if fallback.Enabled {
+		return fallback
+	}
+	return health
+}
+
+func (s *DataManagementService) getAgentHealthBySocket(ctx context.Context, socketPath string) DataManagementAgentHealth {
 	health := DataManagementAgentHealth{
 		Enabled:    false,
-		Reason:     BackupAgentUnavailableReason,
+		Reason:     DataManagementAgentUnavailableReason,
 		SocketPath: socketPath,
 	}
 
 	info, err := os.Stat(socketPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			health.Reason = BackupAgentSocketMissingReason
+			health.Reason = DataManagementAgentSocketMissingReason
 		}
 		return health
 	}
@@ -98,7 +126,7 @@ func (s *DataManagementService) GetAgentHealth(ctx context.Context) DataManageme
 	}
 	_ = conn.Close()
 
-	agent, err := s.probeBackupHealth(ctx)
+	agent, err := s.probeAgentHealth(ctx, socketPath)
 	if err != nil {
 		return health
 	}
@@ -116,8 +144,8 @@ func (s *DataManagementService) EnsureAgentEnabled(ctx context.Context) error {
 	}
 
 	metadata := map[string]string{"socket_path": health.SocketPath}
-	if health.Reason == BackupAgentSocketMissingReason {
-		return ErrBackupAgentSocketMissing.WithMetadata(metadata)
+	if health.Reason == DataManagementAgentSocketMissingReason {
+		return ErrDataManagementAgentSocketMissing.WithMetadata(metadata)
 	}
-	return ErrBackupAgentUnavailable.WithMetadata(metadata)
+	return ErrDataManagementAgentUnavailable.WithMetadata(metadata)
 }

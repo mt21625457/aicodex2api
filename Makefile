@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-frontend build-backupd test test-backend test-frontend test-backupd secret-scan
+.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-datamanagementd secret-scan
 
 # 一键编译前后端
 build: build-backend build-frontend
@@ -11,9 +11,9 @@ build-backend:
 build-frontend:
 	@pnpm --dir frontend run build
 
-# 编译 backupd（宿主机备份进程）
-build-backupd:
-	@cd backup && go build -o backupd ./cmd/backupd
+# 编译 datamanagementd（宿主机数据管理进程）
+build-datamanagementd:
+	@cd datamanagement && go build -o datamanagementd ./cmd/datamanagementd
 
 # 运行测试（后端 + 前端）
 test: test-backend test-frontend
@@ -25,8 +25,8 @@ test-frontend:
 	@pnpm --dir frontend run lint:check
 	@pnpm --dir frontend run typecheck
 
-test-backupd:
-	@cd backup && go test ./...
+test-datamanagementd:
+	@cd datamanagement && go test ./...
 
 secret-scan:
 	@python3 tools/secret_scan.py

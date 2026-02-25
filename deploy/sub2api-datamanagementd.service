@@ -1,5 +1,5 @@
 [Unit]
-Description=Sub2API Backup Daemon
+Description=Sub2API Data Management Daemon
 After=network.target
 Wants=network.target
 
@@ -8,9 +8,9 @@ Type=simple
 User=sub2api
 Group=sub2api
 WorkingDirectory=/opt/sub2api
-ExecStart=/opt/sub2api/backupd \
-  -socket-path /tmp/sub2api-backup.sock \
-  -sqlite-path /var/lib/sub2api/backup/backupd.db \
+ExecStart=/opt/sub2api/datamanagementd \
+  -socket-path /tmp/sub2api-datamanagement.sock \
+  -sqlite-path /var/lib/sub2api/datamanagement/datamanagementd.db \
   -version 1.0.0
 Restart=always
 RestartSec=5s
