@@ -111,11 +111,11 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.FallbackCooldownSeconds != 30 {
 		t.Fatalf("Gateway.OpenAIWS.FallbackCooldownSeconds = %d, want 30", cfg.Gateway.OpenAIWS.FallbackCooldownSeconds)
 	}
-	if cfg.Gateway.OpenAIWS.EventFlushBatchSize != 4 {
-		t.Fatalf("Gateway.OpenAIWS.EventFlushBatchSize = %d, want 4", cfg.Gateway.OpenAIWS.EventFlushBatchSize)
+	if cfg.Gateway.OpenAIWS.EventFlushBatchSize != 1 {
+		t.Fatalf("Gateway.OpenAIWS.EventFlushBatchSize = %d, want 1", cfg.Gateway.OpenAIWS.EventFlushBatchSize)
 	}
-	if cfg.Gateway.OpenAIWS.EventFlushIntervalMS != 25 {
-		t.Fatalf("Gateway.OpenAIWS.EventFlushIntervalMS = %d, want 25", cfg.Gateway.OpenAIWS.EventFlushIntervalMS)
+	if cfg.Gateway.OpenAIWS.EventFlushIntervalMS != 10 {
+		t.Fatalf("Gateway.OpenAIWS.EventFlushIntervalMS = %d, want 10", cfg.Gateway.OpenAIWS.EventFlushIntervalMS)
 	}
 	if cfg.Gateway.OpenAIWS.PrewarmCooldownMS != 300 {
 		t.Fatalf("Gateway.OpenAIWS.PrewarmCooldownMS = %d, want 300", cfg.Gateway.OpenAIWS.PrewarmCooldownMS)
@@ -129,8 +129,8 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.RetryJitterRatio != 0.2 {
 		t.Fatalf("Gateway.OpenAIWS.RetryJitterRatio = %v, want 0.2", cfg.Gateway.OpenAIWS.RetryJitterRatio)
 	}
-	if cfg.Gateway.OpenAIWS.RetryTotalBudgetMS != 0 {
-		t.Fatalf("Gateway.OpenAIWS.RetryTotalBudgetMS = %d, want 0", cfg.Gateway.OpenAIWS.RetryTotalBudgetMS)
+	if cfg.Gateway.OpenAIWS.RetryTotalBudgetMS != 5000 {
+		t.Fatalf("Gateway.OpenAIWS.RetryTotalBudgetMS = %d, want 5000", cfg.Gateway.OpenAIWS.RetryTotalBudgetMS)
 	}
 	if cfg.Gateway.OpenAIWS.PayloadLogSampleRate != 0.2 {
 		t.Fatalf("Gateway.OpenAIWS.PayloadLogSampleRate = %v, want 0.2", cfg.Gateway.OpenAIWS.PayloadLogSampleRate)
@@ -1313,14 +1313,15 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			},
 			wantErr: "gateway.openai_ws.min_idle_per_account must be <= max_idle_per_account",
 		},
-		{
-			name: "max_idle_per_account 不能大于 max_conns_per_account",
-			mutate: func(c *Config) {
-				c.Gateway.OpenAIWS.MaxConnsPerAccount = 2
-				c.Gateway.OpenAIWS.MaxIdlePerAccount = 3
+			{
+				name: "max_idle_per_account 不能大于 max_conns_per_account",
+				mutate: func(c *Config) {
+					c.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+					c.Gateway.OpenAIWS.MinIdlePerAccount = 1
+					c.Gateway.OpenAIWS.MaxIdlePerAccount = 3
+				},
+				wantErr: "gateway.openai_ws.max_idle_per_account must be <= max_conns_per_account",
 			},
-			wantErr: "gateway.openai_ws.max_idle_per_account must be <= max_conns_per_account",
-		},
 		{
 			name:    "dial_timeout_seconds 必须为正数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.DialTimeoutSeconds = 0 },

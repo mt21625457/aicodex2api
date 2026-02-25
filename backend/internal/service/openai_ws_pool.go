@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	openAIWSConnMaxAge            = 60 * time.Minute
-	openAIWSConnHealthCheckIdle   = 90 * time.Second
-	openAIWSConnHealthCheckTO     = 2 * time.Second
-	openAIWSConnPrewarmExtraDelay = 2 * time.Second
+	openAIWSConnMaxAge             = 60 * time.Minute
+	openAIWSConnHealthCheckIdle    = 90 * time.Second
+	openAIWSConnHealthCheckTO      = 2 * time.Second
+	openAIWSConnPrewarmExtraDelay  = 2 * time.Second
+	openAIWSAcquireCleanupInterval = 3 * time.Second
 
 	openAIWSPrewarmFailureWindow   = 30 * time.Second
 	openAIWSPrewarmFailureSuppress = 2
@@ -465,6 +466,7 @@ type openAIWSAccountPool struct {
 	mu            sync.Mutex
 	conns         map[string]*openAIWSConn
 	creating      int
+	lastCleanupAt time.Time
 	lastAcquire   *openAIWSAcquireRequest
 	prewarmActive bool
 	prewarmUntil  time.Time
@@ -501,8 +503,7 @@ type openAIWSConnPool struct {
 	// 通过接口解耦底层 WS 客户端实现，默认使用 coder/websocket。
 	clientDialer openAIWSClientDialer
 
-	mu       sync.RWMutex
-	accounts map[int64]*openAIWSAccountPool
+	accounts sync.Map // key: int64(accountID), value: *openAIWSAccountPool
 	seq      atomic.Uint64
 
 	metrics openAIWSPoolMetrics
@@ -512,7 +513,6 @@ func newOpenAIWSConnPool(cfg *config.Config) *openAIWSConnPool {
 	return &openAIWSConnPool{
 		cfg:          cfg,
 		clientDialer: newDefaultOpenAIWSClientDialer(),
-		accounts:     make(map[int64]*openAIWSAccountPool),
 	}
 }
 
@@ -571,7 +571,11 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 	ap := p.getOrCreateAccountPool(accountID)
 	ap.mu.Lock()
 	ap.lastAcquire = cloneOpenAIWSAcquireRequestPtr(&req)
-	evicted = p.cleanupAccountLocked(ap, time.Now(), effectiveMaxConns)
+	now := time.Now()
+	if ap.lastCleanupAt.IsZero() || now.Sub(ap.lastCleanupAt) >= openAIWSAcquireCleanupInterval {
+		evicted = p.cleanupAccountLocked(ap, now, effectiveMaxConns)
+		ap.lastCleanupAt = now
+	}
 	pickStartedAt := time.Now()
 	allowReuse := !req.ForceNewConn
 
@@ -775,39 +779,34 @@ func (p *openAIWSConnPool) getOrCreateAccountPool(accountID int64) *openAIWSAcco
 	if p == nil || accountID <= 0 {
 		return nil
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	ap, ok := p.accounts[accountID]
-	if ok && ap != nil {
-		return ap
+	if existing, ok := p.accounts.Load(accountID); ok {
+		if ap, typed := existing.(*openAIWSAccountPool); typed && ap != nil {
+			return ap
+		}
 	}
-	ap = &openAIWSAccountPool{conns: make(map[string]*openAIWSConn)}
-	p.accounts[accountID] = ap
+	ap := &openAIWSAccountPool{conns: make(map[string]*openAIWSConn)}
+	actual, _ := p.accounts.LoadOrStore(accountID, ap)
+	if typed, ok := actual.(*openAIWSAccountPool); ok && typed != nil {
+		return typed
+	}
 	return ap
 }
 
-// ensureAccountPoolLocked 兼容旧调用：调用方需已持有 p.mu 锁。
+// ensureAccountPoolLocked 兼容旧调用。
 func (p *openAIWSConnPool) ensureAccountPoolLocked(accountID int64) *openAIWSAccountPool {
-	if p == nil || accountID <= 0 {
-		return nil
-	}
-	ap, ok := p.accounts[accountID]
-	if ok && ap != nil {
-		return ap
-	}
-	ap = &openAIWSAccountPool{conns: make(map[string]*openAIWSConn)}
-	p.accounts[accountID] = ap
-	return ap
+	return p.getOrCreateAccountPool(accountID)
 }
 
 func (p *openAIWSConnPool) getAccountPool(accountID int64) (*openAIWSAccountPool, bool) {
 	if p == nil || accountID <= 0 {
 		return nil, false
 	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	ap, ok := p.accounts[accountID]
-	return ap, ok && ap != nil
+	value, ok := p.accounts.Load(accountID)
+	if !ok || value == nil {
+		return nil, false
+	}
+	ap, typed := value.(*openAIWSAccountPool)
+	return ap, typed && ap != nil
 }
 
 func (p *openAIWSConnPool) cleanupAccountLocked(ap *openAIWSAccountPool, now time.Time, maxConns int) []*openAIWSConn {

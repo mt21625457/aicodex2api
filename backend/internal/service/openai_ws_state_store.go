@@ -14,6 +14,8 @@ import (
 const (
 	openAIWSResponseAccountCachePrefix = "openai:response:"
 	openAIWSStateStoreCleanupInterval  = time.Minute
+	openAIWSStateStoreCleanupMaxPerMap = 512
+	openAIWSStateStoreMaxEntriesPerMap = 65536
 )
 
 type openAIWSAccountBinding struct {
@@ -63,11 +65,14 @@ type OpenAIWSStateStore interface {
 type defaultOpenAIWSStateStore struct {
 	cache GatewayCache
 
-	mu                 sync.RWMutex
-	responseToAccount  map[string]openAIWSAccountBinding
-	responseToConn     map[string]openAIWSConnBinding
-	sessionToTurnState map[string]openAIWSTurnStateBinding
-	sessionToConn      map[string]openAIWSSessionConnBinding
+	responseToAccountMu  sync.RWMutex
+	responseToAccount    map[string]openAIWSAccountBinding
+	responseToConnMu     sync.RWMutex
+	responseToConn       map[string]openAIWSConnBinding
+	sessionToTurnStateMu sync.RWMutex
+	sessionToTurnState   map[string]openAIWSTurnStateBinding
+	sessionToConnMu      sync.RWMutex
+	sessionToConn        map[string]openAIWSSessionConnBinding
 
 	lastCleanupUnixNano atomic.Int64
 }
@@ -94,9 +99,10 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 	s.maybeCleanup()
 
 	expiresAt := time.Now().Add(ttl)
-	s.mu.Lock()
+	s.responseToAccountMu.Lock()
+	ensureBindingCapacity(s.responseToAccount, id, openAIWSStateStoreMaxEntriesPerMap)
 	s.responseToAccount[id] = openAIWSAccountBinding{accountID: accountID, expiresAt: expiresAt}
-	s.mu.Unlock()
+	s.responseToAccountMu.Unlock()
 
 	if s.cache == nil {
 		return nil
@@ -113,15 +119,15 @@ func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, grou
 	s.maybeCleanup()
 
 	now := time.Now()
-	s.mu.RLock()
+	s.responseToAccountMu.RLock()
 	if binding, ok := s.responseToAccount[id]; ok {
 		if now.Before(binding.expiresAt) {
 			accountID := binding.accountID
-			s.mu.RUnlock()
+			s.responseToAccountMu.RUnlock()
 			return accountID, nil
 		}
 	}
-	s.mu.RUnlock()
+	s.responseToAccountMu.RUnlock()
 
 	if s.cache == nil {
 		return 0, nil
@@ -141,9 +147,9 @@ func (s *defaultOpenAIWSStateStore) DeleteResponseAccount(ctx context.Context, g
 	if id == "" {
 		return nil
 	}
-	s.mu.Lock()
+	s.responseToAccountMu.Lock()
 	delete(s.responseToAccount, id)
-	s.mu.Unlock()
+	s.responseToAccountMu.Unlock()
 
 	if s.cache == nil {
 		return nil
@@ -160,12 +166,13 @@ func (s *defaultOpenAIWSStateStore) BindResponseConn(responseID, connID string, 
 	ttl = normalizeOpenAIWSTTL(ttl)
 	s.maybeCleanup()
 
-	s.mu.Lock()
+	s.responseToConnMu.Lock()
+	ensureBindingCapacity(s.responseToConn, id, openAIWSStateStoreMaxEntriesPerMap)
 	s.responseToConn[id] = openAIWSConnBinding{
 		connID:    conn,
 		expiresAt: time.Now().Add(ttl),
 	}
-	s.mu.Unlock()
+	s.responseToConnMu.Unlock()
 }
 
 func (s *defaultOpenAIWSStateStore) GetResponseConn(responseID string) (string, bool) {
@@ -176,9 +183,9 @@ func (s *defaultOpenAIWSStateStore) GetResponseConn(responseID string) (string, 
 	s.maybeCleanup()
 
 	now := time.Now()
-	s.mu.RLock()
+	s.responseToConnMu.RLock()
 	binding, ok := s.responseToConn[id]
-	s.mu.RUnlock()
+	s.responseToConnMu.RUnlock()
 	if !ok || now.After(binding.expiresAt) || strings.TrimSpace(binding.connID) == "" {
 		return "", false
 	}
@@ -190,9 +197,9 @@ func (s *defaultOpenAIWSStateStore) DeleteResponseConn(responseID string) {
 	if id == "" {
 		return
 	}
-	s.mu.Lock()
+	s.responseToConnMu.Lock()
 	delete(s.responseToConn, id)
-	s.mu.Unlock()
+	s.responseToConnMu.Unlock()
 }
 
 func (s *defaultOpenAIWSStateStore) BindSessionTurnState(groupID int64, sessionHash, turnState string, ttl time.Duration) {
@@ -204,12 +211,13 @@ func (s *defaultOpenAIWSStateStore) BindSessionTurnState(groupID int64, sessionH
 	ttl = normalizeOpenAIWSTTL(ttl)
 	s.maybeCleanup()
 
-	s.mu.Lock()
+	s.sessionToTurnStateMu.Lock()
+	ensureBindingCapacity(s.sessionToTurnState, key, openAIWSStateStoreMaxEntriesPerMap)
 	s.sessionToTurnState[key] = openAIWSTurnStateBinding{
 		turnState: state,
 		expiresAt: time.Now().Add(ttl),
 	}
-	s.mu.Unlock()
+	s.sessionToTurnStateMu.Unlock()
 }
 
 func (s *defaultOpenAIWSStateStore) GetSessionTurnState(groupID int64, sessionHash string) (string, bool) {
@@ -220,9 +228,9 @@ func (s *defaultOpenAIWSStateStore) GetSessionTurnState(groupID int64, sessionHa
 	s.maybeCleanup()
 
 	now := time.Now()
-	s.mu.RLock()
+	s.sessionToTurnStateMu.RLock()
 	binding, ok := s.sessionToTurnState[key]
-	s.mu.RUnlock()
+	s.sessionToTurnStateMu.RUnlock()
 	if !ok || now.After(binding.expiresAt) || strings.TrimSpace(binding.turnState) == "" {
 		return "", false
 	}
@@ -234,9 +242,9 @@ func (s *defaultOpenAIWSStateStore) DeleteSessionTurnState(groupID int64, sessio
 	if key == "" {
 		return
 	}
-	s.mu.Lock()
+	s.sessionToTurnStateMu.Lock()
 	delete(s.sessionToTurnState, key)
-	s.mu.Unlock()
+	s.sessionToTurnStateMu.Unlock()
 }
 
 func (s *defaultOpenAIWSStateStore) BindSessionConn(groupID int64, sessionHash, connID string, ttl time.Duration) {
@@ -248,12 +256,13 @@ func (s *defaultOpenAIWSStateStore) BindSessionConn(groupID int64, sessionHash, 
 	ttl = normalizeOpenAIWSTTL(ttl)
 	s.maybeCleanup()
 
-	s.mu.Lock()
+	s.sessionToConnMu.Lock()
+	ensureBindingCapacity(s.sessionToConn, key, openAIWSStateStoreMaxEntriesPerMap)
 	s.sessionToConn[key] = openAIWSSessionConnBinding{
 		connID:    conn,
 		expiresAt: time.Now().Add(ttl),
 	}
-	s.mu.Unlock()
+	s.sessionToConnMu.Unlock()
 }
 
 func (s *defaultOpenAIWSStateStore) GetSessionConn(groupID int64, sessionHash string) (string, bool) {
@@ -264,9 +273,9 @@ func (s *defaultOpenAIWSStateStore) GetSessionConn(groupID int64, sessionHash st
 	s.maybeCleanup()
 
 	now := time.Now()
-	s.mu.RLock()
+	s.sessionToConnMu.RLock()
 	binding, ok := s.sessionToConn[key]
-	s.mu.RUnlock()
+	s.sessionToConnMu.RUnlock()
 	if !ok || now.After(binding.expiresAt) || strings.TrimSpace(binding.connID) == "" {
 		return "", false
 	}
@@ -278,9 +287,9 @@ func (s *defaultOpenAIWSStateStore) DeleteSessionConn(groupID int64, sessionHash
 	if key == "" {
 		return
 	}
-	s.mu.Lock()
+	s.sessionToConnMu.Lock()
 	delete(s.sessionToConn, key)
-	s.mu.Unlock()
+	s.sessionToConnMu.Unlock()
 }
 
 func (s *defaultOpenAIWSStateStore) maybeCleanup() {
@@ -296,56 +305,99 @@ func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// 固定采样会在高流量场景下产生清理追不上写入的风险；这里按全量过期扫描兜底。
-	cleanupExpiredAccountBindings(s.responseToAccount, now)
-	cleanupExpiredConnBindings(s.responseToConn, now)
-	cleanupExpiredTurnStateBindings(s.sessionToTurnState, now)
-	cleanupExpiredSessionConnBindings(s.sessionToConn, now)
+	// 增量限额清理，避免高规模下一次性全量扫描导致长时间阻塞。
+	s.responseToAccountMu.Lock()
+	cleanupExpiredAccountBindings(s.responseToAccount, now, openAIWSStateStoreCleanupMaxPerMap)
+	s.responseToAccountMu.Unlock()
+
+	s.responseToConnMu.Lock()
+	cleanupExpiredConnBindings(s.responseToConn, now, openAIWSStateStoreCleanupMaxPerMap)
+	s.responseToConnMu.Unlock()
+
+	s.sessionToTurnStateMu.Lock()
+	cleanupExpiredTurnStateBindings(s.sessionToTurnState, now, openAIWSStateStoreCleanupMaxPerMap)
+	s.sessionToTurnStateMu.Unlock()
+
+	s.sessionToConnMu.Lock()
+	cleanupExpiredSessionConnBindings(s.sessionToConn, now, openAIWSStateStoreCleanupMaxPerMap)
+	s.sessionToConnMu.Unlock()
 }
 
-func cleanupExpiredAccountBindings(bindings map[string]openAIWSAccountBinding, now time.Time) {
-	if len(bindings) == 0 {
+func cleanupExpiredAccountBindings(bindings map[string]openAIWSAccountBinding, now time.Time, maxScan int) {
+	if len(bindings) == 0 || maxScan <= 0 {
 		return
 	}
+	scanned := 0
 	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
 			delete(bindings, key)
 		}
-	}
-}
-
-func cleanupExpiredConnBindings(bindings map[string]openAIWSConnBinding, now time.Time) {
-	if len(bindings) == 0 {
-		return
-	}
-	for key, binding := range bindings {
-		if now.After(binding.expiresAt) {
-			delete(bindings, key)
+		scanned++
+		if scanned >= maxScan {
+			break
 		}
 	}
 }
 
-func cleanupExpiredTurnStateBindings(bindings map[string]openAIWSTurnStateBinding, now time.Time) {
-	if len(bindings) == 0 {
+func cleanupExpiredConnBindings(bindings map[string]openAIWSConnBinding, now time.Time, maxScan int) {
+	if len(bindings) == 0 || maxScan <= 0 {
 		return
 	}
+	scanned := 0
 	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
 			delete(bindings, key)
+		}
+		scanned++
+		if scanned >= maxScan {
+			break
 		}
 	}
 }
 
-func cleanupExpiredSessionConnBindings(bindings map[string]openAIWSSessionConnBinding, now time.Time) {
-	if len(bindings) == 0 {
+func cleanupExpiredTurnStateBindings(bindings map[string]openAIWSTurnStateBinding, now time.Time, maxScan int) {
+	if len(bindings) == 0 || maxScan <= 0 {
 		return
 	}
+	scanned := 0
 	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
 			delete(bindings, key)
 		}
+		scanned++
+		if scanned >= maxScan {
+			break
+		}
+	}
+}
+
+func cleanupExpiredSessionConnBindings(bindings map[string]openAIWSSessionConnBinding, now time.Time, maxScan int) {
+	if len(bindings) == 0 || maxScan <= 0 {
+		return
+	}
+	scanned := 0
+	for key, binding := range bindings {
+		if now.After(binding.expiresAt) {
+			delete(bindings, key)
+		}
+		scanned++
+		if scanned >= maxScan {
+			break
+		}
+	}
+}
+
+func ensureBindingCapacity[T any](bindings map[string]T, incomingKey string, maxEntries int) {
+	if len(bindings) < maxEntries || maxEntries <= 0 {
+		return
+	}
+	if _, exists := bindings[incomingKey]; exists {
+		return
+	}
+	// 固定上限保护：淘汰任意一项，优先保证内存有界。
+	for key := range bindings {
+		delete(bindings, key)
+		return
 	}
 }
 

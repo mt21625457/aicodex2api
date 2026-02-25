@@ -535,14 +535,14 @@ func (s *OpenAIGatewayService) getOpenAIAccountScheduler() OpenAIAccountSchedule
 	if s == nil {
 		return nil
 	}
-	s.openaiWSInitMu.Lock()
-	defer s.openaiWSInitMu.Unlock()
-	if s.openaiAccountStats == nil {
-		s.openaiAccountStats = newOpenAIAccountRuntimeStats()
-	}
-	if s.openaiScheduler == nil {
-		s.openaiScheduler = newDefaultOpenAIAccountScheduler(s, s.openaiAccountStats)
-	}
+	s.openaiSchedulerOnce.Do(func() {
+		if s.openaiAccountStats == nil {
+			s.openaiAccountStats = newOpenAIAccountRuntimeStats()
+		}
+		if s.openaiScheduler == nil {
+			s.openaiScheduler = newDefaultOpenAIAccountScheduler(s, s.openaiAccountStats)
+		}
+	})
 	return s.openaiScheduler
 }
 

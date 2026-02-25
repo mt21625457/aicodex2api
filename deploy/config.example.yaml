@@ -222,9 +222,9 @@ gateway:
     responses_websockets: false
     responses_websockets_v2: true
     # 连接池参数（按账号池化复用）
-    max_conns_per_account: 8
-    min_idle_per_account: 1
-    max_idle_per_account: 4
+    max_conns_per_account: 24
+    min_idle_per_account: 4
+    max_idle_per_account: 12
     # 是否按账号并发动态计算连接池上限：
     # effective_max_conns = min(max_conns_per_account, ceil(account.concurrency * factor))
     dynamic_max_conns_by_account_concurrency_enabled: true
@@ -235,10 +235,10 @@ gateway:
     read_timeout_seconds: 900
     write_timeout_seconds: 120
     pool_target_utilization: 0.7
-    queue_limit_per_conn: 256
+    queue_limit_per_conn: 64
     # 流式写出批量 flush 参数
-    event_flush_batch_size: 4
-    event_flush_interval_ms: 25
+    event_flush_batch_size: 1
+    event_flush_interval_ms: 10
     # 预热触发冷却（毫秒）
     prewarm_cooldown_ms: 300
     # WS 回退到 HTTP 后的冷却时间（秒），用于避免 WS/HTTP 来回抖动；0 表示关闭冷却
@@ -248,8 +248,8 @@ gateway:
     retry_backoff_max_ms: 2000
     # 抖动比例（0-1）
     retry_jitter_ratio: 0.2
-    # 单次请求 WS 重试总预算（毫秒）；0 表示关闭预算限制，不因预算回退 HTTP
-    retry_total_budget_ms: 0
+    # 单次请求 WS 重试总预算（毫秒）；建议设置为有限值，避免重试拉高 TTFT 长尾
+    retry_total_budget_ms: 5000
     # payload_schema 日志采样率（0-1）；降低热路径日志放大
     payload_log_sample_rate: 0.2
     # 调度与粘连参数

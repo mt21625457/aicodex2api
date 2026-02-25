@@ -241,7 +241,6 @@ func TestOpenAIWSConnPool_AcquireQueueWaitMetrics(t *testing.T) {
 	conn := newOpenAIWSConn("busy", accountID, &openAIWSFakeConn{}, nil)
 	require.True(t, conn.tryAcquire()) // 占用连接，触发后续排队
 
-	pool.mu.Lock()
 	ap := pool.ensureAccountPoolLocked(accountID)
 	ap.mu.Lock()
 	ap.conns[conn.id] = conn
@@ -250,7 +249,6 @@ func TestOpenAIWSConnPool_AcquireQueueWaitMetrics(t *testing.T) {
 		WSURL:   "wss://example.com/v1/responses",
 	}
 	ap.mu.Unlock()
-	pool.mu.Unlock()
 
 	go func() {
 		time.Sleep(60 * time.Millisecond)

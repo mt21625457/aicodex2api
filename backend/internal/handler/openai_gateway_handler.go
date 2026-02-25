@@ -535,6 +535,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "too many concurrent requests, please retry later")
 		return
 	}
+	currentUserRelease := wrapReleaseOnDone(ctx, userReleaseFunc)
+	var currentAccountRelease func()
+	releaseTurnSlots := func() {
+		if currentAccountRelease != nil {
+			currentAccountRelease()
+			currentAccountRelease = nil
+		}
+		if currentUserRelease != nil {
+			currentUserRelease()
+			currentUserRelease = nil
+		}
+	}
+	defer releaseTurnSlots()
+
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	if err := h.billingCacheService.CheckBillingEligibility(ctx, apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
 		reqLog.Info("openai.websocket_billing_eligibility_check_failed", zap.Error(err))
@@ -584,6 +598,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 		accountReleaseFunc = fastReleaseFunc
 	}
+	currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
 	if err := h.gatewayService.BindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.websocket_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
@@ -601,20 +616,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.String("schedule_layer", scheduleDecision.Layer),
 		zap.Int("candidate_count", scheduleDecision.CandidateCount),
 	)
-
-	currentUserRelease := wrapReleaseOnDone(ctx, userReleaseFunc)
-	currentAccountRelease := wrapReleaseOnDone(ctx, accountReleaseFunc)
-	releaseTurnSlots := func() {
-		if currentAccountRelease != nil {
-			currentAccountRelease()
-			currentAccountRelease = nil
-		}
-		if currentUserRelease != nil {
-			currentUserRelease()
-			currentUserRelease = nil
-		}
-	}
-	defer releaseTurnSlots()
 
 	userAgent := c.GetHeader("User-Agent")
 	clientIP := ip.GetClientIP(c)

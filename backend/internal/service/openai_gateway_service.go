@@ -247,14 +247,15 @@ type OpenAIGatewayService struct {
 	toolCorrector       *CodexToolCorrector
 	openaiWSResolver    OpenAIWSProtocolResolver
 
-	openaiWSInitMu     sync.Mutex
-	openaiWSPool       *openAIWSConnPool
-	openaiWSStateStore OpenAIWSStateStore
-	openaiScheduler    OpenAIAccountScheduler
-	openaiAccountStats *openAIAccountRuntimeStats
+	openaiWSPoolOnce       sync.Once
+	openaiWSStateStoreOnce sync.Once
+	openaiSchedulerOnce    sync.Once
+	openaiWSPool           *openAIWSConnPool
+	openaiWSStateStore     OpenAIWSStateStore
+	openaiScheduler        OpenAIAccountScheduler
+	openaiAccountStats     *openAIAccountRuntimeStats
 
-	openaiWSFallbackMu    sync.Mutex
-	openaiWSFallbackUntil map[int64]time.Time
+	openaiWSFallbackUntil sync.Map // key: int64(accountID), value: time.Time
 	openaiWSRetryMetrics  openAIWSRetryMetrics
 }
 
