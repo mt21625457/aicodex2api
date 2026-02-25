@@ -14,6 +14,8 @@ import (
 const (
 	openAIWSResponseAccountCachePrefix = "openai:response:"
 	openAIWSStateStoreCleanupInterval  = time.Minute
+	// 分桶增量清理，避免在写锁下做全量 map 扫描。
+	openAIWSStateStoreCleanupScanLimit = 128
 )
 
 type openAIWSAccountBinding struct {
@@ -28,6 +30,11 @@ type openAIWSConnBinding struct {
 
 type openAIWSTurnStateBinding struct {
 	turnState string
+	expiresAt time.Time
+}
+
+type openAIWSSessionConnBinding struct {
+	connID    string
 	expiresAt time.Time
 }
 
@@ -49,6 +56,10 @@ type OpenAIWSStateStore interface {
 	BindSessionTurnState(groupID int64, sessionHash, turnState string, ttl time.Duration)
 	GetSessionTurnState(groupID int64, sessionHash string) (string, bool)
 	DeleteSessionTurnState(groupID int64, sessionHash string)
+
+	BindSessionConn(groupID int64, sessionHash, connID string, ttl time.Duration)
+	GetSessionConn(groupID int64, sessionHash string) (string, bool)
+	DeleteSessionConn(groupID int64, sessionHash string)
 }
 
 type defaultOpenAIWSStateStore struct {
@@ -58,6 +69,7 @@ type defaultOpenAIWSStateStore struct {
 	responseToAccount  map[string]openAIWSAccountBinding
 	responseToConn     map[string]openAIWSConnBinding
 	sessionToTurnState map[string]openAIWSTurnStateBinding
+	sessionToConn      map[string]openAIWSSessionConnBinding
 
 	lastCleanupUnixNano atomic.Int64
 }
@@ -69,6 +81,7 @@ func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
 		responseToAccount:  make(map[string]openAIWSAccountBinding, 256),
 		responseToConn:     make(map[string]openAIWSConnBinding, 256),
 		sessionToTurnState: make(map[string]openAIWSTurnStateBinding, 256),
+		sessionToConn:      make(map[string]openAIWSSessionConnBinding, 256),
 	}
 	store.lastCleanupUnixNano.Store(time.Now().UnixNano())
 	return store
@@ -228,6 +241,50 @@ func (s *defaultOpenAIWSStateStore) DeleteSessionTurnState(groupID int64, sessio
 	s.mu.Unlock()
 }
 
+func (s *defaultOpenAIWSStateStore) BindSessionConn(groupID int64, sessionHash, connID string, ttl time.Duration) {
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	conn := strings.TrimSpace(connID)
+	if key == "" || conn == "" {
+		return
+	}
+	ttl = normalizeOpenAIWSTTL(ttl)
+	s.maybeCleanup()
+
+	s.mu.Lock()
+	s.sessionToConn[key] = openAIWSSessionConnBinding{
+		connID:    conn,
+		expiresAt: time.Now().Add(ttl),
+	}
+	s.mu.Unlock()
+}
+
+func (s *defaultOpenAIWSStateStore) GetSessionConn(groupID int64, sessionHash string) (string, bool) {
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	if key == "" {
+		return "", false
+	}
+	s.maybeCleanup()
+
+	now := time.Now()
+	s.mu.RLock()
+	binding, ok := s.sessionToConn[key]
+	s.mu.RUnlock()
+	if !ok || now.After(binding.expiresAt) || strings.TrimSpace(binding.connID) == "" {
+		return "", false
+	}
+	return binding.connID, true
+}
+
+func (s *defaultOpenAIWSStateStore) DeleteSessionConn(groupID int64, sessionHash string) {
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.sessionToConn, key)
+	s.mu.Unlock()
+}
+
 func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 	if s == nil {
 		return
@@ -243,19 +300,84 @@ func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for key, binding := range s.responseToAccount {
+	cleanupExpiredAccountBindings(s.responseToAccount, now, openAIWSStateStoreCleanupScanLimit)
+	cleanupExpiredConnBindings(s.responseToConn, now, openAIWSStateStoreCleanupScanLimit)
+	cleanupExpiredTurnStateBindings(s.sessionToTurnState, now, openAIWSStateStoreCleanupScanLimit)
+	cleanupExpiredSessionConnBindings(s.sessionToConn, now, openAIWSStateStoreCleanupScanLimit)
+}
+
+func cleanupExpiredAccountBindings(bindings map[string]openAIWSAccountBinding, now time.Time, limit int) {
+	if len(bindings) == 0 {
+		return
+	}
+	if limit <= 0 {
+		limit = len(bindings)
+	}
+	scanned := 0
+	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
-			delete(s.responseToAccount, key)
+			delete(bindings, key)
+		}
+		scanned++
+		if scanned >= limit {
+			break
 		}
 	}
-	for key, binding := range s.responseToConn {
+}
+
+func cleanupExpiredConnBindings(bindings map[string]openAIWSConnBinding, now time.Time, limit int) {
+	if len(bindings) == 0 {
+		return
+	}
+	if limit <= 0 {
+		limit = len(bindings)
+	}
+	scanned := 0
+	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
-			delete(s.responseToConn, key)
+			delete(bindings, key)
+		}
+		scanned++
+		if scanned >= limit {
+			break
 		}
 	}
-	for key, binding := range s.sessionToTurnState {
+}
+
+func cleanupExpiredTurnStateBindings(bindings map[string]openAIWSTurnStateBinding, now time.Time, limit int) {
+	if len(bindings) == 0 {
+		return
+	}
+	if limit <= 0 {
+		limit = len(bindings)
+	}
+	scanned := 0
+	for key, binding := range bindings {
 		if now.After(binding.expiresAt) {
-			delete(s.sessionToTurnState, key)
+			delete(bindings, key)
+		}
+		scanned++
+		if scanned >= limit {
+			break
+		}
+	}
+}
+
+func cleanupExpiredSessionConnBindings(bindings map[string]openAIWSSessionConnBinding, now time.Time, limit int) {
+	if len(bindings) == 0 {
+		return
+	}
+	if limit <= 0 {
+		limit = len(bindings)
+	}
+	scanned := 0
+	for key, binding := range bindings {
+		if now.After(binding.expiresAt) {
+			delete(bindings, key)
+		}
+		scanned++
+		if scanned >= limit {
+			break
 		}
 	}
 }

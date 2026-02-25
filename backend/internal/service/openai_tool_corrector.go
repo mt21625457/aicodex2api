@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -62,14 +63,57 @@ func (c *CodexToolCorrector) CorrectToolCallsInSSEData(data string) (string, boo
 	if data == "" || data == "\n" {
 		return data, false
 	}
+	correctedBytes, corrected := c.CorrectToolCallsInSSEBytes([]byte(data))
+	if !corrected {
+		return data, false
+	}
+	return string(correctedBytes), true
+}
+
+// CorrectToolCallsInSSEBytes 修正 SSE JSON 数据中的工具调用（字节路径）。
+// 返回修正后的数据和是否进行了修正。
+func (c *CodexToolCorrector) CorrectToolCallsInSSEBytes(data []byte) ([]byte, bool) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return data, false
+	}
+	if !mayContainToolCallPayload(data) {
+		return data, false
+	}
 
 	// 尝试解析 JSON
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+	if err := json.Unmarshal(data, &payload); err != nil {
 		// 不是有效的 JSON，直接返回原数据
 		return data, false
 	}
 
+	corrected := c.correctToolCallsInPayload(payload)
+
+	if !corrected {
+		return data, false
+	}
+
+	// 序列化回 JSON
+	correctedBytes, err := json.Marshal(payload)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_tool_corrector", "[CodexToolCorrector] Failed to marshal corrected data: %v", err)
+		return data, false
+	}
+
+	return correctedBytes, true
+}
+
+func mayContainToolCallPayload(data []byte) bool {
+	// 快速路径：多数 token / 文本事件不包含工具字段，避免进入 Unmarshal 热路径。
+	return bytes.Contains(data, []byte(`"tool_calls"`)) ||
+		bytes.Contains(data, []byte(`"function_call"`)) ||
+		bytes.Contains(data, []byte(`"function":{"name"`))
+}
+
+func (c *CodexToolCorrector) correctToolCallsInPayload(payload map[string]any) bool {
+	if len(payload) == 0 {
+		return false
+	}
 	corrected := false
 
 	// 处理 tool_calls 数组
@@ -133,19 +177,7 @@ func (c *CodexToolCorrector) CorrectToolCallsInSSEData(data string) (string, boo
 			}
 		}
 	}
-
-	if !corrected {
-		return data, false
-	}
-
-	// 序列化回 JSON
-	correctedBytes, err := json.Marshal(payload)
-	if err != nil {
-		logger.LegacyPrintf("service.openai_tool_corrector", "[CodexToolCorrector] Failed to marshal corrected data: %v", err)
-		return data, false
-	}
-
-	return string(correctedBytes), true
+	return corrected
 }
 
 // correctToolCallsArray 修正工具调用数组中的工具名称

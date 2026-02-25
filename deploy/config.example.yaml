@@ -27,11 +27,11 @@ server:
   # Trusted proxies for X-Forwarded-For parsing (CIDR/IP). Empty disables trusted proxies.
   # 信任的代理地址（CIDR/IP 格式），用于解析 X-Forwarded-For 头。留空则禁用代理信任。
   trusted_proxies: []
-  # Global max request body size in bytes (default: 100MB)
-  # 全局最大请求体大小（字节，默认 100MB）
+  # Global max request body size in bytes (default: 256MB)
+  # 全局最大请求体大小（字节，默认 256MB）
   # Applies to all requests, especially important for h2c first request memory protection
   # 适用于所有请求，对 h2c 第一请求的内存保护尤为重要
-  max_request_body_size: 104857600
+  max_request_body_size: 268435456
   # HTTP/2 Cleartext (h2c) configuration
   # HTTP/2 Cleartext (h2c) 配置
   h2c:
@@ -143,9 +143,9 @@ gateway:
   # Timeout for waiting upstream response headers (seconds)
   # 等待上游响应头超时时间（秒）
   response_header_timeout: 600
-  # Max request body size in bytes (default: 100MB)
-  # 请求体最大字节数（默认 100MB）
-  max_body_size: 104857600
+  # Max request body size in bytes (default: 256MB)
+  # 请求体最大字节数（默认 256MB）
+  max_body_size: 268435456
   # Max bytes to read for non-stream upstream responses (default: 8MB)
   # 非流式上游响应体读取上限（默认 8MB）
   upstream_response_read_max_bytes: 8388608
@@ -199,10 +199,10 @@ gateway:
   # OpenAI 透传模式是否放行客户端超时头（如 x-stainless-timeout）
   # 默认 false：过滤超时头，降低上游提前断流风险。
   openai_passthrough_allow_timeout_headers: false
-  # OpenAI Responses WebSocket 配置（默认关闭，不影响现网 HTTP 线路）
+  # OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
   openai_ws:
-    # 全局总开关，默认 false；关闭时所有请求保持原有 HTTP/SSE 路由
-    enabled: false
+    # 全局总开关，默认 true；关闭时所有请求保持原有 HTTP/SSE 路由
+    enabled: true
     # 按账号类型细分开关
     oauth_enabled: true
     apikey_enabled: true
@@ -210,6 +210,12 @@ gateway:
     force_http: false
     # 允许在 WSv2 下按策略恢复 store=true（默认 false）
     allow_store_recovery: false
+    # store=false 且无可复用会话连接时的策略：
+    # strict=强制新建连接（隔离优先），adaptive=仅在高风险失败后强制新建，off=尽量复用（性能优先）
+    store_disabled_conn_mode: strict
+    # store=false 且无可复用会话连接时，是否强制新建连接（默认 true，优先会话隔离）
+    # 兼容旧配置：仅在 store_disabled_conn_mode 未配置时生效
+    store_disabled_force_new_conn: true
     # 是否启用 WSv2 generate=false 预热（默认 false）
     prewarm_generate_enabled: false
     # 协议 feature 开关，v2 优先于 v1
@@ -230,8 +236,22 @@ gateway:
     write_timeout_seconds: 120
     pool_target_utilization: 0.7
     queue_limit_per_conn: 256
+    # 流式写出批量 flush 参数
+    event_flush_batch_size: 4
+    event_flush_interval_ms: 25
+    # 预热触发冷却（毫秒）
+    prewarm_cooldown_ms: 300
     # WS 回退到 HTTP 后的冷却时间（秒），用于避免 WS/HTTP 来回抖动；0 表示关闭冷却
     fallback_cooldown_seconds: 30
+    # WS 重试退避参数（毫秒）
+    retry_backoff_initial_ms: 120
+    retry_backoff_max_ms: 2000
+    # 抖动比例（0-1）
+    retry_jitter_ratio: 0.2
+    # 单次请求 WS 重试总预算（毫秒）；0 表示关闭预算限制，不因预算回退 HTTP
+    retry_total_budget_ms: 0
+    # payload_schema 日志采样率（0-1）；降低热路径日志放大
+    payload_log_sample_rate: 0.2
     # 调度与粘连参数
     lb_top_k: 3
     sticky_session_ttl_seconds: 3600

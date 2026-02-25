@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"sort"
 	"strconv"
@@ -35,12 +36,19 @@ const (
 	// OpenAI Platform API for API Key accounts (fallback)
 	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
 	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.98.0"
+	codexCLIUserAgent      = "codex_cli_rs/0.104.0"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
 	// OpenAIParsedRequestBodyKey 缓存 handler 侧已解析的请求体，避免重复解析。
 	OpenAIParsedRequestBodyKey = "openai_parsed_request_body"
+	// OpenAI WS Mode 失败后的重连次数上限（不含首次尝试）。
+	// 与 Codex 客户端保持一致：失败后最多重连 5 次。
+	openAIWSReconnectRetryLimit = 5
+	// OpenAI WS Mode 重连退避默认值（可由配置覆盖）。
+	openAIWSRetryBackoffInitialDefault = 120 * time.Millisecond
+	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
+	openAIWSRetryJitterRatioDefault    = 0.2
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -205,6 +213,20 @@ type OpenAIForwardResult struct {
 	FirstTokenMs    *int
 }
 
+type OpenAIWSRetryMetricsSnapshot struct {
+	RetryAttemptsTotal            int64 `json:"retry_attempts_total"`
+	RetryBackoffMsTotal           int64 `json:"retry_backoff_ms_total"`
+	RetryExhaustedTotal           int64 `json:"retry_exhausted_total"`
+	NonRetryableFastFallbackTotal int64 `json:"non_retryable_fast_fallback_total"`
+}
+
+type openAIWSRetryMetrics struct {
+	retryAttempts            atomic.Int64
+	retryBackoffMs           atomic.Int64
+	retryExhausted           atomic.Int64
+	nonRetryableFastFallback atomic.Int64
+}
+
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
 	accountRepo         AccountRepository
@@ -233,6 +255,7 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackMu    sync.Mutex
 	openaiWSFallbackUntil map[int64]time.Time
+	openaiWSRetryMetrics  openAIWSRetryMetrics
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -252,7 +275,7 @@ func NewOpenAIGatewayService(
 	deferredService *DeferredService,
 	openAITokenProvider *OpenAITokenProvider,
 ) *OpenAIGatewayService {
-	return &OpenAIGatewayService{
+	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
 		usageLogRepo:        usageLogRepo,
 		userRepo:            userRepo,
@@ -271,6 +294,33 @@ func NewOpenAIGatewayService(
 		toolCorrector:       NewCodexToolCorrector(),
 		openaiWSResolver:    NewOpenAIWSProtocolResolver(cfg),
 	}
+	svc.logOpenAIWSModeBootstrap()
+	return svc
+}
+
+func (s *OpenAIGatewayService) logOpenAIWSModeBootstrap() {
+	if s == nil || s.cfg == nil {
+		return
+	}
+	wsCfg := s.cfg.Gateway.OpenAIWS
+	logOpenAIWSModeInfo(
+		"bootstrap enabled=%v oauth_enabled=%v apikey_enabled=%v force_http=%v responses_websockets_v2=%v responses_websockets=%v payload_log_sample_rate=%.3f event_flush_batch_size=%d event_flush_interval_ms=%d prewarm_cooldown_ms=%d retry_backoff_initial_ms=%d retry_backoff_max_ms=%d retry_jitter_ratio=%.3f retry_total_budget_ms=%d ws_read_limit_bytes=%d",
+		wsCfg.Enabled,
+		wsCfg.OAuthEnabled,
+		wsCfg.APIKeyEnabled,
+		wsCfg.ForceHTTP,
+		wsCfg.ResponsesWebsocketsV2,
+		wsCfg.ResponsesWebsockets,
+		wsCfg.PayloadLogSampleRate,
+		wsCfg.EventFlushBatchSize,
+		wsCfg.EventFlushIntervalMS,
+		wsCfg.PrewarmCooldownMS,
+		wsCfg.RetryBackoffInitialMS,
+		wsCfg.RetryBackoffMaxMS,
+		wsCfg.RetryJitterRatio,
+		wsCfg.RetryTotalBudgetMS,
+		openAIWSMessageReadLimitBytes,
+	)
 }
 
 func (s *OpenAIGatewayService) getCodexClientRestrictionDetector() CodexClientRestrictionDetector {
@@ -293,6 +343,160 @@ func (s *OpenAIGatewayService) getOpenAIWSProtocolResolver() OpenAIWSProtocolRes
 		cfg = s.cfg
 	}
 	return NewOpenAIWSProtocolResolver(cfg)
+}
+
+func classifyOpenAIWSReconnectReason(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	var fallbackErr *openAIWSFallbackError
+	if !errors.As(err, &fallbackErr) || fallbackErr == nil {
+		return "", false
+	}
+	reason := strings.TrimSpace(fallbackErr.Reason)
+	if reason == "" {
+		return "", false
+	}
+
+	baseReason := strings.TrimPrefix(reason, "prewarm_")
+
+	switch baseReason {
+	case "policy_violation",
+		"message_too_big",
+		"upgrade_required",
+		"ws_unsupported",
+		"auth_failed",
+		"previous_response_not_found":
+		return reason, false
+	}
+
+	switch baseReason {
+	case "read_event",
+		"write_request",
+		"write",
+		"acquire_timeout",
+		"acquire_conn",
+		"conn_queue_full",
+		"dial_failed",
+		"upstream_5xx",
+		"event_error",
+		"error_event",
+		"upstream_error_event",
+		"ws_connection_limit_reached",
+		"missing_final_response":
+		return reason, true
+	default:
+		return reason, false
+	}
+}
+
+func (s *OpenAIGatewayService) openAIWSRetryBackoff(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 0
+	}
+
+	initial := openAIWSRetryBackoffInitialDefault
+	maxBackoff := openAIWSRetryBackoffMaxDefault
+	jitterRatio := openAIWSRetryJitterRatioDefault
+	if s != nil && s.cfg != nil {
+		wsCfg := s.cfg.Gateway.OpenAIWS
+		if wsCfg.RetryBackoffInitialMS > 0 {
+			initial = time.Duration(wsCfg.RetryBackoffInitialMS) * time.Millisecond
+		}
+		if wsCfg.RetryBackoffMaxMS > 0 {
+			maxBackoff = time.Duration(wsCfg.RetryBackoffMaxMS) * time.Millisecond
+		}
+		if wsCfg.RetryJitterRatio >= 0 {
+			jitterRatio = wsCfg.RetryJitterRatio
+		}
+	}
+	if initial <= 0 {
+		return 0
+	}
+	if maxBackoff <= 0 {
+		maxBackoff = initial
+	}
+	if maxBackoff < initial {
+		maxBackoff = initial
+	}
+	if jitterRatio < 0 {
+		jitterRatio = 0
+	}
+	if jitterRatio > 1 {
+		jitterRatio = 1
+	}
+
+	shift := attempt - 1
+	if shift < 0 {
+		shift = 0
+	}
+	backoff := initial
+	if shift > 0 {
+		backoff = initial * time.Duration(1<<shift)
+	}
+	if backoff > maxBackoff {
+		backoff = maxBackoff
+	}
+	if jitterRatio <= 0 {
+		return backoff
+	}
+	jitter := time.Duration(float64(backoff) * jitterRatio)
+	if jitter <= 0 {
+		return backoff
+	}
+	delta := time.Duration(rand.Int63n(int64(jitter)*2+1)) - jitter
+	withJitter := backoff + delta
+	if withJitter < 0 {
+		return 0
+	}
+	return withJitter
+}
+
+func (s *OpenAIGatewayService) openAIWSRetryTotalBudget() time.Duration {
+	if s != nil && s.cfg != nil {
+		ms := s.cfg.Gateway.OpenAIWS.RetryTotalBudgetMS
+		if ms <= 0 {
+			return 0
+		}
+		return time.Duration(ms) * time.Millisecond
+	}
+	return 0
+}
+
+func (s *OpenAIGatewayService) recordOpenAIWSRetryAttempt(backoff time.Duration) {
+	if s == nil {
+		return
+	}
+	s.openaiWSRetryMetrics.retryAttempts.Add(1)
+	if backoff > 0 {
+		s.openaiWSRetryMetrics.retryBackoffMs.Add(backoff.Milliseconds())
+	}
+}
+
+func (s *OpenAIGatewayService) recordOpenAIWSRetryExhausted() {
+	if s == nil {
+		return
+	}
+	s.openaiWSRetryMetrics.retryExhausted.Add(1)
+}
+
+func (s *OpenAIGatewayService) recordOpenAIWSNonRetryableFastFallback() {
+	if s == nil {
+		return
+	}
+	s.openaiWSRetryMetrics.nonRetryableFastFallback.Add(1)
+}
+
+func (s *OpenAIGatewayService) SnapshotOpenAIWSRetryMetrics() OpenAIWSRetryMetricsSnapshot {
+	if s == nil {
+		return OpenAIWSRetryMetricsSnapshot{}
+	}
+	return OpenAIWSRetryMetricsSnapshot{
+		RetryAttemptsTotal:            s.openaiWSRetryMetrics.retryAttempts.Load(),
+		RetryBackoffMsTotal:           s.openaiWSRetryMetrics.retryBackoffMs.Load(),
+		RetryExhaustedTotal:           s.openaiWSRetryMetrics.retryExhausted.Load(),
+		NonRetryableFastFallbackTotal: s.openaiWSRetryMetrics.nonRetryableFastFallback.Load(),
+	}
 }
 
 func (s *OpenAIGatewayService) detectCodexClientRestriction(c *gin.Context, account *Account) CodexClientRestrictionDetectionResult {
@@ -1046,6 +1250,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		c.Set("openai_ws_transport_decision", string(wsDecision.Transport))
 		c.Set("openai_ws_transport_reason", wsDecision.Reason)
 	}
+	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
+		logOpenAIWSModeInfo(
+			"selected account_id=%d account_type=%s transport=%s reason=%s model=%s stream=%v",
+			account.ID,
+			account.Type,
+			normalizeOpenAIWSLogValue(string(wsDecision.Transport)),
+			normalizeOpenAIWSLogValue(wsDecision.Reason),
+			reqModel,
+			reqStream,
+		)
+	}
 	// 当前仅支持 WSv2；WSv1 命中时直接返回错误，避免出现“配置可开但行为不确定”。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
 		if c != nil {
@@ -1210,23 +1425,28 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// Capture upstream request body for ops retry of this attempt.
 	setOpsUpstreamRequestBody(c, body)
 
-	// 命中 WS 时优先走 WebSocket Mode；仅在“未写下游”且可恢复错误时回退 HTTP。
+	// 命中 WS 时仅走 WebSocket Mode；不再自动回退 HTTP。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
-		if s.isOpenAIWSFallbackCooling(account.ID) {
-			if c != nil {
-				c.Set("openai_ws_fallback_cooling", true)
-			}
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: 0,
-				Kind:               "ws_cooling",
-				Message:            "openai ws fallback cooling",
-			})
-			s.logOpenAIWSFallback(ctx, account, "fallback_cooling", nil)
-		} else {
-			wsResult, wsErr := s.forwardOpenAIWSV2(
+		_, hasPreviousResponseID := reqBody["previous_response_id"]
+		logOpenAIWSModeInfo(
+			"forward_start account_id=%d account_type=%s model=%s stream=%v has_previous_response_id=%v",
+			account.ID,
+			account.Type,
+			mappedModel,
+			reqStream,
+			hasPreviousResponseID,
+		)
+		maxAttempts := openAIWSReconnectRetryLimit + 1
+		wsAttempts := 0
+		var wsResult *OpenAIForwardResult
+		var wsErr error
+		wsLastFailureReason := ""
+		retryBudget := s.openAIWSRetryTotalBudget()
+		retryStartedAt := time.Now()
+	wsRetryLoop:
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			wsAttempts = attempt
+			wsResult, wsErr = s.forwardOpenAIWSV2(
 				ctx,
 				c,
 				account,
@@ -1238,27 +1458,100 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				originalModel,
 				mappedModel,
 				startTime,
+				attempt,
+				wsLastFailureReason,
 			)
 			if wsErr == nil {
-				s.clearOpenAIWSFallbackCooling(account.ID)
-				return wsResult, nil
+				break
 			}
-			var fallbackErr *openAIWSFallbackError
-			if errors.As(wsErr, &fallbackErr) && (c == nil || c.Writer == nil || !c.Writer.Written()) {
-				s.markOpenAIWSFallbackCooling(account.ID, fallbackErr.Reason)
-				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-					Platform:           account.Platform,
-					AccountID:          account.ID,
-					AccountName:        account.Name,
-					UpstreamStatusCode: 0,
-					Kind:               "ws_fallback",
-					Message:            fallbackErr.Reason,
-				})
-				s.logOpenAIWSFallback(ctx, account, fallbackErr.Reason, fallbackErr.Err)
-			} else {
-				return nil, wsErr
+			if c != nil && c.Writer != nil && c.Writer.Written() {
+				break
 			}
+
+			reason, retryable := classifyOpenAIWSReconnectReason(wsErr)
+			if reason != "" {
+				wsLastFailureReason = reason
+			}
+			if retryable && attempt < maxAttempts {
+				backoff := s.openAIWSRetryBackoff(attempt)
+				if retryBudget > 0 && time.Since(retryStartedAt)+backoff > retryBudget {
+					s.recordOpenAIWSRetryExhausted()
+					logOpenAIWSModeInfo(
+						"reconnect_budget_exhausted account_id=%d attempts=%d max_retries=%d reason=%s elapsed_ms=%d budget_ms=%d",
+						account.ID,
+						attempt,
+						openAIWSReconnectRetryLimit,
+						normalizeOpenAIWSLogValue(reason),
+						time.Since(retryStartedAt).Milliseconds(),
+						retryBudget.Milliseconds(),
+					)
+					break
+				}
+				s.recordOpenAIWSRetryAttempt(backoff)
+				logOpenAIWSModeInfo(
+					"reconnect_retry account_id=%d retry=%d max_retries=%d reason=%s backoff_ms=%d",
+					account.ID,
+					attempt,
+					openAIWSReconnectRetryLimit,
+					normalizeOpenAIWSLogValue(reason),
+					backoff.Milliseconds(),
+				)
+				if backoff > 0 {
+					timer := time.NewTimer(backoff)
+					select {
+					case <-ctx.Done():
+						if !timer.Stop() {
+							<-timer.C
+						}
+						wsErr = wrapOpenAIWSFallback("retry_backoff_canceled", ctx.Err())
+						break wsRetryLoop
+					case <-timer.C:
+					}
+				}
+				continue
+			}
+			if retryable {
+				s.recordOpenAIWSRetryExhausted()
+				logOpenAIWSModeInfo(
+					"reconnect_exhausted account_id=%d attempts=%d max_retries=%d reason=%s",
+					account.ID,
+					attempt,
+					openAIWSReconnectRetryLimit,
+					normalizeOpenAIWSLogValue(reason),
+				)
+			} else if reason != "" {
+				s.recordOpenAIWSNonRetryableFastFallback()
+				logOpenAIWSModeInfo(
+					"reconnect_stop account_id=%d attempt=%d reason=%s",
+					account.ID,
+					attempt,
+					normalizeOpenAIWSLogValue(reason),
+				)
+			}
+			break
 		}
+		if wsErr == nil {
+			firstTokenMs := int64(0)
+			hasFirstTokenMs := wsResult != nil && wsResult.FirstTokenMs != nil
+			if hasFirstTokenMs {
+				firstTokenMs = int64(*wsResult.FirstTokenMs)
+			}
+			requestID := ""
+			if wsResult != nil {
+				requestID = strings.TrimSpace(wsResult.RequestID)
+			}
+			logOpenAIWSModeInfo(
+				"forward_succeeded account_id=%d request_id=%s stream=%v has_first_token_ms=%v first_token_ms=%d ws_attempts=%d",
+				account.ID,
+				requestID,
+				reqStream,
+				hasFirstTokenMs,
+				firstTokenMs,
+				wsAttempts,
+			)
+			return wsResult, nil
+		}
+		return nil, wsErr
 	}
 
 	// Build upstream request
@@ -2473,20 +2766,24 @@ func (s *OpenAIGatewayService) correctToolCallsInResponseBody(body []byte) []byt
 }
 
 func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
-	if usage == nil || data == "" || data == "[DONE]" {
+	s.parseSSEUsageBytes([]byte(data), usage)
+}
+
+func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsage) {
+	if usage == nil || len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 		return
 	}
 	// 选择性解析：仅在数据中包含 completed 事件标识时才进入字段提取。
-	if !strings.Contains(data, `"response.completed"`) {
+	if !bytes.Contains(data, []byte(`"response.completed"`)) {
 		return
 	}
-	if gjson.Get(data, "type").String() != "response.completed" {
+	if gjson.GetBytes(data, "type").String() != "response.completed" {
 		return
 	}
 
-	usage.InputTokens = int(gjson.Get(data, "response.usage.input_tokens").Int())
-	usage.OutputTokens = int(gjson.Get(data, "response.usage.output_tokens").Int())
-	usage.CacheReadInputTokens = int(gjson.Get(data, "response.usage.input_tokens_details.cached_tokens").Int())
+	usage.InputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens").Int())
+	usage.OutputTokens = int(gjson.GetBytes(data, "response.usage.output_tokens").Int())
+	usage.CacheReadInputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens_details.cached_tokens").Int())
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {
