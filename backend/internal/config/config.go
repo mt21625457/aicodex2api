@@ -364,6 +364,8 @@ type GatewayConfig struct {
 	// OpenAIPassthroughAllowTimeoutHeaders: OpenAI 透传模式是否放行客户端超时头
 	// 关闭（默认）可避免 x-stainless-timeout 等头导致上游提前断流。
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
+	// OpenAIWS: OpenAI Responses WebSocket 配置（默认关闭，不影响现有 HTTP 线路）
+	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -448,6 +450,65 @@ type GatewayConfig struct {
 	UserGroupRateCacheTTLSeconds int `mapstructure:"user_group_rate_cache_ttl_seconds"`
 	// ModelsListCacheTTLSeconds: /v1/models 模型列表短缓存 TTL（秒）
 	ModelsListCacheTTLSeconds int `mapstructure:"models_list_cache_ttl_seconds"`
+}
+
+// GatewayOpenAIWSConfig OpenAI Responses WebSocket 配置。
+// 注意：默认全局关闭，确保现网仍走现有 HTTP/SSE 链路。
+type GatewayOpenAIWSConfig struct {
+	// Enabled: 全局总开关（默认 false）
+	Enabled bool `mapstructure:"enabled"`
+	// OAuthEnabled: 是否允许 OpenAI OAuth 账号使用 WS
+	OAuthEnabled bool `mapstructure:"oauth_enabled"`
+	// APIKeyEnabled: 是否允许 OpenAI API Key 账号使用 WS
+	APIKeyEnabled bool `mapstructure:"apikey_enabled"`
+	// ForceHTTP: 全局强制 HTTP（用于紧急回滚）
+	ForceHTTP bool `mapstructure:"force_http"`
+	// AllowStoreRecovery: 允许在 WSv2 下按策略恢复 store=true（默认 false）
+	AllowStoreRecovery bool `mapstructure:"allow_store_recovery"`
+	// PrewarmGenerateEnabled: 是否启用 WSv2 generate=false 预热（默认 false）
+	PrewarmGenerateEnabled bool `mapstructure:"prewarm_generate_enabled"`
+
+	// Feature 开关：v2 优先于 v1
+	ResponsesWebsockets   bool `mapstructure:"responses_websockets"`
+	ResponsesWebsocketsV2 bool `mapstructure:"responses_websockets_v2"`
+
+	// 连接池参数
+	MaxConnsPerAccount int `mapstructure:"max_conns_per_account"`
+	MinIdlePerAccount  int `mapstructure:"min_idle_per_account"`
+	MaxIdlePerAccount  int `mapstructure:"max_idle_per_account"`
+	// DynamicMaxConnsByAccountConcurrencyEnabled: 是否按账号并发动态计算连接池上限
+	DynamicMaxConnsByAccountConcurrencyEnabled bool `mapstructure:"dynamic_max_conns_by_account_concurrency_enabled"`
+	// OAuthMaxConnsFactor: OAuth 账号连接池系数（effective=ceil(concurrency*factor)）
+	OAuthMaxConnsFactor float64 `mapstructure:"oauth_max_conns_factor"`
+	// APIKeyMaxConnsFactor: API Key 账号连接池系数（effective=ceil(concurrency*factor)）
+	APIKeyMaxConnsFactor  float64 `mapstructure:"apikey_max_conns_factor"`
+	DialTimeoutSeconds    int     `mapstructure:"dial_timeout_seconds"`
+	ReadTimeoutSeconds    int     `mapstructure:"read_timeout_seconds"`
+	WriteTimeoutSeconds   int     `mapstructure:"write_timeout_seconds"`
+	PoolTargetUtilization float64 `mapstructure:"pool_target_utilization"`
+	QueueLimitPerConn     int     `mapstructure:"queue_limit_per_conn"`
+	// FallbackCooldownSeconds: WS 回退冷却窗口，避免 WS/HTTP 抖动；0 表示关闭冷却
+	FallbackCooldownSeconds int `mapstructure:"fallback_cooldown_seconds"`
+
+	// 账号调度与粘连参数
+	LBTopK int `mapstructure:"lb_top_k"`
+	// StickySessionTTLSeconds: session_hash -> account_id 粘连 TTL
+	StickySessionTTLSeconds int `mapstructure:"sticky_session_ttl_seconds"`
+	// StickyResponseIDTTLSeconds: response_id -> account_id 粘连 TTL
+	StickyResponseIDTTLSeconds int `mapstructure:"sticky_response_id_ttl_seconds"`
+	// StickyPreviousResponseTTLSeconds: 兼容旧键（当新键未设置时回退）
+	StickyPreviousResponseTTLSeconds int `mapstructure:"sticky_previous_response_ttl_seconds"`
+
+	SchedulerScoreWeights GatewayOpenAIWSSchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
+}
+
+// GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
+type GatewayOpenAIWSSchedulerScoreWeights struct {
+	Priority  float64 `mapstructure:"priority"`
+	Load      float64 `mapstructure:"load"`
+	Queue     float64 `mapstructure:"queue"`
+	ErrorRate float64 `mapstructure:"error_rate"`
+	TTFT      float64 `mapstructure:"ttft"`
 }
 
 // GatewayUsageRecordConfig 使用量记录异步队列配置
@@ -886,6 +947,12 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
 
+	// 兼容旧键 gateway.openai_ws.sticky_previous_response_ttl_seconds。
+	// 新键未配置（<=0）时回退旧键；新键优先。
+	if cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && cfg.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {
+		cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = cfg.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
+	}
+
 	// Auto-generate TOTP encryption key if not set (32 bytes = 64 hex chars for AES-256)
 	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
 	if cfg.Totp.EncryptionKey == "" {
@@ -1157,6 +1224,36 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
+	// OpenAI Responses WebSocket（默认关闭，不影响现网 HTTP 线路）
+	viper.SetDefault("gateway.openai_ws.enabled", false)
+	viper.SetDefault("gateway.openai_ws.oauth_enabled", true)
+	viper.SetDefault("gateway.openai_ws.apikey_enabled", true)
+	viper.SetDefault("gateway.openai_ws.force_http", false)
+	viper.SetDefault("gateway.openai_ws.allow_store_recovery", false)
+	viper.SetDefault("gateway.openai_ws.prewarm_generate_enabled", false)
+	viper.SetDefault("gateway.openai_ws.responses_websockets", false)
+	viper.SetDefault("gateway.openai_ws.responses_websockets_v2", true)
+	viper.SetDefault("gateway.openai_ws.max_conns_per_account", 8)
+	viper.SetDefault("gateway.openai_ws.min_idle_per_account", 1)
+	viper.SetDefault("gateway.openai_ws.max_idle_per_account", 4)
+	viper.SetDefault("gateway.openai_ws.dynamic_max_conns_by_account_concurrency_enabled", true)
+	viper.SetDefault("gateway.openai_ws.oauth_max_conns_factor", 1.0)
+	viper.SetDefault("gateway.openai_ws.apikey_max_conns_factor", 1.0)
+	viper.SetDefault("gateway.openai_ws.dial_timeout_seconds", 10)
+	viper.SetDefault("gateway.openai_ws.read_timeout_seconds", 900)
+	viper.SetDefault("gateway.openai_ws.write_timeout_seconds", 120)
+	viper.SetDefault("gateway.openai_ws.pool_target_utilization", 0.7)
+	viper.SetDefault("gateway.openai_ws.queue_limit_per_conn", 256)
+	viper.SetDefault("gateway.openai_ws.fallback_cooldown_seconds", 30)
+	viper.SetDefault("gateway.openai_ws.lb_top_k", 3)
+	viper.SetDefault("gateway.openai_ws.sticky_session_ttl_seconds", 3600)
+	viper.SetDefault("gateway.openai_ws.sticky_response_id_ttl_seconds", 3600)
+	viper.SetDefault("gateway.openai_ws.sticky_previous_response_ttl_seconds", 3600)
+	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.priority", 1.0)
+	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.load", 1.0)
+	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.queue", 0.7)
+	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.error_rate", 0.8)
+	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(100*1024*1024))
@@ -1746,6 +1843,76 @@ func (c *Config) Validate() error {
 	if c.Gateway.StreamKeepaliveInterval != 0 &&
 		(c.Gateway.StreamKeepaliveInterval < 5 || c.Gateway.StreamKeepaliveInterval > 30) {
 		return fmt.Errorf("gateway.stream_keepalive_interval must be 0 or between 5-30 seconds")
+	}
+	// 兼容旧键 sticky_previous_response_ttl_seconds
+	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {
+		c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
+	}
+	if c.Gateway.OpenAIWS.MaxConnsPerAccount <= 0 {
+		return fmt.Errorf("gateway.openai_ws.max_conns_per_account must be positive")
+	}
+	if c.Gateway.OpenAIWS.MinIdlePerAccount < 0 {
+		return fmt.Errorf("gateway.openai_ws.min_idle_per_account must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.MaxIdlePerAccount < 0 {
+		return fmt.Errorf("gateway.openai_ws.max_idle_per_account must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.MinIdlePerAccount > c.Gateway.OpenAIWS.MaxIdlePerAccount {
+		return fmt.Errorf("gateway.openai_ws.min_idle_per_account must be <= max_idle_per_account")
+	}
+	if c.Gateway.OpenAIWS.MaxIdlePerAccount > c.Gateway.OpenAIWS.MaxConnsPerAccount {
+		return fmt.Errorf("gateway.openai_ws.max_idle_per_account must be <= max_conns_per_account")
+	}
+	if c.Gateway.OpenAIWS.OAuthMaxConnsFactor <= 0 {
+		return fmt.Errorf("gateway.openai_ws.oauth_max_conns_factor must be positive")
+	}
+	if c.Gateway.OpenAIWS.APIKeyMaxConnsFactor <= 0 {
+		return fmt.Errorf("gateway.openai_ws.apikey_max_conns_factor must be positive")
+	}
+	if c.Gateway.OpenAIWS.DialTimeoutSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_ws.dial_timeout_seconds must be positive")
+	}
+	if c.Gateway.OpenAIWS.ReadTimeoutSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_ws.read_timeout_seconds must be positive")
+	}
+	if c.Gateway.OpenAIWS.WriteTimeoutSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_ws.write_timeout_seconds must be positive")
+	}
+	if c.Gateway.OpenAIWS.PoolTargetUtilization <= 0 || c.Gateway.OpenAIWS.PoolTargetUtilization > 1 {
+		return fmt.Errorf("gateway.openai_ws.pool_target_utilization must be within (0,1]")
+	}
+	if c.Gateway.OpenAIWS.QueueLimitPerConn <= 0 {
+		return fmt.Errorf("gateway.openai_ws.queue_limit_per_conn must be positive")
+	}
+	if c.Gateway.OpenAIWS.FallbackCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.openai_ws.fallback_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.LBTopK <= 0 {
+		return fmt.Errorf("gateway.openai_ws.lb_top_k must be positive")
+	}
+	if c.Gateway.OpenAIWS.StickySessionTTLSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_ws.sticky_session_ttl_seconds must be positive")
+	}
+	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_ws.sticky_response_id_ttl_seconds must be positive")
+	}
+	if c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds < 0 {
+		return fmt.Errorf("gateway.openai_ws.sticky_previous_response_ttl_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.SchedulerScoreWeights.Priority < 0 ||
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.Load < 0 ||
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.Queue < 0 ||
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate < 0 ||
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT < 0 {
+		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights.* must be non-negative")
+	}
+	weightSum := c.Gateway.OpenAIWS.SchedulerScoreWeights.Priority +
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.Load +
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.Queue +
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate +
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT
+	if weightSum <= 0 {
+		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights must not all be zero")
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")

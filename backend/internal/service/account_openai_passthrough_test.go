@@ -134,3 +134,102 @@ func TestAccount_IsCodexCLIOnlyEnabled(t *testing.T) {
 		require.False(t, otherPlatform.IsCodexCLIOnlyEnabled())
 	})
 }
+
+func TestAccount_IsOpenAIResponsesWebSocketV2Enabled(t *testing.T) {
+	t.Run("OAuth使用OAuth专用开关", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_enabled": true,
+			},
+		}
+		require.True(t, account.IsOpenAIResponsesWebSocketV2Enabled())
+	})
+
+	t.Run("API Key使用API Key专用开关", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		}
+		require.True(t, account.IsOpenAIResponsesWebSocketV2Enabled())
+	})
+
+	t.Run("OAuth账号不会读取API Key专用开关", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		}
+		require.False(t, account.IsOpenAIResponsesWebSocketV2Enabled())
+	})
+
+	t.Run("分类型新键优先于兼容键", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_enabled": false,
+				"responses_websockets_v2_enabled":              true,
+				"openai_ws_enabled":                            true,
+			},
+		}
+		require.False(t, account.IsOpenAIResponsesWebSocketV2Enabled())
+	})
+
+	t.Run("分类型键缺失时回退兼容键", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"responses_websockets_v2_enabled": true,
+			},
+		}
+		require.True(t, account.IsOpenAIResponsesWebSocketV2Enabled())
+	})
+
+	t.Run("非OpenAI账号默认关闭", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformAnthropic,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"responses_websockets_v2_enabled": true,
+			},
+		}
+		require.False(t, account.IsOpenAIResponsesWebSocketV2Enabled())
+	})
+}
+
+func TestAccount_OpenAIWSExtraFlags(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_ws_force_http":           true,
+			"openai_ws_allow_store_recovery": true,
+		},
+	}
+	require.True(t, account.IsOpenAIWSForceHTTPEnabled())
+	require.True(t, account.IsOpenAIWSAllowStoreRecoveryEnabled())
+
+	off := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{}}
+	require.False(t, off.IsOpenAIWSForceHTTPEnabled())
+	require.False(t, off.IsOpenAIWSAllowStoreRecoveryEnabled())
+
+	var nilAccount *Account
+	require.False(t, nilAccount.IsOpenAIWSAllowStoreRecoveryEnabled())
+
+	nonOpenAI := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_ws_allow_store_recovery": true,
+		},
+	}
+	require.False(t, nonOpenAI.IsOpenAIWSAllowStoreRecoveryEnabled())
+}

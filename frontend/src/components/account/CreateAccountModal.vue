@@ -1669,6 +1669,42 @@
         </div>
       </div>
 
+      <!-- OpenAI WS Mode 开关（按账号类型展示单一开关） -->
+      <div
+        v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.wsMode') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.wsModeDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="openaiResponsesWebSocketV2Enabled = !openaiResponsesWebSocketV2Enabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiResponsesWebSocketV2Enabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiResponsesWebSocketV2Enabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+        <p
+          v-if="openaiPassthroughEnabled"
+          class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+        >
+          {{ t('admin.accounts.openai.responsesWebsocketsV2PassthroughHint') }}
+        </p>
+      </div>
+
       <!-- Anthropic API Key 自动透传开关 -->
       <div
         v-if="form.platform === 'anthropic' && accountCategory === 'apikey'"
@@ -2301,6 +2337,8 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
+const openaiOAuthResponsesWebSocketV2Enabled = ref(false)
+const openaiAPIKeyResponsesWebSocketV2Enabled = ref(false)
 const codexCLIOnlyEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
@@ -2356,6 +2394,22 @@ const geminiSelectedTier = computed(() => {
       return geminiTierGcp.value
     default:
       return geminiTierAIStudio.value
+  }
+})
+
+const openaiResponsesWebSocketV2Enabled = computed({
+  get: () => {
+    if (form.platform === 'openai' && accountCategory.value === 'apikey') {
+      return openaiAPIKeyResponsesWebSocketV2Enabled.value
+    }
+    return openaiOAuthResponsesWebSocketV2Enabled.value
+  },
+  set: (enabled: boolean) => {
+    if (form.platform === 'openai' && accountCategory.value === 'apikey') {
+      openaiAPIKeyResponsesWebSocketV2Enabled.value = enabled
+      return
+    }
+    openaiOAuthResponsesWebSocketV2Enabled.value = enabled
   }
 })
 
@@ -2547,6 +2601,8 @@ watch(
     }
     if (newPlatform !== 'openai') {
       openaiPassthroughEnabled.value = false
+      openaiOAuthResponsesWebSocketV2Enabled.value = false
+      openaiAPIKeyResponsesWebSocketV2Enabled.value = false
       codexCLIOnlyEnabled.value = false
     }
     if (newPlatform !== 'anthropic') {
@@ -2918,6 +2974,8 @@ const resetForm = () => {
   interceptWarmupRequests.value = false
   autoPauseOnExpired.value = true
   openaiPassthroughEnabled.value = false
+  openaiOAuthResponsesWebSocketV2Enabled.value = false
+  openaiAPIKeyResponsesWebSocketV2Enabled.value = false
   codexCLIOnlyEnabled.value = false
   anthropicPassthroughEnabled.value = false
   // Reset quota control state
@@ -2962,6 +3020,11 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   const extra: Record<string, unknown> = { ...(base || {}) }
+  extra.openai_oauth_responses_websockets_v2_enabled = openaiOAuthResponsesWebSocketV2Enabled.value
+  extra.openai_apikey_responses_websockets_v2_enabled = openaiAPIKeyResponsesWebSocketV2Enabled.value
+  // 清理兼容旧键，统一改用分类型开关。
+  delete extra.responses_websockets_v2_enabled
+  delete extra.openai_ws_enabled
   if (openaiPassthroughEnabled.value) {
     extra.openai_passthrough = true
   } else {
@@ -3007,6 +3070,10 @@ const buildSoraExtra = (
   delete extra.openai_passthrough
   delete extra.openai_oauth_passthrough
   delete extra.codex_cli_only
+  delete extra.openai_oauth_responses_websockets_v2_enabled
+  delete extra.openai_apikey_responses_websockets_v2_enabled
+  delete extra.responses_websockets_v2_enabled
+  delete extra.openai_ws_enabled
   return Object.keys(extra).length > 0 ? extra : undefined
 }
 

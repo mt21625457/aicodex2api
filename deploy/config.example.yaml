@@ -199,6 +199,51 @@ gateway:
   # OpenAI 透传模式是否放行客户端超时头（如 x-stainless-timeout）
   # 默认 false：过滤超时头，降低上游提前断流风险。
   openai_passthrough_allow_timeout_headers: false
+  # OpenAI Responses WebSocket 配置（默认关闭，不影响现网 HTTP 线路）
+  openai_ws:
+    # 全局总开关，默认 false；关闭时所有请求保持原有 HTTP/SSE 路由
+    enabled: false
+    # 按账号类型细分开关
+    oauth_enabled: true
+    apikey_enabled: true
+    # 全局强制 HTTP（紧急回滚开关）
+    force_http: false
+    # 允许在 WSv2 下按策略恢复 store=true（默认 false）
+    allow_store_recovery: false
+    # 是否启用 WSv2 generate=false 预热（默认 false）
+    prewarm_generate_enabled: false
+    # 协议 feature 开关，v2 优先于 v1
+    responses_websockets: false
+    responses_websockets_v2: true
+    # 连接池参数（按账号池化复用）
+    max_conns_per_account: 8
+    min_idle_per_account: 1
+    max_idle_per_account: 4
+    # 是否按账号并发动态计算连接池上限：
+    # effective_max_conns = min(max_conns_per_account, ceil(account.concurrency * factor))
+    dynamic_max_conns_by_account_concurrency_enabled: true
+    # 按账号类型分别设置系数（OAuth / API Key）
+    oauth_max_conns_factor: 1.0
+    apikey_max_conns_factor: 1.0
+    dial_timeout_seconds: 10
+    read_timeout_seconds: 900
+    write_timeout_seconds: 120
+    pool_target_utilization: 0.7
+    queue_limit_per_conn: 256
+    # WS 回退到 HTTP 后的冷却时间（秒），用于避免 WS/HTTP 来回抖动；0 表示关闭冷却
+    fallback_cooldown_seconds: 30
+    # 调度与粘连参数
+    lb_top_k: 3
+    sticky_session_ttl_seconds: 3600
+    sticky_response_id_ttl_seconds: 3600
+    # 兼容旧键：当 sticky_response_id_ttl_seconds 缺失时回退该值
+    sticky_previous_response_ttl_seconds: 3600
+    scheduler_score_weights:
+      priority: 1.0
+      load: 1.0
+      queue: 0.7
+      error_rate: 0.8
+      ttft: 0.5
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts
