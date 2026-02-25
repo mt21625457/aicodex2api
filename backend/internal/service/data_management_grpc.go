@@ -20,13 +20,13 @@ import (
 )
 
 const (
-	backupInvalidArgumentReason  = "BACKUP_INVALID_ARGUMENT"
-	backupResourceNotFoundReason = "BACKUP_RESOURCE_NOT_FOUND"
-	backupResourceConflictReason = "BACKUP_RESOURCE_CONFLICT"
-	backupFailedPrecondition     = "BACKUP_FAILED_PRECONDITION"
-	backupAgentTimeoutReason     = "BACKUP_AGENT_TIMEOUT"
-	backupAgentInternalReason    = "BACKUP_AGENT_INTERNAL"
-	defaultBackupRPCTimeout      = 8 * time.Second
+	dataManagementInvalidArgumentReason  = "DATA_MANAGEMENT_INVALID_ARGUMENT"
+	dataManagementResourceNotFoundReason = "DATA_MANAGEMENT_RESOURCE_NOT_FOUND"
+	dataManagementResourceConflictReason = "DATA_MANAGEMENT_RESOURCE_CONFLICT"
+	dataManagementFailedPrecondition     = "DATA_MANAGEMENT_FAILED_PRECONDITION"
+	dataManagementAgentTimeoutReason     = "DATA_MANAGEMENT_AGENT_TIMEOUT"
+	dataManagementAgentInternalReason    = "DATA_MANAGEMENT_AGENT_INTERNAL"
+	defaultDataManagementRPCTimeout      = 8 * time.Second
 )
 
 type DataManagementPostgresConfig struct {
@@ -227,7 +227,7 @@ func (s *DataManagementService) UpdateConfig(ctx context.Context, cfg DataManage
 func (s *DataManagementService) ListSourceProfiles(ctx context.Context, sourceType string) ([]DataManagementSourceProfile, error) {
 	sourceType = strings.TrimSpace(sourceType)
 	if sourceType != "postgres" && sourceType != "redis" {
-		return nil, infraerrors.BadRequest(backupInvalidArgumentReason, "source_type must be postgres or redis")
+		return nil, infraerrors.BadRequest(dataManagementInvalidArgumentReason, "source_type must be postgres or redis")
 	}
 
 	var resp *backupv1.ListSourceProfilesResponse
@@ -298,10 +298,10 @@ func (s *DataManagementService) DeleteSourceProfile(ctx context.Context, sourceT
 	sourceType = strings.TrimSpace(sourceType)
 	profileID = strings.TrimSpace(profileID)
 	if sourceType != "postgres" && sourceType != "redis" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "source_type must be postgres or redis")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "source_type must be postgres or redis")
 	}
 	if profileID == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "profile_id is required")
 	}
 
 	return s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
@@ -317,10 +317,10 @@ func (s *DataManagementService) SetActiveSourceProfile(ctx context.Context, sour
 	sourceType = strings.TrimSpace(sourceType)
 	profileID = strings.TrimSpace(profileID)
 	if sourceType != "postgres" && sourceType != "redis" {
-		return DataManagementSourceProfile{}, infraerrors.BadRequest(backupInvalidArgumentReason, "source_type must be postgres or redis")
+		return DataManagementSourceProfile{}, infraerrors.BadRequest(dataManagementInvalidArgumentReason, "source_type must be postgres or redis")
 	}
 	if profileID == "" {
-		return DataManagementSourceProfile{}, infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+		return DataManagementSourceProfile{}, infraerrors.BadRequest(dataManagementInvalidArgumentReason, "profile_id is required")
 	}
 
 	var resp *backupv1.SetActiveSourceProfileResponse
@@ -431,7 +431,7 @@ func (s *DataManagementService) UpdateS3Profile(ctx context.Context, input DataM
 func (s *DataManagementService) DeleteS3Profile(ctx context.Context, profileID string) error {
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "profile_id is required")
 	}
 
 	return s.withClient(ctx, func(callCtx context.Context, client backupv1.BackupServiceClient) error {
@@ -443,7 +443,7 @@ func (s *DataManagementService) DeleteS3Profile(ctx context.Context, profileID s
 func (s *DataManagementService) SetActiveS3Profile(ctx context.Context, profileID string) (DataManagementS3Profile, error) {
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
-		return DataManagementS3Profile{}, infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+		return DataManagementS3Profile{}, infraerrors.BadRequest(dataManagementInvalidArgumentReason, "profile_id is required")
 	}
 
 	var resp *backupv1.SetActiveS3ProfileResponse
@@ -521,55 +521,55 @@ func (s *DataManagementService) withClient(ctx context.Context, call func(contex
 	}
 
 	socketPath := s.SocketPath()
-	conn, err := s.dialBackupAgent(ctx, socketPath)
+	conn, err := s.dialDataManagementAgent(ctx, socketPath)
 	if err != nil {
-		return ErrBackupAgentUnavailable.WithMetadata(map[string]string{"socket_path": socketPath}).WithCause(err)
+		return ErrDataManagementAgentUnavailable.WithMetadata(map[string]string{"socket_path": socketPath}).WithCause(err)
 	}
 	defer func() {
 		_ = conn.Close()
 	}()
 
 	client := backupv1.NewBackupServiceClient(conn)
-	callCtx, callCancel := context.WithTimeout(ctx, defaultBackupRPCTimeout)
+	callCtx, callCancel := context.WithTimeout(ctx, defaultDataManagementRPCTimeout)
 	defer callCancel()
 	if requestID := requestIDFromContext(ctx); requestID != "" {
 		callCtx = metadata.AppendToOutgoingContext(callCtx, "x-request-id", requestID)
 	}
 
 	if err := call(callCtx, client); err != nil {
-		return mapBackupGRPCError(err, socketPath)
+		return mapDataManagementGRPCError(err, socketPath)
 	}
 	return nil
 }
 
-func mapBackupGRPCError(err error, socketPath string) error {
+func mapDataManagementGRPCError(err error, socketPath string) error {
 	if err == nil {
 		return nil
 	}
 
 	st, ok := grpcstatus.FromError(err)
 	if !ok {
-		return infraerrors.InternalServer(backupAgentInternalReason, "backup agent call failed").
+		return infraerrors.InternalServer(dataManagementAgentInternalReason, "data management agent call failed").
 			WithMetadata(map[string]string{"socket_path": socketPath}).
 			WithCause(err)
 	}
 
 	switch st.Code() {
 	case codes.InvalidArgument:
-		return infraerrors.BadRequest(backupInvalidArgumentReason, st.Message())
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, st.Message())
 	case codes.AlreadyExists:
-		return infraerrors.New(409, backupResourceConflictReason, st.Message())
+		return infraerrors.New(409, dataManagementResourceConflictReason, st.Message())
 	case codes.NotFound:
-		return infraerrors.NotFound(backupResourceNotFoundReason, st.Message())
+		return infraerrors.NotFound(dataManagementResourceNotFoundReason, st.Message())
 	case codes.FailedPrecondition:
-		return infraerrors.New(412, backupFailedPrecondition, st.Message())
+		return infraerrors.New(412, dataManagementFailedPrecondition, st.Message())
 	case codes.Unavailable:
-		return infraerrors.ServiceUnavailable(BackupAgentUnavailableReason, st.Message()).
+		return infraerrors.ServiceUnavailable(DataManagementAgentUnavailableReason, st.Message()).
 			WithMetadata(map[string]string{"socket_path": socketPath})
 	case codes.DeadlineExceeded:
-		return infraerrors.GatewayTimeout(backupAgentTimeoutReason, st.Message())
+		return infraerrors.GatewayTimeout(dataManagementAgentTimeoutReason, st.Message())
 	default:
-		return infraerrors.InternalServer(backupAgentInternalReason, st.Message()).
+		return infraerrors.InternalServer(dataManagementAgentInternalReason, st.Message()).
 			WithMetadata(map[string]string{
 				"socket_path": socketPath,
 				"grpc_code":   st.Code().String(),
@@ -785,42 +785,42 @@ func mapProtoJob(job *backupv1.BackupJob) DataManagementBackupJob {
 func validateDataManagementConfig(cfg DataManagementConfig) error {
 	sourceMode := strings.TrimSpace(cfg.SourceMode)
 	if sourceMode != "direct" && sourceMode != "docker_exec" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "source_mode must be direct or docker_exec")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "source_mode must be direct or docker_exec")
 	}
 	if strings.TrimSpace(cfg.BackupRoot) == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "backup_root is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "backup_root is required")
 	}
 	if cfg.RetentionDays <= 0 {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "retention_days must be > 0")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "retention_days must be > 0")
 	}
 	if cfg.KeepLast <= 0 {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "keep_last must be > 0")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "keep_last must be > 0")
 	}
 
 	if strings.TrimSpace(cfg.Postgres.Database) == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "postgres.database is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "postgres.database is required")
 	}
 	if cfg.Postgres.Port <= 0 {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "postgres.port must be > 0")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "postgres.port must be > 0")
 	}
 	if sourceMode == "docker_exec" {
 		if strings.TrimSpace(cfg.Postgres.ContainerName) == "" {
-			return infraerrors.BadRequest(backupInvalidArgumentReason, "postgres.container_name is required in docker_exec mode")
+			return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "postgres.container_name is required in docker_exec mode")
 		}
 		if strings.TrimSpace(cfg.Redis.ContainerName) == "" {
-			return infraerrors.BadRequest(backupInvalidArgumentReason, "redis.container_name is required in docker_exec mode")
+			return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "redis.container_name is required in docker_exec mode")
 		}
 	} else {
 		if strings.TrimSpace(cfg.Postgres.Host) == "" {
-			return infraerrors.BadRequest(backupInvalidArgumentReason, "postgres.host is required in direct mode")
+			return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "postgres.host is required in direct mode")
 		}
 		if strings.TrimSpace(cfg.Redis.Addr) == "" {
-			return infraerrors.BadRequest(backupInvalidArgumentReason, "redis.addr is required in direct mode")
+			return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "redis.addr is required in direct mode")
 		}
 	}
 
 	if cfg.Redis.DB < 0 {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "redis.db must be >= 0")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "redis.db must be >= 0")
 	}
 
 	if cfg.S3.Enabled {
@@ -833,20 +833,20 @@ func validateDataManagementConfig(cfg DataManagementConfig) error {
 
 func validateS3Config(cfg DataManagementS3Config) error {
 	if strings.TrimSpace(cfg.Region) == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "s3.region is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "s3.region is required")
 	}
 	if strings.TrimSpace(cfg.Bucket) == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "s3.bucket is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "s3.bucket is required")
 	}
 	return nil
 }
 
 func validateS3ProfileInput(profileID, name string, s3Cfg DataManagementS3Config) error {
 	if strings.TrimSpace(profileID) == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "profile_id is required")
 	}
 	if strings.TrimSpace(name) == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "name is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "name is required")
 	}
 	if s3Cfg.Enabled {
 		return validateS3Config(s3Cfg)
@@ -857,20 +857,19 @@ func validateS3ProfileInput(profileID, name string, s3Cfg DataManagementS3Config
 func validateSourceProfileInput(sourceType, profileID, name string) error {
 	sourceType = strings.TrimSpace(sourceType)
 	if sourceType != "postgres" && sourceType != "redis" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "source_type must be postgres or redis")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "source_type must be postgres or redis")
 	}
 	if strings.TrimSpace(profileID) == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "profile_id is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "profile_id is required")
 	}
 	if strings.TrimSpace(name) == "" {
-		return infraerrors.BadRequest(backupInvalidArgumentReason, "name is required")
+		return infraerrors.BadRequest(dataManagementInvalidArgumentReason, "name is required")
 	}
 	return nil
 }
 
-func (s *DataManagementService) probeBackupHealth(ctx context.Context) (*DataManagementAgentInfo, error) {
-	socketPath := s.SocketPath()
-	conn, err := s.dialBackupAgent(ctx, socketPath)
+func (s *DataManagementService) probeAgentHealth(ctx context.Context, socketPath string) (*DataManagementAgentInfo, error) {
+	conn, err := s.dialDataManagementAgent(ctx, socketPath)
 	if err != nil {
 		return nil, err
 	}
@@ -889,7 +888,7 @@ func (s *DataManagementService) probeBackupHealth(ctx context.Context) (*DataMan
 	}
 	statusText := strings.TrimSpace(resp.GetStatus())
 	if statusText == "" {
-		return nil, fmt.Errorf("empty backup health status")
+		return nil, fmt.Errorf("empty data management health status")
 	}
 	return &DataManagementAgentInfo{
 		Status:        statusText,
@@ -898,9 +897,9 @@ func (s *DataManagementService) probeBackupHealth(ctx context.Context) (*DataMan
 	}, nil
 }
 
-func (s *DataManagementService) dialBackupAgent(ctx context.Context, socketPath string) (*grpc.ClientConn, error) {
+func (s *DataManagementService) dialDataManagementAgent(ctx context.Context, socketPath string) (*grpc.ClientConn, error) {
 	conn, err := grpc.NewClient(
-		"passthrough:///backup-agent",
+		"passthrough:///datamanagement-agent",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(dialCtx context.Context, _ string) (net.Conn, error) {
 			dialer := net.Dialer{Timeout: s.dialTimeout}
@@ -926,7 +925,7 @@ func (s *DataManagementService) dialBackupAgent(ctx context.Context, socketPath 
 		}
 		if state == connectivity.Shutdown {
 			_ = conn.Close()
-			return nil, errors.New("backup agent grpc connection shutdown")
+			return nil, errors.New("data management agent grpc connection shutdown")
 		}
 		if conn.WaitForStateChange(waitCtx, state) {
 			continue

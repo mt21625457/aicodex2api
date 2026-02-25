@@ -3,29 +3,29 @@
 set -euo pipefail
 
 # 用法：
-#   sudo ./install-backupd.sh --binary /path/to/backupd
+#   sudo ./install-datamanagementd.sh --binary /path/to/datamanagementd
 # 或：
-#   sudo ./install-backupd.sh --source /path/to/sub2api/repo
+#   sudo ./install-datamanagementd.sh --source /path/to/sub2api/repo
 
 BIN_PATH=""
 SOURCE_PATH=""
 INSTALL_DIR="/opt/sub2api"
-DATA_DIR="/var/lib/sub2api/backup"
-SERVICE_FILE_NAME="sub2api-backupd.service"
+DATA_DIR="/var/lib/sub2api/datamanagement"
+SERVICE_FILE_NAME="sub2api-datamanagementd.service"
 
 function print_help() {
   cat <<'EOF'
 用法:
-  install-backupd.sh [--binary <backupd二进制路径>] [--source <仓库路径>]
+  install-datamanagementd.sh [--binary <datamanagementd二进制路径>] [--source <仓库路径>]
 
 参数:
-  --binary  指定已构建的 backupd 二进制路径
+  --binary  指定已构建的 datamanagementd 二进制路径
   --source  指定 sub2api 仓库路径（脚本会执行 go build）
   -h, --help 显示帮助
 
 示例:
-  sudo ./install-backupd.sh --binary ./backup/backupd
-  sudo ./install-backupd.sh --source /opt/sub2api-src
+  sudo ./install-datamanagementd.sh --binary ./datamanagement/datamanagementd
+  sudo ./install-datamanagementd.sh --source /opt/sub2api-src
 EOF
 }
 
@@ -67,13 +67,13 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 if [[ -n "$SOURCE_PATH" ]]; then
-  if [[ ! -d "$SOURCE_PATH/backup" ]]; then
-    echo "错误: 无效仓库路径，未找到 $SOURCE_PATH/backup"
+  if [[ ! -d "$SOURCE_PATH/datamanagement" ]]; then
+    echo "错误: 无效仓库路径，未找到 $SOURCE_PATH/datamanagement"
     exit 1
   fi
-  echo "[1/6] 从源码构建 backupd..."
-  (cd "$SOURCE_PATH/backup" && go build -o backupd ./cmd/backupd)
-  BIN_PATH="$SOURCE_PATH/backup/backupd"
+  echo "[1/6] 从源码构建 datamanagementd..."
+  (cd "$SOURCE_PATH/datamanagement" && go build -o datamanagementd ./cmd/datamanagementd)
+  BIN_PATH="$SOURCE_PATH/datamanagement/datamanagementd"
 fi
 
 if [[ ! -f "$BIN_PATH" ]]; then
@@ -88,9 +88,9 @@ else
   echo "[2/6] 系统用户 sub2api 已存在，跳过创建"
 fi
 
-echo "[3/6] 安装 backupd 二进制..."
+echo "[3/6] 安装 datamanagementd 二进制..."
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$BIN_PATH" "$INSTALL_DIR/backupd"
+install -m 0755 "$BIN_PATH" "$INSTALL_DIR/datamanagementd"
 
 echo "[4/6] 准备数据目录..."
 mkdir -p "$DATA_DIR"
@@ -107,17 +107,17 @@ fi
 echo "[5/6] 安装 systemd 服务..."
 cp "$SERVICE_TEMPLATE" "/etc/systemd/system/$SERVICE_FILE_NAME"
 systemctl daemon-reload
-systemctl enable --now sub2api-backupd
+systemctl enable --now sub2api-datamanagementd
 
 echo "[6/6] 完成，当前状态："
-systemctl --no-pager --full status sub2api-backupd || true
+systemctl --no-pager --full status sub2api-datamanagementd || true
 
 cat <<'EOF'
 
 下一步建议：
-1. 查看日志：sudo journalctl -u sub2api-backupd -f
+1. 查看日志：sudo journalctl -u sub2api-datamanagementd -f
 2. 在 sub2api（容器部署时）挂载 socket:
-   /tmp/sub2api-backup.sock:/tmp/sub2api-backup.sock
+   /tmp/sub2api-datamanagement.sock:/tmp/sub2api-datamanagement.sock
 3. 进入管理后台“数据管理”页面确认 agent=enabled
 
 EOF
