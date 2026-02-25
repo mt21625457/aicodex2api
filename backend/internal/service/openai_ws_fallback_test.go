@@ -54,6 +54,38 @@ func TestOpenAIWSErrorHTTPStatus(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"server_error","code":"server_error","message":"server"}}`)))
 }
 
+func TestResolveOpenAIWSFallbackErrorResponse(t *testing.T) {
+	t.Run("previous_response_not_found", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("previous_response_not_found", errors.New("previous response not found")),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusBadRequest, statusCode)
+		require.Equal(t, "invalid_request_error", errType)
+		require.Equal(t, "previous response not found", clientMessage)
+		require.Equal(t, "previous response not found", upstreamMessage)
+	})
+
+	t.Run("auth_failed_uses_dial_status", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("auth_failed", &openAIWSDialError{
+				StatusCode: http.StatusForbidden,
+				Err:        errors.New("forbidden"),
+			}),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusForbidden, statusCode)
+		require.Equal(t, "upstream_error", errType)
+		require.Equal(t, "forbidden", clientMessage)
+		require.Equal(t, "forbidden", upstreamMessage)
+	})
+
+	t.Run("non_fallback_error_not_resolved", func(t *testing.T) {
+		_, _, _, _, ok := resolveOpenAIWSFallbackErrorResponse(errors.New("plain error"))
+		require.False(t, ok)
+	})
+}
+
 func TestOpenAIWSFallbackCooling(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: &config.Config{}}
 	svc.cfg.Gateway.OpenAIWS.FallbackCooldownSeconds = 1

@@ -93,13 +93,13 @@ func TestOpenAIWSStateStore_GetResponseAccount_NoStaleAfterCacheMiss(t *testing.
 	require.Zero(t, accountID, "上游缓存失效后不应继续命中本地陈旧映射")
 }
 
-func TestOpenAIWSStateStore_MaybeCleanupIncremental(t *testing.T) {
+func TestOpenAIWSStateStore_MaybeCleanupRemovesAllExpired(t *testing.T) {
 	raw := NewOpenAIWSStateStore(nil)
 	store, ok := raw.(*defaultOpenAIWSStateStore)
 	require.True(t, ok)
 
 	expiredAt := time.Now().Add(-time.Minute)
-	total := openAIWSStateStoreCleanupScanLimit * 2
+	total := 2048
 	store.mu.Lock()
 	for i := 0; i < total; i++ {
 		store.responseToConn[fmt.Sprintf("resp_%d", i)] = openAIWSConnBinding{
@@ -115,15 +115,5 @@ func TestOpenAIWSStateStore_MaybeCleanupIncremental(t *testing.T) {
 	store.mu.RLock()
 	remaining := len(store.responseToConn)
 	store.mu.RUnlock()
-	require.Greater(t, remaining, 0, "单次 cleanup 应为增量扫描")
-	require.Less(t, remaining, total, "单次 cleanup 应至少清理一部分过期键")
-
-	for i := 0; i < 4 && remaining > 0; i++ {
-		store.lastCleanupUnixNano.Store(time.Now().Add(-2 * openAIWSStateStoreCleanupInterval).UnixNano())
-		store.maybeCleanup()
-		store.mu.RLock()
-		remaining = len(store.responseToConn)
-		store.mu.RUnlock()
-	}
-	require.Zero(t, remaining, "多轮增量 cleanup 后应清空过期键")
+	require.Zero(t, remaining, "单轮 cleanup 应清空全部过期键，避免固定速率清理造成堆积")
 }
