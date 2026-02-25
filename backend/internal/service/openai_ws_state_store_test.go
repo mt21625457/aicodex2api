@@ -93,27 +93,64 @@ func TestOpenAIWSStateStore_GetResponseAccount_NoStaleAfterCacheMiss(t *testing.
 	require.Zero(t, accountID, "上游缓存失效后不应继续命中本地陈旧映射")
 }
 
-func TestOpenAIWSStateStore_MaybeCleanupRemovesAllExpired(t *testing.T) {
+func TestOpenAIWSStateStore_MaybeCleanupRemovesExpiredIncrementally(t *testing.T) {
 	raw := NewOpenAIWSStateStore(nil)
 	store, ok := raw.(*defaultOpenAIWSStateStore)
 	require.True(t, ok)
 
 	expiredAt := time.Now().Add(-time.Minute)
 	total := 2048
-	store.mu.Lock()
+	store.responseToConnMu.Lock()
 	for i := 0; i < total; i++ {
 		store.responseToConn[fmt.Sprintf("resp_%d", i)] = openAIWSConnBinding{
 			connID:    "conn_incremental",
 			expiresAt: expiredAt,
 		}
 	}
-	store.mu.Unlock()
+	store.responseToConnMu.Unlock()
 
 	store.lastCleanupUnixNano.Store(time.Now().Add(-2 * openAIWSStateStoreCleanupInterval).UnixNano())
 	store.maybeCleanup()
 
-	store.mu.RLock()
+	store.responseToConnMu.RLock()
+	remainingAfterFirst := len(store.responseToConn)
+	store.responseToConnMu.RUnlock()
+	require.Less(t, remainingAfterFirst, total, "单轮 cleanup 应至少有进展")
+	require.Greater(t, remainingAfterFirst, 0, "增量清理不要求单轮清空全部键")
+
+	for i := 0; i < 8; i++ {
+		store.lastCleanupUnixNano.Store(time.Now().Add(-2 * openAIWSStateStoreCleanupInterval).UnixNano())
+		store.maybeCleanup()
+	}
+
+	store.responseToConnMu.RLock()
 	remaining := len(store.responseToConn)
-	store.mu.RUnlock()
-	require.Zero(t, remaining, "单轮 cleanup 应清空全部过期键，避免固定速率清理造成堆积")
+	store.responseToConnMu.RUnlock()
+	require.Zero(t, remaining, "多轮 cleanup 后应逐步清空全部过期键")
+}
+
+func TestEnsureBindingCapacity_EvictsOneWhenMapIsFull(t *testing.T) {
+	bindings := map[string]int{
+		"a": 1,
+		"b": 2,
+	}
+
+	ensureBindingCapacity(bindings, "c", 2)
+	bindings["c"] = 3
+
+	require.Len(t, bindings, 2)
+	require.Equal(t, 3, bindings["c"])
+}
+
+func TestEnsureBindingCapacity_DoesNotEvictWhenUpdatingExistingKey(t *testing.T) {
+	bindings := map[string]int{
+		"a": 1,
+		"b": 2,
+	}
+
+	ensureBindingCapacity(bindings, "a", 2)
+	bindings["a"] = 9
+
+	require.Len(t, bindings, 2)
+	require.Equal(t, 9, bindings["a"])
 }
