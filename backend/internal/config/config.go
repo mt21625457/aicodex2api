@@ -364,7 +364,7 @@ type GatewayConfig struct {
 	// OpenAIPassthroughAllowTimeoutHeaders: OpenAI 透传模式是否放行客户端超时头
 	// 关闭（默认）可避免 x-stainless-timeout 等头导致上游提前断流。
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
-	// OpenAIWS: OpenAI Responses WebSocket 配置（默认关闭，不影响现有 HTTP 线路）
+	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
@@ -453,9 +453,9 @@ type GatewayConfig struct {
 }
 
 // GatewayOpenAIWSConfig OpenAI Responses WebSocket 配置。
-// 注意：默认全局关闭，确保现网仍走现有 HTTP/SSE 链路。
+// 注意：默认全局开启；如需回滚可使用 force_http 或关闭 enabled。
 type GatewayOpenAIWSConfig struct {
-	// Enabled: 全局总开关（默认 false）
+	// Enabled: 全局总开关（默认 true）
 	Enabled bool `mapstructure:"enabled"`
 	// OAuthEnabled: 是否允许 OpenAI OAuth 账号使用 WS
 	OAuthEnabled bool `mapstructure:"oauth_enabled"`
@@ -465,6 +465,14 @@ type GatewayOpenAIWSConfig struct {
 	ForceHTTP bool `mapstructure:"force_http"`
 	// AllowStoreRecovery: 允许在 WSv2 下按策略恢复 store=true（默认 false）
 	AllowStoreRecovery bool `mapstructure:"allow_store_recovery"`
+	// StoreDisabledConnMode: store=false 且无可复用会话连接时的建连策略（strict/adaptive/off）
+	// - strict: 强制新建连接（隔离优先）
+	// - adaptive: 仅在高风险失败后强制新建连接（性能与隔离折中）
+	// - off: 不强制新建连接（复用优先）
+	StoreDisabledConnMode string `mapstructure:"store_disabled_conn_mode"`
+	// StoreDisabledForceNewConn: store=false 且无可复用粘连连接时是否强制新建连接（默认 true，保障会话隔离）
+	// 兼容旧配置；当 StoreDisabledConnMode 为空时才生效。
+	StoreDisabledForceNewConn bool `mapstructure:"store_disabled_force_new_conn"`
 	// PrewarmGenerateEnabled: 是否启用 WSv2 generate=false 预热（默认 false）
 	PrewarmGenerateEnabled bool `mapstructure:"prewarm_generate_enabled"`
 
@@ -487,8 +495,24 @@ type GatewayOpenAIWSConfig struct {
 	WriteTimeoutSeconds   int     `mapstructure:"write_timeout_seconds"`
 	PoolTargetUtilization float64 `mapstructure:"pool_target_utilization"`
 	QueueLimitPerConn     int     `mapstructure:"queue_limit_per_conn"`
+	// EventFlushBatchSize: WS 流式写出批量 flush 阈值（事件条数）
+	EventFlushBatchSize int `mapstructure:"event_flush_batch_size"`
+	// EventFlushIntervalMS: WS 流式写出最大等待时间（毫秒）；0 表示仅按 batch 触发
+	EventFlushIntervalMS int `mapstructure:"event_flush_interval_ms"`
+	// PrewarmCooldownMS: 连接池预热触发冷却时间（毫秒）
+	PrewarmCooldownMS int `mapstructure:"prewarm_cooldown_ms"`
 	// FallbackCooldownSeconds: WS 回退冷却窗口，避免 WS/HTTP 抖动；0 表示关闭冷却
 	FallbackCooldownSeconds int `mapstructure:"fallback_cooldown_seconds"`
+	// RetryBackoffInitialMS: WS 重试初始退避（毫秒）；<=0 表示关闭退避
+	RetryBackoffInitialMS int `mapstructure:"retry_backoff_initial_ms"`
+	// RetryBackoffMaxMS: WS 重试最大退避（毫秒）
+	RetryBackoffMaxMS int `mapstructure:"retry_backoff_max_ms"`
+	// RetryJitterRatio: WS 重试退避抖动比例（0-1）
+	RetryJitterRatio float64 `mapstructure:"retry_jitter_ratio"`
+	// RetryTotalBudgetMS: WS 单次请求重试总预算（毫秒）；0 表示关闭预算限制
+	RetryTotalBudgetMS int `mapstructure:"retry_total_budget_ms"`
+	// PayloadLogSampleRate: payload_schema 日志采样率（0-1）
+	PayloadLogSampleRate float64 `mapstructure:"payload_log_sample_rate"`
 
 	// 账号调度与粘连参数
 	LBTopK int `mapstructure:"lb_top_k"`
@@ -1012,7 +1036,7 @@ func setDefaults() {
 	viper.SetDefault("server.read_header_timeout", 30) // 30秒读取请求头
 	viper.SetDefault("server.idle_timeout", 120)       // 120秒空闲超时
 	viper.SetDefault("server.trusted_proxies", []string{})
-	viper.SetDefault("server.max_request_body_size", int64(100*1024*1024))
+	viper.SetDefault("server.max_request_body_size", int64(256*1024*1024))
 	// H2C 默认配置
 	viper.SetDefault("server.h2c.enabled", false)
 	viper.SetDefault("server.h2c.max_concurrent_streams", uint32(50))      // 50 个并发流
@@ -1224,12 +1248,14 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
-	// OpenAI Responses WebSocket（默认关闭，不影响现网 HTTP 线路）
-	viper.SetDefault("gateway.openai_ws.enabled", false)
+	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
+	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.oauth_enabled", true)
 	viper.SetDefault("gateway.openai_ws.apikey_enabled", true)
 	viper.SetDefault("gateway.openai_ws.force_http", false)
 	viper.SetDefault("gateway.openai_ws.allow_store_recovery", false)
+	viper.SetDefault("gateway.openai_ws.store_disabled_conn_mode", "strict")
+	viper.SetDefault("gateway.openai_ws.store_disabled_force_new_conn", true)
 	viper.SetDefault("gateway.openai_ws.prewarm_generate_enabled", false)
 	viper.SetDefault("gateway.openai_ws.responses_websockets", false)
 	viper.SetDefault("gateway.openai_ws.responses_websockets_v2", true)
@@ -1244,7 +1270,15 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.write_timeout_seconds", 120)
 	viper.SetDefault("gateway.openai_ws.pool_target_utilization", 0.7)
 	viper.SetDefault("gateway.openai_ws.queue_limit_per_conn", 256)
+	viper.SetDefault("gateway.openai_ws.event_flush_batch_size", 4)
+	viper.SetDefault("gateway.openai_ws.event_flush_interval_ms", 25)
+	viper.SetDefault("gateway.openai_ws.prewarm_cooldown_ms", 300)
 	viper.SetDefault("gateway.openai_ws.fallback_cooldown_seconds", 30)
+	viper.SetDefault("gateway.openai_ws.retry_backoff_initial_ms", 120)
+	viper.SetDefault("gateway.openai_ws.retry_backoff_max_ms", 2000)
+	viper.SetDefault("gateway.openai_ws.retry_jitter_ratio", 0.2)
+	viper.SetDefault("gateway.openai_ws.retry_total_budget_ms", 0)
+	viper.SetDefault("gateway.openai_ws.payload_log_sample_rate", 0.2)
 	viper.SetDefault("gateway.openai_ws.lb_top_k", 3)
 	viper.SetDefault("gateway.openai_ws.sticky_session_ttl_seconds", 3600)
 	viper.SetDefault("gateway.openai_ws.sticky_response_id_ttl_seconds", 3600)
@@ -1256,7 +1290,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
-	viper.SetDefault("gateway.max_body_size", int64(100*1024*1024))
+	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
 	viper.SetDefault("gateway.upstream_response_read_max_bytes", int64(8*1024*1024))
 	viper.SetDefault("gateway.proxy_probe_response_read_max_bytes", int64(1024*1024))
 	viper.SetDefault("gateway.gemini_debug_response_headers", false)
@@ -1884,8 +1918,43 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIWS.QueueLimitPerConn <= 0 {
 		return fmt.Errorf("gateway.openai_ws.queue_limit_per_conn must be positive")
 	}
+	if c.Gateway.OpenAIWS.EventFlushBatchSize <= 0 {
+		return fmt.Errorf("gateway.openai_ws.event_flush_batch_size must be positive")
+	}
+	if c.Gateway.OpenAIWS.EventFlushIntervalMS < 0 {
+		return fmt.Errorf("gateway.openai_ws.event_flush_interval_ms must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.PrewarmCooldownMS < 0 {
+		return fmt.Errorf("gateway.openai_ws.prewarm_cooldown_ms must be non-negative")
+	}
 	if c.Gateway.OpenAIWS.FallbackCooldownSeconds < 0 {
 		return fmt.Errorf("gateway.openai_ws.fallback_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.RetryBackoffInitialMS < 0 {
+		return fmt.Errorf("gateway.openai_ws.retry_backoff_initial_ms must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.RetryBackoffMaxMS < 0 {
+		return fmt.Errorf("gateway.openai_ws.retry_backoff_max_ms must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.RetryBackoffInitialMS > 0 && c.Gateway.OpenAIWS.RetryBackoffMaxMS > 0 &&
+		c.Gateway.OpenAIWS.RetryBackoffMaxMS < c.Gateway.OpenAIWS.RetryBackoffInitialMS {
+		return fmt.Errorf("gateway.openai_ws.retry_backoff_max_ms must be >= retry_backoff_initial_ms")
+	}
+	if c.Gateway.OpenAIWS.RetryJitterRatio < 0 || c.Gateway.OpenAIWS.RetryJitterRatio > 1 {
+		return fmt.Errorf("gateway.openai_ws.retry_jitter_ratio must be within [0,1]")
+	}
+	if c.Gateway.OpenAIWS.RetryTotalBudgetMS < 0 {
+		return fmt.Errorf("gateway.openai_ws.retry_total_budget_ms must be non-negative")
+	}
+	if mode := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIWS.StoreDisabledConnMode)); mode != "" {
+		switch mode {
+		case "strict", "adaptive", "off":
+		default:
+			return fmt.Errorf("gateway.openai_ws.store_disabled_conn_mode must be one of strict|adaptive|off")
+		}
+	}
+	if c.Gateway.OpenAIWS.PayloadLogSampleRate < 0 || c.Gateway.OpenAIWS.PayloadLogSampleRate > 1 {
+		return fmt.Errorf("gateway.openai_ws.payload_log_sample_rate must be within [0,1]")
 	}
 	if c.Gateway.OpenAIWS.LBTopK <= 0 {
 		return fmt.Errorf("gateway.openai_ws.lb_top_k must be positive")

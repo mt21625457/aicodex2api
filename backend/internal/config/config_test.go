@@ -84,8 +84,8 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Gateway.OpenAIWS.Enabled {
-		t.Fatalf("Gateway.OpenAIWS.Enabled = true, want false")
+	if !cfg.Gateway.OpenAIWS.Enabled {
+		t.Fatalf("Gateway.OpenAIWS.Enabled = false, want true")
 	}
 	if !cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 {
 		t.Fatalf("Gateway.OpenAIWS.ResponsesWebsocketsV2 = false, want true")
@@ -110,6 +110,36 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	}
 	if cfg.Gateway.OpenAIWS.FallbackCooldownSeconds != 30 {
 		t.Fatalf("Gateway.OpenAIWS.FallbackCooldownSeconds = %d, want 30", cfg.Gateway.OpenAIWS.FallbackCooldownSeconds)
+	}
+	if cfg.Gateway.OpenAIWS.EventFlushBatchSize != 4 {
+		t.Fatalf("Gateway.OpenAIWS.EventFlushBatchSize = %d, want 4", cfg.Gateway.OpenAIWS.EventFlushBatchSize)
+	}
+	if cfg.Gateway.OpenAIWS.EventFlushIntervalMS != 25 {
+		t.Fatalf("Gateway.OpenAIWS.EventFlushIntervalMS = %d, want 25", cfg.Gateway.OpenAIWS.EventFlushIntervalMS)
+	}
+	if cfg.Gateway.OpenAIWS.PrewarmCooldownMS != 300 {
+		t.Fatalf("Gateway.OpenAIWS.PrewarmCooldownMS = %d, want 300", cfg.Gateway.OpenAIWS.PrewarmCooldownMS)
+	}
+	if cfg.Gateway.OpenAIWS.RetryBackoffInitialMS != 120 {
+		t.Fatalf("Gateway.OpenAIWS.RetryBackoffInitialMS = %d, want 120", cfg.Gateway.OpenAIWS.RetryBackoffInitialMS)
+	}
+	if cfg.Gateway.OpenAIWS.RetryBackoffMaxMS != 2000 {
+		t.Fatalf("Gateway.OpenAIWS.RetryBackoffMaxMS = %d, want 2000", cfg.Gateway.OpenAIWS.RetryBackoffMaxMS)
+	}
+	if cfg.Gateway.OpenAIWS.RetryJitterRatio != 0.2 {
+		t.Fatalf("Gateway.OpenAIWS.RetryJitterRatio = %v, want 0.2", cfg.Gateway.OpenAIWS.RetryJitterRatio)
+	}
+	if cfg.Gateway.OpenAIWS.RetryTotalBudgetMS != 0 {
+		t.Fatalf("Gateway.OpenAIWS.RetryTotalBudgetMS = %d, want 0", cfg.Gateway.OpenAIWS.RetryTotalBudgetMS)
+	}
+	if cfg.Gateway.OpenAIWS.PayloadLogSampleRate != 0.2 {
+		t.Fatalf("Gateway.OpenAIWS.PayloadLogSampleRate = %v, want 0.2", cfg.Gateway.OpenAIWS.PayloadLogSampleRate)
+	}
+	if !cfg.Gateway.OpenAIWS.StoreDisabledForceNewConn {
+		t.Fatalf("Gateway.OpenAIWS.StoreDisabledForceNewConn = false, want true")
+	}
+	if cfg.Gateway.OpenAIWS.StoreDisabledConnMode != "strict" {
+		t.Fatalf("Gateway.OpenAIWS.StoreDisabledConnMode = %q, want %q", cfg.Gateway.OpenAIWS.StoreDisabledConnMode, "strict")
 	}
 }
 
@@ -1320,6 +1350,21 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			name:    "fallback_cooldown_seconds 不能为负数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.FallbackCooldownSeconds = -1 },
 			wantErr: "gateway.openai_ws.fallback_cooldown_seconds",
+		},
+		{
+			name:    "store_disabled_conn_mode 必须为 strict|adaptive|off",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.StoreDisabledConnMode = "invalid" },
+			wantErr: "gateway.openai_ws.store_disabled_conn_mode",
+		},
+		{
+			name:    "payload_log_sample_rate 必须在 [0,1] 范围内",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.PayloadLogSampleRate = 1.2 },
+			wantErr: "gateway.openai_ws.payload_log_sample_rate",
+		},
+		{
+			name:    "retry_total_budget_ms 不能为负数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.RetryTotalBudgetMS = -1 },
+			wantErr: "gateway.openai_ws.retry_total_budget_ms",
 		},
 		{
 			name:    "lb_top_k 必须为正数",

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,8 +32,18 @@ func TestClassifyOpenAIWSErrorEvent(t *testing.T) {
 	require.True(t, recoverable)
 
 	reason, recoverable = classifyOpenAIWSErrorEvent([]byte(`{"type":"error","error":{"code":"previous_response_not_found","message":"not found"}}`))
-	require.Equal(t, "event_error", reason)
-	require.False(t, recoverable)
+	require.Equal(t, "previous_response_not_found", reason)
+	require.True(t, recoverable)
+}
+
+func TestClassifyOpenAIWSReconnectReason(t *testing.T) {
+	reason, retryable := classifyOpenAIWSReconnectReason(wrapOpenAIWSFallback("policy_violation", errors.New("policy")))
+	require.Equal(t, "policy_violation", reason)
+	require.False(t, retryable)
+
+	reason, retryable = classifyOpenAIWSReconnectReason(wrapOpenAIWSFallback("read_event", errors.New("io")))
+	require.Equal(t, "read_event", reason)
+	require.True(t, retryable)
 }
 
 func TestOpenAIWSErrorHTTPStatus(t *testing.T) {
@@ -57,4 +68,78 @@ func TestOpenAIWSFallbackCooling(t *testing.T) {
 	svc.markOpenAIWSFallbackCooling(2, "x")
 	time.Sleep(1200 * time.Millisecond)
 	require.False(t, svc.isOpenAIWSFallbackCooling(2))
+}
+
+func TestOpenAIWSRetryBackoff(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	svc.cfg.Gateway.OpenAIWS.RetryBackoffInitialMS = 100
+	svc.cfg.Gateway.OpenAIWS.RetryBackoffMaxMS = 400
+	svc.cfg.Gateway.OpenAIWS.RetryJitterRatio = 0
+
+	require.Equal(t, time.Duration(100)*time.Millisecond, svc.openAIWSRetryBackoff(1))
+	require.Equal(t, time.Duration(200)*time.Millisecond, svc.openAIWSRetryBackoff(2))
+	require.Equal(t, time.Duration(400)*time.Millisecond, svc.openAIWSRetryBackoff(3))
+	require.Equal(t, time.Duration(400)*time.Millisecond, svc.openAIWSRetryBackoff(4))
+}
+
+func TestOpenAIWSRetryTotalBudget(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	svc.cfg.Gateway.OpenAIWS.RetryTotalBudgetMS = 1200
+	require.Equal(t, 1200*time.Millisecond, svc.openAIWSRetryTotalBudget())
+
+	svc.cfg.Gateway.OpenAIWS.RetryTotalBudgetMS = 0
+	require.Equal(t, time.Duration(0), svc.openAIWSRetryTotalBudget())
+}
+
+func TestClassifyOpenAIWSReadFallbackReason(t *testing.T) {
+	require.Equal(t, "policy_violation", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusPolicyViolation}))
+	require.Equal(t, "message_too_big", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusMessageTooBig}))
+	require.Equal(t, "read_event", classifyOpenAIWSReadFallbackReason(errors.New("io")))
+}
+
+func TestOpenAIWSStoreDisabledConnMode(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	svc.cfg.Gateway.OpenAIWS.StoreDisabledForceNewConn = true
+	require.Equal(t, openAIWSStoreDisabledConnModeStrict, svc.openAIWSStoreDisabledConnMode())
+
+	svc.cfg.Gateway.OpenAIWS.StoreDisabledConnMode = "adaptive"
+	require.Equal(t, openAIWSStoreDisabledConnModeAdaptive, svc.openAIWSStoreDisabledConnMode())
+
+	svc.cfg.Gateway.OpenAIWS.StoreDisabledConnMode = ""
+	svc.cfg.Gateway.OpenAIWS.StoreDisabledForceNewConn = false
+	require.Equal(t, openAIWSStoreDisabledConnModeOff, svc.openAIWSStoreDisabledConnMode())
+}
+
+func TestShouldForceNewConnOnStoreDisabled(t *testing.T) {
+	require.True(t, shouldForceNewConnOnStoreDisabled(openAIWSStoreDisabledConnModeStrict, ""))
+	require.False(t, shouldForceNewConnOnStoreDisabled(openAIWSStoreDisabledConnModeOff, "policy_violation"))
+
+	require.True(t, shouldForceNewConnOnStoreDisabled(openAIWSStoreDisabledConnModeAdaptive, "policy_violation"))
+	require.True(t, shouldForceNewConnOnStoreDisabled(openAIWSStoreDisabledConnModeAdaptive, "prewarm_message_too_big"))
+	require.False(t, shouldForceNewConnOnStoreDisabled(openAIWSStoreDisabledConnModeAdaptive, "read_event"))
+}
+
+func TestOpenAIWSRetryMetricsSnapshot(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	svc.recordOpenAIWSRetryAttempt(150 * time.Millisecond)
+	svc.recordOpenAIWSRetryAttempt(0)
+	svc.recordOpenAIWSRetryExhausted()
+	svc.recordOpenAIWSNonRetryableFastFallback()
+
+	snapshot := svc.SnapshotOpenAIWSRetryMetrics()
+	require.Equal(t, int64(2), snapshot.RetryAttemptsTotal)
+	require.Equal(t, int64(150), snapshot.RetryBackoffMsTotal)
+	require.Equal(t, int64(1), snapshot.RetryExhaustedTotal)
+	require.Equal(t, int64(1), snapshot.NonRetryableFastFallbackTotal)
+}
+
+func TestShouldLogOpenAIWSPayloadSchema(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+
+	svc.cfg.Gateway.OpenAIWS.PayloadLogSampleRate = 0
+	require.True(t, svc.shouldLogOpenAIWSPayloadSchema(1), "首次尝试应始终记录 payload_schema")
+	require.False(t, svc.shouldLogOpenAIWSPayloadSchema(2))
+
+	svc.cfg.Gateway.OpenAIWS.PayloadLogSampleRate = 1
+	require.True(t, svc.shouldLogOpenAIWSPayloadSchema(2))
 }
