@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -513,6 +515,26 @@ func summarizeOpenAIWSReadCloseError(err error) (status string, reason string) {
 		}
 	}
 	return normalizeOpenAIWSLogValue(closeStatus), closeReason
+}
+
+func isOpenAIWSClientDisconnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	switch coderws.CloseStatus(err) {
+	case coderws.StatusNormalClosure, coderws.StatusGoingAway, coderws.StatusNoStatusRcvd, coderws.StatusAbnormalClosure:
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	if message == "" {
+		return false
+	}
+	return strings.Contains(message, "failed to read frame header: eof") ||
+		strings.Contains(message, "unexpected eof") ||
+		strings.Contains(message, "use of closed network connection")
 }
 
 func classifyOpenAIWSReadFallbackReason(err error) string {
@@ -1744,13 +1766,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		nextClientMessage, readErr := readClientMessage()
 		if readErr != nil {
-			closeStatus := coderws.CloseStatus(readErr)
-			switch closeStatus {
-			case coderws.StatusNormalClosure, coderws.StatusGoingAway, coderws.StatusNoStatusRcvd:
+			if isOpenAIWSClientDisconnectError(readErr) {
+				closeStatus, closeReason := summarizeOpenAIWSReadCloseError(readErr)
+				logOpenAIWSModeInfo(
+					"ingress_ws_client_closed account_id=%d conn_id=%s close_status=%s close_reason=%s",
+					account.ID,
+					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+					closeStatus,
+					truncateOpenAIWSLogValue(closeReason, openAIWSHeaderValueMaxLen),
+				)
 				return nil
-			default:
-				return fmt.Errorf("read client websocket request: %w", readErr)
 			}
+			return fmt.Errorf("read client websocket request: %w", readErr)
 		}
 
 		nextPayload, _, _, _, nextOriginalModel, parseErr := parseClientPayload(nextClientMessage)
