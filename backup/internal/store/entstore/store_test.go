@@ -319,6 +319,49 @@ func TestStore_CreateBackupJob_WithSelectedSourceProfiles(t *testing.T) {
 	require.Equal(t, "redis-custom", job.RedisProfileID)
 }
 
+func TestStore_CreateBackupJob_IgnoreUnusedProfilesAndS3(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	pgJob, created, err := store.CreateBackupJob(ctx, CreateBackupJobInput{
+		BackupType:  backupjob.BackupTypePostgres.String(),
+		TriggeredBy: "admin:11",
+		RedisID:     "redis-should-be-ignored",
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Empty(t, pgJob.RedisProfileID)
+	require.NotEmpty(t, pgJob.PostgresProfileID)
+
+	redisJob, created, err := store.CreateBackupJob(ctx, CreateBackupJobInput{
+		BackupType:  backupjob.BackupTypeRedis.String(),
+		TriggeredBy: "admin:12",
+		PostgresID:  "postgres-should-be-ignored",
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Empty(t, redisJob.PostgresProfileID)
+	require.NotEmpty(t, redisJob.RedisProfileID)
+
+	noS3Job, created, err := store.CreateBackupJob(ctx, CreateBackupJobInput{
+		BackupType:  backupjob.BackupTypePostgres.String(),
+		TriggeredBy: "admin:13",
+		UploadToS3:  false,
+		S3ProfileID: "missing-profile",
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Empty(t, noS3Job.S3ProfileID)
+
+	_, _, err = store.CreateBackupJob(ctx, CreateBackupJobInput{
+		BackupType:  backupjob.BackupTypePostgres.String(),
+		TriggeredBy: "admin:14",
+		UploadToS3:  true,
+		S3ProfileID: "missing-profile",
+	})
+	require.Error(t, err)
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 

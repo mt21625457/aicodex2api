@@ -133,6 +133,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 	reqStream := streamResult.Bool()
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+	if previousResponseID != "" {
+		reqLog = reqLog.With(zap.Bool("has_previous_response_id", true))
+	}
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
 
@@ -246,7 +250,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	for {
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionHash, reqModel, failedAccountIDs)
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+			c.Request.Context(),
+			apiKey.GroupID,
+			previousResponseID,
+			sessionHash,
+			reqModel,
+			failedAccountIDs,
+		)
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",
 				zap.Error(err),
@@ -263,6 +274,22 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 			return
 		}
+		if selection == nil || selection.Account == nil {
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+			return
+		}
+		if previousResponseID != "" && selection != nil && selection.Account != nil {
+			reqLog.Debug("openai.account_selected_with_previous_response_id", zap.Int64("account_id", selection.Account.ID))
+		}
+		reqLog.Debug("openai.account_schedule_decision",
+			zap.String("layer", scheduleDecision.Layer),
+			zap.Bool("sticky_previous_hit", scheduleDecision.StickyPreviousHit),
+			zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
+			zap.Int("candidate_count", scheduleDecision.CandidateCount),
+			zap.Int("top_k", scheduleDecision.TopK),
+			zap.Int64("latency_ms", scheduleDecision.LatencyMs),
+			zap.Float64("load_skew", scheduleDecision.LoadSkew),
+		)
 		account := selection.Account
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
@@ -358,6 +385,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {
@@ -373,6 +402,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				)
 				continue
 			}
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 			reqLog.Error("openai.forward_failed",
 				zap.Int64("account_id", account.ID),
@@ -380,6 +410,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Error(err),
 			)
 			return
+		}
+		if result != nil {
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+		} else {
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）

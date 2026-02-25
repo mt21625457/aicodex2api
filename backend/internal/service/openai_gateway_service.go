@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,25 +45,29 @@ const (
 
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
-	"accept-language": true,
-	"content-type":    true,
-	"conversation_id": true,
-	"user-agent":      true,
-	"originator":      true,
-	"session_id":      true,
+	"accept-language":       true,
+	"content-type":          true,
+	"conversation_id":       true,
+	"user-agent":            true,
+	"originator":            true,
+	"session_id":            true,
+	"x-codex-turn-state":    true,
+	"x-codex-turn-metadata": true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
 // 透传模式下仅放行这些低风险请求头，避免将非标准/环境噪声头传给上游触发风控。
 var openaiPassthroughAllowedHeaders = map[string]bool{
-	"accept":          true,
-	"accept-language": true,
-	"content-type":    true,
-	"conversation_id": true,
-	"openai-beta":     true,
-	"user-agent":      true,
-	"originator":      true,
-	"session_id":      true,
+	"accept":                true,
+	"accept-language":       true,
+	"content-type":          true,
+	"conversation_id":       true,
+	"openai-beta":           true,
+	"user-agent":            true,
+	"originator":            true,
+	"session_id":            true,
+	"x-codex-turn-state":    true,
+	"x-codex-turn-metadata": true,
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -218,6 +223,16 @@ type OpenAIGatewayService struct {
 	deferredService     *DeferredService
 	openAITokenProvider *OpenAITokenProvider
 	toolCorrector       *CodexToolCorrector
+	openaiWSResolver    OpenAIWSProtocolResolver
+
+	openaiWSInitMu     sync.Mutex
+	openaiWSPool       *openAIWSConnPool
+	openaiWSStateStore OpenAIWSStateStore
+	openaiScheduler    OpenAIAccountScheduler
+	openaiAccountStats *openAIAccountRuntimeStats
+
+	openaiWSFallbackMu    sync.Mutex
+	openaiWSFallbackUntil map[int64]time.Time
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -254,6 +269,7 @@ func NewOpenAIGatewayService(
 		deferredService:     deferredService,
 		openAITokenProvider: openAITokenProvider,
 		toolCorrector:       NewCodexToolCorrector(),
+		openaiWSResolver:    NewOpenAIWSProtocolResolver(cfg),
 	}
 }
 
@@ -266,6 +282,17 @@ func (s *OpenAIGatewayService) getCodexClientRestrictionDetector() CodexClientRe
 		cfg = s.cfg
 	}
 	return NewOpenAICodexClientRestrictionDetector(cfg)
+}
+
+func (s *OpenAIGatewayService) getOpenAIWSProtocolResolver() OpenAIWSProtocolResolver {
+	if s != nil && s.openaiWSResolver != nil {
+		return s.openaiWSResolver
+	}
+	var cfg *config.Config
+	if s != nil {
+		cfg = s.cfg
+	}
+	return NewOpenAIWSProtocolResolver(cfg)
 }
 
 func (s *OpenAIGatewayService) detectCodexClientRestriction(c *gin.Context, account *Account) CodexClientRestrictionDetectionResult {
@@ -503,7 +530,11 @@ func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *i
 	if sessionHash == "" || accountID <= 0 {
 		return nil
 	}
-	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash, accountID, openaiStickySessionTTL)
+	ttl := openaiStickySessionTTL
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
+		ttl = time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
+	}
+	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash, accountID, ttl)
 }
 
 // SelectAccount selects an OpenAI account with sticky session support
@@ -1010,6 +1041,23 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	originalModel := reqModel
 
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
+	if c != nil {
+		c.Set("openai_ws_transport_decision", string(wsDecision.Transport))
+		c.Set("openai_ws_transport_reason", wsDecision.Reason)
+	}
+	// 当前仅支持 WSv2；WSv1 命中时直接返回错误，避免出现“配置可开但行为不确定”。
+	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
+		if c != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": gin.H{
+					"type":    "invalid_request_error",
+					"message": "OpenAI WSv1 is temporarily unsupported. Please enable responses_websockets_v2.",
+				},
+			})
+		}
+		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
+	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	if passthroughEnabled {
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
@@ -1126,11 +1174,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		// Remove unsupported fields (not supported by upstream OpenAI API)
-		for _, unsupportedField := range []string{"prompt_cache_retention", "safety_identifier", "previous_response_id"} {
+		unsupportedFields := []string{"prompt_cache_retention", "safety_identifier"}
+		for _, unsupportedField := range unsupportedFields {
 			if _, has := reqBody[unsupportedField]; has {
 				delete(reqBody, unsupportedField)
 				bodyModified = true
 			}
+		}
+	}
+
+	// 仅在 WSv2 模式保留 previous_response_id，其他模式（HTTP/WSv1）统一过滤。
+	// 注意：该规则同样适用于 Codex CLI 请求，避免 WSv1 向上游透传不支持字段。
+	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+		if _, has := reqBody["previous_response_id"]; has {
+			delete(reqBody, "previous_response_id")
+			bodyModified = true
 		}
 	}
 
@@ -1149,6 +1207,60 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, err
 	}
 
+	// Capture upstream request body for ops retry of this attempt.
+	setOpsUpstreamRequestBody(c, body)
+
+	// 命中 WS 时优先走 WebSocket Mode；仅在“未写下游”且可恢复错误时回退 HTTP。
+	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
+		if s.isOpenAIWSFallbackCooling(account.ID) {
+			if c != nil {
+				c.Set("openai_ws_fallback_cooling", true)
+			}
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: 0,
+				Kind:               "ws_cooling",
+				Message:            "openai ws fallback cooling",
+			})
+			s.logOpenAIWSFallback(ctx, account, "fallback_cooling", nil)
+		} else {
+			wsResult, wsErr := s.forwardOpenAIWSV2(
+				ctx,
+				c,
+				account,
+				reqBody,
+				token,
+				wsDecision,
+				isCodexCLI,
+				reqStream,
+				originalModel,
+				mappedModel,
+				startTime,
+			)
+			if wsErr == nil {
+				s.clearOpenAIWSFallbackCooling(account.ID)
+				return wsResult, nil
+			}
+			var fallbackErr *openAIWSFallbackError
+			if errors.As(wsErr, &fallbackErr) && (c == nil || c.Writer == nil || !c.Writer.Written()) {
+				s.markOpenAIWSFallbackCooling(account.ID, fallbackErr.Reason)
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: 0,
+					Kind:               "ws_fallback",
+					Message:            fallbackErr.Reason,
+				})
+				s.logOpenAIWSFallback(ctx, account, fallbackErr.Reason, fallbackErr.Err)
+			} else {
+				return nil, wsErr
+			}
+		}
+	}
+
 	// Build upstream request
 	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
 	if err != nil {
@@ -1160,9 +1272,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-
-	// Capture upstream request body for ops retry of this attempt.
-	setOpsUpstreamRequestBody(c, body)
 
 	// Send request
 	upstreamStart := time.Now()

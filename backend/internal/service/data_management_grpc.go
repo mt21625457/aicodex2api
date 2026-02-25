@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	grpcstatus "google.golang.org/grpc/status"
@@ -519,19 +521,7 @@ func (s *DataManagementService) withClient(ctx context.Context, call func(contex
 	}
 
 	socketPath := s.SocketPath()
-	dialCtx, dialCancel := context.WithTimeout(ctx, s.dialTimeout)
-	defer dialCancel()
-
-	conn, err := grpc.DialContext(
-		dialCtx,
-		"unix://"+socketPath,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			dialer := net.Dialer{Timeout: s.dialTimeout}
-			return dialer.DialContext(ctx, "unix", socketPath)
-		}),
-	)
+	conn, err := s.dialBackupAgent(ctx, socketPath)
 	if err != nil {
 		return ErrBackupAgentUnavailable.WithMetadata(map[string]string{"socket_path": socketPath}).WithCause(err)
 	}
@@ -880,19 +870,7 @@ func validateSourceProfileInput(sourceType, profileID, name string) error {
 
 func (s *DataManagementService) probeBackupHealth(ctx context.Context) (*DataManagementAgentInfo, error) {
 	socketPath := s.SocketPath()
-	dialCtx, dialCancel := context.WithTimeout(ctx, s.dialTimeout)
-	defer dialCancel()
-
-	conn, err := grpc.DialContext(
-		dialCtx,
-		"unix://"+socketPath,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			dialer := net.Dialer{Timeout: s.dialTimeout}
-			return dialer.DialContext(ctx, "unix", socketPath)
-		}),
-	)
+	conn, err := s.dialBackupAgent(ctx, socketPath)
 	if err != nil {
 		return nil, err
 	}
@@ -918,6 +896,47 @@ func (s *DataManagementService) probeBackupHealth(ctx context.Context) (*DataMan
 		Version:       strings.TrimSpace(resp.GetVersion()),
 		UptimeSeconds: resp.GetUptimeSeconds(),
 	}, nil
+}
+
+func (s *DataManagementService) dialBackupAgent(ctx context.Context, socketPath string) (*grpc.ClientConn, error) {
+	conn, err := grpc.NewClient(
+		"passthrough:///backup-agent",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(dialCtx context.Context, _ string) (net.Conn, error) {
+			dialer := net.Dialer{Timeout: s.dialTimeout}
+			return dialer.DialContext(dialCtx, "unix", socketPath)
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	timeout := s.dialTimeout
+	if timeout <= 0 {
+		return conn, nil
+	}
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, timeout)
+	defer waitCancel()
+	conn.Connect()
+	for {
+		state := conn.GetState()
+		if state == connectivity.Ready {
+			return conn, nil
+		}
+		if state == connectivity.Shutdown {
+			_ = conn.Close()
+			return nil, errors.New("backup agent grpc connection shutdown")
+		}
+		if conn.WaitForStateChange(waitCtx, state) {
+			continue
+		}
+		_ = conn.Close()
+		if waitErr := waitCtx.Err(); waitErr != nil {
+			return nil, waitErr
+		}
+		return nil, context.DeadlineExceeded
+	}
 }
 
 func requestIDFromContext(ctx context.Context) string {

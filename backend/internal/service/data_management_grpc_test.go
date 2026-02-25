@@ -1,12 +1,19 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"testing"
+	"time"
 
+	backupv1 "github.com/Wei-Shaw/sub2api/internal/backup/proto/backup/v1"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
@@ -125,4 +132,60 @@ func TestValidateDataManagementConfig(t *testing.T) {
 	s3EnabledMissingBucket.S3.Region = "us-east-1"
 	s3EnabledMissingBucket.S3.Bucket = ""
 	require.Error(t, validateDataManagementConfig(s3EnabledMissingBucket))
+}
+
+func TestDataManagementService_DialBackupAgent_TimeoutDisabled(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("s2dm0-%d.sock", time.Now().UnixNano()))
+	startTestBackupHealthServer(t, socketPath)
+
+	svc := &DataManagementService{
+		socketPath:  socketPath,
+		dialTimeout: 0,
+	}
+
+	conn, err := svc.dialBackupAgent(context.Background(), socketPath)
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	require.NoError(t, conn.Close())
+}
+
+func TestDataManagementService_DialBackupAgent_TimeoutExceeded(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "missing.sock")
+	svc := &DataManagementService{
+		socketPath:  socketPath,
+		dialTimeout: 30 * time.Millisecond,
+	}
+
+	conn, err := svc.dialBackupAgent(context.Background(), socketPath)
+	require.Nil(t, conn)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestDataManagementService_WithClient_PassesRequestID(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("s2dm1-%d.sock", time.Now().UnixNano()))
+	startTestBackupHealthServer(t, socketPath)
+
+	svc := &DataManagementService{
+		socketPath:  socketPath,
+		dialTimeout: 200 * time.Millisecond,
+	}
+
+	ctx := context.WithValue(context.Background(), ctxkey.RequestID, "req-data-management-1")
+	called := false
+	err := svc.withClient(ctx, func(callCtx context.Context, _ backupv1.BackupServiceClient) error {
+		called = true
+		md, ok := metadata.FromOutgoingContext(callCtx)
+		require.True(t, ok)
+		require.Equal(t, []string{"req-data-management-1"}, md.Get("x-request-id"))
+		return nil
+	})
+	require.NoError(t, err)
+	require.True(t, called)
 }

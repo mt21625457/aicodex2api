@@ -1716,6 +1716,20 @@ export default {
         oauthPassthrough: 'Auto passthrough (auth only)',
         oauthPassthroughDesc:
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',
+        responsesWebsocketsV2: 'Responses WebSocket v2',
+        responsesWebsocketsV2Desc:
+          'Disabled by default. Enable to allow responses_websockets_v2 capability (still gated by global and account-type switches).',
+        wsMode: 'WS mode',
+        wsModeDesc:
+          'Only applies to the current OpenAI account type. This account can use OpenAI WebSocket Mode only when enabled.',
+        oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
+        oauthResponsesWebsocketsV2Desc:
+          'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',
+        apiKeyResponsesWebsocketsV2: 'API Key WebSocket Mode',
+        apiKeyResponsesWebsocketsV2Desc:
+          'Only applies to OpenAI API Key. This account can use OpenAI WebSocket Mode only when enabled.',
+        responsesWebsocketsV2PassthroughHint:
+          'Automatic passthrough is currently enabled: passthrough takes priority, so the WSv2 switch is not effective.',
         codexCLIOnly: 'Codex official clients only',
         codexCLIOnlyDesc:
           'Only applies to OpenAI OAuth. When enabled, only Codex official client families are allowed; when disabled, the gateway bypasses this restriction and keeps existing behavior.',

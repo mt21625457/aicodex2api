@@ -896,15 +896,28 @@ func (s *Store) CreateBackupJob(ctx context.Context, input CreateBackupJobInput)
 	input.S3ProfileID = strings.TrimSpace(input.S3ProfileID)
 	input.PostgresID = strings.TrimSpace(input.PostgresID)
 	input.RedisID = strings.TrimSpace(input.RedisID)
+	needsPostgres := backupTypeNeedsPostgres(input.BackupType)
+	needsRedis := backupTypeNeedsRedis(input.BackupType)
 
-	if backupTypeNeedsPostgres(input.BackupType) {
+	// 仅保留本次备份类型真正需要的来源配置，避免写入无关 profile 造成“被占用”误判。
+	if !needsPostgres {
+		input.PostgresID = ""
+	}
+	if !needsRedis {
+		input.RedisID = ""
+	}
+	if !input.UploadToS3 {
+		input.S3ProfileID = ""
+	}
+
+	if needsPostgres {
 		resolvedID, resolveErr := s.resolveSourceProfileID(ctx, backupsourceconfig.SourceTypePostgres.String(), input.PostgresID)
 		if resolveErr != nil {
 			return nil, false, resolveErr
 		}
 		input.PostgresID = resolvedID
 	}
-	if backupTypeNeedsRedis(input.BackupType) {
+	if needsRedis {
 		resolvedID, resolveErr := s.resolveSourceProfileID(ctx, backupsourceconfig.SourceTypeRedis.String(), input.RedisID)
 		if resolveErr != nil {
 			return nil, false, resolveErr
@@ -974,29 +987,44 @@ func (s *Store) CreateBackupJob(ctx context.Context, input CreateBackupJobInput)
 }
 
 func (s *Store) AcquireNextQueuedJob(ctx context.Context) (*ent.BackupJob, error) {
-	job, err := s.client.BackupJob.Query().
-		Where(backupjob.StatusEQ(backupjob.StatusQueued)).
-		Order(ent.Asc(backupjob.FieldCreatedAt), ent.Asc(backupjob.FieldID)).
-		First(ctx)
-	if err != nil {
-		return nil, err
-	}
+	for {
+		job, err := s.client.BackupJob.Query().
+			Where(backupjob.StatusEQ(backupjob.StatusQueued)).
+			Order(ent.Asc(backupjob.FieldCreatedAt), ent.Asc(backupjob.FieldID)).
+			First(ctx)
+		if err != nil {
+			return nil, err
+		}
 
-	now := time.Now()
-	updated, err := s.client.BackupJob.UpdateOneID(job.ID).
-		SetStatus(backupjob.StatusRunning).
-		SetStartedAt(now).
-		ClearFinishedAt().
-		ClearErrorMessage().
-		Save(ctx)
-	if err != nil {
-		return nil, err
-	}
+		now := time.Now()
+		affected, err := s.client.BackupJob.Update().
+			Where(
+				backupjob.IDEQ(job.ID),
+				backupjob.StatusEQ(backupjob.StatusQueued),
+			).
+			SetStatus(backupjob.StatusRunning).
+			SetStartedAt(now).
+			ClearFinishedAt().
+			ClearErrorMessage().
+			Save(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if affected == 0 {
+			// 并发下被其他 worker 抢占时继续重试下一条 queued 任务。
+			continue
+		}
 
-	if err := s.appendJobEventByEntityID(ctx, updated.ID, backupjobevent.LevelInfo, "state_change", "job started", ""); err != nil {
-		return nil, err
+		updated, err := s.client.BackupJob.Query().Where(backupjob.IDEQ(job.ID)).First(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := s.appendJobEventByEntityID(ctx, updated.ID, backupjobevent.LevelInfo, "state_change", "job started", ""); err != nil {
+			return nil, err
+		}
+		return updated, nil
 	}
-	return updated, nil
 }
 
 func (s *Store) FinishBackupJob(ctx context.Context, input FinishBackupJobInput) (*ent.BackupJob, error) {
