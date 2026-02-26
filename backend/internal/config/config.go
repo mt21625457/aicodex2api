@@ -1259,7 +1259,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.prewarm_generate_enabled", false)
 	viper.SetDefault("gateway.openai_ws.responses_websockets", false)
 	viper.SetDefault("gateway.openai_ws.responses_websockets_v2", true)
-	viper.SetDefault("gateway.openai_ws.max_conns_per_account", 24)
+	viper.SetDefault("gateway.openai_ws.max_conns_per_account", 128)
 	viper.SetDefault("gateway.openai_ws.min_idle_per_account", 4)
 	viper.SetDefault("gateway.openai_ws.max_idle_per_account", 12)
 	viper.SetDefault("gateway.openai_ws.dynamic_max_conns_by_account_concurrency_enabled", true)

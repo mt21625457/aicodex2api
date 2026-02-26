@@ -222,7 +222,7 @@ gateway:
     responses_websockets: false
     responses_websockets_v2: true
     # 连接池参数（按账号池化复用）
-    max_conns_per_account: 24
+    max_conns_per_account: 128
     min_idle_per_account: 4
     max_idle_per_account: 12
     # 是否按账号并发动态计算连接池上限：
