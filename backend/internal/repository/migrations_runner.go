@@ -51,6 +51,22 @@ CREATE TABLE IF NOT EXISTS atlas_schema_revisions (
 const migrationsAdvisoryLockID int64 = 694208311321144027
 const migrationsLockRetryInterval = 500 * time.Millisecond
 
+type migrationChecksumCompatibilityRule struct {
+	fileChecksum       string
+	acceptedDBChecksum map[string]struct{}
+}
+
+// migrationChecksumCompatibilityRules 仅用于兼容历史上误修改过的迁移文件 checksum。
+// 规则必须同时匹配「迁移名 + 当前文件 checksum + 历史库 checksum」才会放行，避免放宽全局校验。
+var migrationChecksumCompatibilityRules = map[string]migrationChecksumCompatibilityRule{
+	"054_drop_legacy_cache_columns.sql": {
+		fileChecksum: "82de761156e03876653e7a6a4eee883cd927847036f779b0b9f34c42a8af7a7d",
+		acceptedDBChecksum: map[string]struct{}{
+			"182c193f3359946cf094090cd9e57d5c3fd9abaffbc1e8fc378646b8a6fa12b4": {},
+		},
+	},
+}
+
 // ApplyMigrations 将嵌入的 SQL 迁移文件应用到指定的数据库。
 //
 // 该函数可以在每次应用启动时安全调用：
@@ -147,6 +163,10 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 		if rowErr == nil {
 			// 迁移已应用，验证校验和是否匹配
 			if existing != checksum {
+				// 兼容特定历史误改场景（仅白名单规则），其余仍保持严格不可变约束。
+				if isMigrationChecksumCompatible(name, existing, checksum) {
+					continue
+				}
 				// 校验和不匹配意味着迁移文件在应用后被修改，这是危险的。
 				// 正确的做法是创建新的迁移文件来进行变更。
 				return fmt.Errorf(
@@ -266,6 +286,18 @@ func latestMigrationBaseline(fsys fs.FS) (string, string, string, error) {
 	hash := hex.EncodeToString(sum[:])
 	version := strings.TrimSuffix(name, ".sql")
 	return version, version, hash, nil
+}
+
+func isMigrationChecksumCompatible(name, dbChecksum, fileChecksum string) bool {
+	rule, ok := migrationChecksumCompatibilityRules[name]
+	if !ok {
+		return false
+	}
+	if rule.fileChecksum != fileChecksum {
+		return false
+	}
+	_, ok = rule.acceptedDBChecksum[dbChecksum]
+	return ok
 }
 
 // pgAdvisoryLock 获取 PostgreSQL Advisory Lock。
