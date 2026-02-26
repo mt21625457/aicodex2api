@@ -3,6 +3,7 @@ package service
 
 import (
 	"encoding/json"
+	"hash/fnv"
 	"reflect"
 	"sort"
 	"strconv"
@@ -58,6 +59,7 @@ type Account struct {
 	modelMappingCacheCredentialsPtr uintptr
 	modelMappingCacheRawPtr         uintptr
 	modelMappingCacheRawLen         int
+	modelMappingCacheRawSig         uint64
 }
 
 type TempUnschedulableRule struct {
@@ -361,21 +363,31 @@ func (a *Account) GetModelMapping() map[string]string {
 	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
 	rawPtr := mapPtr(rawMapping)
 	rawLen := len(rawMapping)
+	rawSig := uint64(0)
+	rawSigReady := false
 
 	if a.modelMappingCacheReady &&
 		a.modelMappingCacheCredentialsPtr == credentialsPtr &&
 		a.modelMappingCacheRawPtr == rawPtr &&
 		a.modelMappingCacheRawLen == rawLen {
-		return a.modelMappingCache
+		rawSig = modelMappingSignature(rawMapping)
+		rawSigReady = true
+		if a.modelMappingCacheRawSig == rawSig {
+			return a.modelMappingCache
+		}
 	}
 
 	mapping := a.resolveModelMapping(rawMapping)
+	if !rawSigReady {
+		rawSig = modelMappingSignature(rawMapping)
+	}
 
 	a.modelMappingCache = mapping
 	a.modelMappingCacheReady = true
 	a.modelMappingCacheCredentialsPtr = credentialsPtr
 	a.modelMappingCacheRawPtr = rawPtr
 	a.modelMappingCacheRawLen = rawLen
+	a.modelMappingCacheRawSig = rawSig
 	return mapping
 }
 
@@ -424,6 +436,30 @@ func mapPtr(m map[string]any) uintptr {
 		return 0
 	}
 	return reflect.ValueOf(m).Pointer()
+}
+
+func modelMappingSignature(rawMapping map[string]any) uint64 {
+	if len(rawMapping) == 0 {
+		return 0
+	}
+	keys := make([]string, 0, len(rawMapping))
+	for k := range rawMapping {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := fnv.New64a()
+	for _, k := range keys {
+		_, _ = h.Write([]byte(k))
+		_, _ = h.Write([]byte{0})
+		if v, ok := rawMapping[k].(string); ok {
+			_, _ = h.Write([]byte(v))
+		} else {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0xff})
+	}
+	return h.Sum64()
 }
 
 func ensureAntigravityDefaultPassthrough(mapping map[string]string, model string) {
