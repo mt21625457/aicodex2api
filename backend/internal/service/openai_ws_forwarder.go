@@ -1433,6 +1433,26 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		lease.QueueWaitDuration().Milliseconds(),
 		previousResponseID != "",
 	)
+	if previousResponseID != "" {
+		logOpenAIWSModeInfo(
+			"continuation_probe account_id=%d account_type=%s conn_id=%s previous_response_id=%s preferred_conn_id=%s conn_reused=%v store_disabled=%v session_hash=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v",
+			account.ID,
+			account.Type,
+			truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+			truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
+			truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
+			lease.Reused(),
+			storeDisabled,
+			truncateOpenAIWSLogValue(sessionHash, 12),
+			openAIWSHeaderValueForLog(wsHeaders, "session_id"),
+			openAIWSHeaderValueForLog(wsHeaders, "conversation_id"),
+			normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
+			normalizeOpenAIWSLogValue(sessionResolution.ConversationSource),
+			turnState != "",
+			len(turnState),
+			promptCacheKey != "",
+		)
+	}
 	if c != nil {
 		SetOpsLatencyMs(c, OpsOpenAIWSConnPickMsKey, lease.ConnPickDuration().Milliseconds())
 		SetOpsLatencyMs(c, OpsOpenAIWSQueueWaitMsKey, lease.QueueWaitDuration().Milliseconds())
@@ -1697,6 +1717,31 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				errType,
 				errMessage,
 			)
+			if fallbackReason == "previous_response_not_found" {
+				logOpenAIWSModeInfo(
+					"previous_response_not_found_diag account_id=%d account_type=%s conn_id=%s previous_response_id=%s response_id=%s event_idx=%d req_stream=%v store_disabled=%v conn_reused=%v session_hash=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v err_code=%s err_type=%s err_message=%s",
+					account.ID,
+					account.Type,
+					connID,
+					truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
+					eventCount,
+					reqStream,
+					storeDisabled,
+					lease.Reused(),
+					truncateOpenAIWSLogValue(sessionHash, 12),
+					openAIWSHeaderValueForLog(wsHeaders, "session_id"),
+					openAIWSHeaderValueForLog(wsHeaders, "conversation_id"),
+					normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
+					normalizeOpenAIWSLogValue(sessionResolution.ConversationSource),
+					turnState != "",
+					len(turnState),
+					promptCacheKey != "",
+					errCode,
+					errType,
+					errMessage,
+				)
+			}
 			// error 事件后连接不再可复用，避免回池后污染下一请求。
 			lease.MarkBroken()
 			if !wroteDownstream && canFallback {
@@ -2016,6 +2061,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			storeDisabled,
 		)
 	}
+	if firstPayload.previousResponseID != "" {
+		logOpenAIWSModeInfo(
+			"ingress_ws_continuation_probe account_id=%d turn=%d previous_response_id=%s preferred_conn_id=%s session_hash=%s header_session_id=%s header_conversation_id=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v store_disabled=%v",
+			account.ID,
+			1,
+			truncateOpenAIWSLogValue(firstPayload.previousResponseID, openAIWSIDValueMaxLen),
+			truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
+			truncateOpenAIWSLogValue(sessionHash, 12),
+			openAIWSHeaderValueForLog(baseAcquireReq.Headers, "session_id"),
+			openAIWSHeaderValueForLog(baseAcquireReq.Headers, "conversation_id"),
+			turnState != "",
+			len(turnState),
+			firstPayload.promptCacheKey != "",
+			storeDisabled,
+		)
+	}
 
 	acquireTimeout := s.openAIWSAcquireTimeout()
 	if acquireTimeout <= 0 {
@@ -2132,6 +2193,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		usage := OpenAIUsage{}
 		var firstTokenMs *int
 		reqStream := true
+		turnPreviousResponseID := openAIWSPayloadString(payload, "previous_response_id")
+		turnPromptCacheKey := openAIWSPayloadString(payload, "prompt_cache_key")
+		turnStoreDisabled := s.isOpenAIWSStoreDisabledInRequest(payload, account)
 		eventCount := 0
 		tokenEventCount := 0
 		terminalEventCount := 0
@@ -2175,6 +2239,26 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					firstEventType = eventType
 				}
 				lastEventType = eventType
+			}
+			if eventType == "error" {
+				errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(upstreamMessage)
+				fallbackReason, _ := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
+				errCode, errType, errMessage := summarizeOpenAIWSErrorEventFieldsFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
+				logOpenAIWSModeInfo(
+					"ingress_ws_error_event account_id=%d turn=%d conn_id=%s idx=%d fallback_reason=%s err_code=%s err_type=%s err_message=%s previous_response_id=%s response_id=%s store_disabled=%v has_prompt_cache_key=%v",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+					eventCount,
+					truncateOpenAIWSLogValue(fallbackReason, openAIWSLogValueMaxLen),
+					errCode,
+					errType,
+					errMessage,
+					truncateOpenAIWSLogValue(turnPreviousResponseID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
+					turnStoreDisabled,
+					turnPromptCacheKey != "",
+				)
 			}
 			isTokenEvent := isOpenAIWSTokenEvent(eventType)
 			if isTokenEvent {
@@ -2287,6 +2371,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	turn := 1
 	turnRetry := 0
 	lastTurnFinishedAt := time.Time{}
+	lastTurnResponseID := ""
 	skipBeforeTurn := false
 	for {
 		if !skipBeforeTurn && hooks != nil && hooks.BeforeTurn != nil {
@@ -2333,6 +2418,27 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		connID := sessionConnID
+		currentPreviousResponseID := openAIWSPayloadString(currentPayload, "previous_response_id")
+		if currentPreviousResponseID != "" {
+			expectedPrev := strings.TrimSpace(lastTurnResponseID)
+			chainedFromLast := expectedPrev != "" && currentPreviousResponseID == expectedPrev
+			logOpenAIWSModeInfo(
+				"ingress_ws_turn_chain account_id=%d turn=%d conn_id=%s previous_response_id=%s last_turn_response_id=%s chained_from_last=%v preferred_conn_id=%s header_session_id=%s header_conversation_id=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v store_disabled=%v",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+				chainedFromLast,
+				truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
+				openAIWSHeaderValueForLog(baseAcquireReq.Headers, "session_id"),
+				openAIWSHeaderValueForLog(baseAcquireReq.Headers, "conversation_id"),
+				turnState != "",
+				len(turnState),
+				openAIWSPayloadString(currentPayload, "prompt_cache_key") != "",
+				storeDisabled,
+			)
+		}
 
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel)
 		if relayErr != nil {
@@ -2373,6 +2479,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return errors.New("websocket turn result is nil")
 		}
 		responseID := strings.TrimSpace(result.RequestID)
+		lastTurnResponseID = responseID
 
 		if responseID != "" && stateStore != nil {
 			ttl := s.openAIWSResponseStickyTTL()
@@ -2411,6 +2518,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
 			updatedHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey)
 			baseAcquireReq.Headers = updatedHeaders
+		}
+		if nextPayload.previousResponseID != "" {
+			expectedPrev := strings.TrimSpace(lastTurnResponseID)
+			chainedFromLast := expectedPrev != "" && nextPayload.previousResponseID == expectedPrev
+			logOpenAIWSModeInfo(
+				"ingress_ws_next_turn_chain account_id=%d turn=%d next_turn=%d conn_id=%s previous_response_id=%s last_turn_response_id=%s chained_from_last=%v has_prompt_cache_key=%v store_disabled=%v",
+				account.ID,
+				turn,
+				turn+1,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(nextPayload.previousResponseID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+				chainedFromLast,
+				nextPayload.promptCacheKey != "",
+				storeDisabled,
+			)
 		}
 		if stateStore != nil && nextPayload.previousResponseID != "" {
 			if stickyConnID, ok := stateStore.GetResponseConn(nextPayload.previousResponseID); ok {
