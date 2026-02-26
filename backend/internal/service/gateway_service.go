@@ -5124,9 +5124,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 
 	pendingEventLines := make([]string, 0, 4)
 
-	processSSEEvent := func(lines []string) ([]string, string, error) {
+	processSSEEvent := func(lines []string) ([]string, string, *sseUsagePatch, error) {
 		if len(lines) == 0 {
-			return nil, "", nil
+			return nil, "", nil, nil
 		}
 
 		eventName := ""
@@ -5143,11 +5143,11 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		if eventName == "error" {
-			return nil, dataLine, errors.New("have error in stream")
+			return nil, dataLine, nil, errors.New("have error in stream")
 		}
 
 		if dataLine == "" {
-			return []string{strings.Join(lines, "\n") + "\n\n"}, "", nil
+			return []string{strings.Join(lines, "\n") + "\n\n"}, "", nil, nil
 		}
 
 		if dataLine == "[DONE]" {
@@ -5156,7 +5156,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				block = "event: " + eventName + "\n"
 			}
 			block += "data: " + dataLine + "\n\n"
-			return []string{block}, dataLine, nil
+			return []string{block}, dataLine, nil, nil
 		}
 
 		var event map[string]any
@@ -5167,25 +5167,26 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				block = "event: " + eventName + "\n"
 			}
 			block += "data: " + dataLine + "\n\n"
-			return []string{block}, dataLine, nil
+			return []string{block}, dataLine, nil, nil
 		}
 
 		eventType, _ := event["type"].(string)
 		if eventName == "" {
 			eventName = eventType
 		}
+		eventChanged := false
 
 		// 兼容 Kimi cached_tokens → cache_read_input_tokens
 		if eventType == "message_start" {
 			if msg, ok := event["message"].(map[string]any); ok {
 				if u, ok := msg["usage"].(map[string]any); ok {
-					reconcileCachedTokens(u)
+					eventChanged = reconcileCachedTokens(u) || eventChanged
 				}
 			}
 		}
 		if eventType == "message_delta" {
 			if u, ok := event["usage"].(map[string]any); ok {
-				reconcileCachedTokens(u)
+				eventChanged = reconcileCachedTokens(u) || eventChanged
 			}
 		}
 
@@ -5195,13 +5196,13 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			if eventType == "message_start" {
 				if msg, ok := event["message"].(map[string]any); ok {
 					if u, ok := msg["usage"].(map[string]any); ok {
-						rewriteCacheCreationJSON(u, overrideTarget)
+						eventChanged = rewriteCacheCreationJSON(u, overrideTarget) || eventChanged
 					}
 				}
 			}
 			if eventType == "message_delta" {
 				if u, ok := event["usage"].(map[string]any); ok {
-					rewriteCacheCreationJSON(u, overrideTarget)
+					eventChanged = rewriteCacheCreationJSON(u, overrideTarget) || eventChanged
 				}
 			}
 		}
@@ -5210,8 +5211,19 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			if msg, ok := event["message"].(map[string]any); ok {
 				if model, ok := msg["model"].(string); ok && model == mappedModel {
 					msg["model"] = originalModel
+					eventChanged = true
 				}
 			}
+		}
+
+		usagePatch := s.extractSSEUsagePatch(event)
+		if !eventChanged {
+			block := ""
+			if eventName != "" {
+				block = "event: " + eventName + "\n"
+			}
+			block += "data: " + dataLine + "\n\n"
+			return []string{block}, dataLine, usagePatch, nil
 		}
 
 		newData, err := json.Marshal(event)
@@ -5222,7 +5234,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				block = "event: " + eventName + "\n"
 			}
 			block += "data: " + dataLine + "\n\n"
-			return []string{block}, dataLine, nil
+			return []string{block}, dataLine, usagePatch, nil
 		}
 
 		block := ""
@@ -5230,7 +5242,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			block = "event: " + eventName + "\n"
 		}
 		block += "data: " + string(newData) + "\n\n"
-		return []string{block}, string(newData), nil
+		return []string{block}, string(newData), usagePatch, nil
 	}
 
 	for {
@@ -5268,7 +5280,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					continue
 				}
 
-				outputBlocks, data, err := processSSEEvent(pendingEventLines)
+				outputBlocks, data, usagePatch, err := processSSEEvent(pendingEventLines)
 				pendingEventLines = pendingEventLines[:0]
 				if err != nil {
 					if clientDisconnected {
@@ -5291,7 +5303,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 							ms := int(time.Since(startTime).Milliseconds())
 							firstTokenMs = &ms
 						}
-						s.parseSSEUsage(data, usage)
+						if usagePatch != nil {
+							mergeSSEUsagePatch(usage, usagePatch)
+						}
 					}
 				}
 				continue
@@ -5322,64 +5336,163 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 }
 
 func (s *GatewayService) parseSSEUsage(data string, usage *ClaudeUsage) {
-	// 解析message_start获取input tokens（标准Claude API格式）
-	var msgStart struct {
-		Type    string `json:"type"`
-		Message struct {
-			Usage ClaudeUsage `json:"usage"`
-		} `json:"message"`
-	}
-	if json.Unmarshal([]byte(data), &msgStart) == nil && msgStart.Type == "message_start" {
-		usage.InputTokens = msgStart.Message.Usage.InputTokens
-		usage.CacheCreationInputTokens = msgStart.Message.Usage.CacheCreationInputTokens
-		usage.CacheReadInputTokens = msgStart.Message.Usage.CacheReadInputTokens
-
-		// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
-		cc5m := gjson.Get(data, "message.usage.cache_creation.ephemeral_5m_input_tokens")
-		cc1h := gjson.Get(data, "message.usage.cache_creation.ephemeral_1h_input_tokens")
-		if cc5m.Exists() || cc1h.Exists() {
-			usage.CacheCreation5mTokens = int(cc5m.Int())
-			usage.CacheCreation1hTokens = int(cc1h.Int())
-		}
+	if usage == nil {
+		return
 	}
 
-	// 解析message_delta获取tokens（兼容GLM等把所有usage放在delta中的API）
-	var msgDelta struct {
-		Type  string `json:"type"`
-		Usage struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		} `json:"usage"`
+	var event map[string]any
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return
 	}
-	if json.Unmarshal([]byte(data), &msgDelta) == nil && msgDelta.Type == "message_delta" {
-		// message_delta 仅覆盖存在且非0的字段
-		// 避免覆盖 message_start 中已有的值（如 input_tokens）
-		// Claude API 的 message_delta 通常只包含 output_tokens
-		if msgDelta.Usage.InputTokens > 0 {
-			usage.InputTokens = msgDelta.Usage.InputTokens
-		}
-		if msgDelta.Usage.OutputTokens > 0 {
-			usage.OutputTokens = msgDelta.Usage.OutputTokens
-		}
-		if msgDelta.Usage.CacheCreationInputTokens > 0 {
-			usage.CacheCreationInputTokens = msgDelta.Usage.CacheCreationInputTokens
-		}
-		if msgDelta.Usage.CacheReadInputTokens > 0 {
-			usage.CacheReadInputTokens = msgDelta.Usage.CacheReadInputTokens
+
+	if patch := s.extractSSEUsagePatch(event); patch != nil {
+		mergeSSEUsagePatch(usage, patch)
+	}
+}
+
+type sseUsagePatch struct {
+	inputTokens              int
+	hasInputTokens           bool
+	outputTokens             int
+	hasOutputTokens          bool
+	cacheCreationInputTokens int
+	hasCacheCreationInput    bool
+	cacheReadInputTokens     int
+	hasCacheReadInput        bool
+	cacheCreation5mTokens    int
+	hasCacheCreation5m       bool
+	cacheCreation1hTokens    int
+	hasCacheCreation1h       bool
+}
+
+func (s *GatewayService) extractSSEUsagePatch(event map[string]any) *sseUsagePatch {
+	if len(event) == 0 {
+		return nil
+	}
+
+	eventType, _ := event["type"].(string)
+	switch eventType {
+	case "message_start":
+		msg, _ := event["message"].(map[string]any)
+		usageObj, _ := msg["usage"].(map[string]any)
+		if len(usageObj) == 0 {
+			return nil
 		}
 
-		// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
-		cc5m := gjson.Get(data, "usage.cache_creation.ephemeral_5m_input_tokens")
-		cc1h := gjson.Get(data, "usage.cache_creation.ephemeral_1h_input_tokens")
-		if cc5m.Exists() && cc5m.Int() > 0 {
-			usage.CacheCreation5mTokens = int(cc5m.Int())
+		patch := &sseUsagePatch{}
+		patch.hasInputTokens = true
+		if v, ok := parseSSEUsageInt(usageObj["input_tokens"]); ok {
+			patch.inputTokens = v
 		}
-		if cc1h.Exists() && cc1h.Int() > 0 {
-			usage.CacheCreation1hTokens = int(cc1h.Int())
+		patch.hasCacheCreationInput = true
+		if v, ok := parseSSEUsageInt(usageObj["cache_creation_input_tokens"]); ok {
+			patch.cacheCreationInputTokens = v
+		}
+		patch.hasCacheReadInput = true
+		if v, ok := parseSSEUsageInt(usageObj["cache_read_input_tokens"]); ok {
+			patch.cacheReadInputTokens = v
+		}
+		if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
+			if v, exists := parseSSEUsageInt(cc["ephemeral_5m_input_tokens"]); exists {
+				patch.cacheCreation5mTokens = v
+				patch.hasCacheCreation5m = true
+			}
+			if v, exists := parseSSEUsageInt(cc["ephemeral_1h_input_tokens"]); exists {
+				patch.cacheCreation1hTokens = v
+				patch.hasCacheCreation1h = true
+			}
+		}
+		return patch
+
+	case "message_delta":
+		usageObj, _ := event["usage"].(map[string]any)
+		if len(usageObj) == 0 {
+			return nil
+		}
+
+		patch := &sseUsagePatch{}
+		if v, ok := parseSSEUsageInt(usageObj["input_tokens"]); ok && v > 0 {
+			patch.inputTokens = v
+			patch.hasInputTokens = true
+		}
+		if v, ok := parseSSEUsageInt(usageObj["output_tokens"]); ok && v > 0 {
+			patch.outputTokens = v
+			patch.hasOutputTokens = true
+		}
+		if v, ok := parseSSEUsageInt(usageObj["cache_creation_input_tokens"]); ok && v > 0 {
+			patch.cacheCreationInputTokens = v
+			patch.hasCacheCreationInput = true
+		}
+		if v, ok := parseSSEUsageInt(usageObj["cache_read_input_tokens"]); ok && v > 0 {
+			patch.cacheReadInputTokens = v
+			patch.hasCacheReadInput = true
+		}
+		if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
+			if v, exists := parseSSEUsageInt(cc["ephemeral_5m_input_tokens"]); exists && v > 0 {
+				patch.cacheCreation5mTokens = v
+				patch.hasCacheCreation5m = true
+			}
+			if v, exists := parseSSEUsageInt(cc["ephemeral_1h_input_tokens"]); exists && v > 0 {
+				patch.cacheCreation1hTokens = v
+				patch.hasCacheCreation1h = true
+			}
+		}
+		return patch
+	}
+
+	return nil
+}
+
+func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
+	if usage == nil || patch == nil {
+		return
+	}
+
+	if patch.hasInputTokens {
+		usage.InputTokens = patch.inputTokens
+	}
+	if patch.hasCacheCreationInput {
+		usage.CacheCreationInputTokens = patch.cacheCreationInputTokens
+	}
+	if patch.hasCacheReadInput {
+		usage.CacheReadInputTokens = patch.cacheReadInputTokens
+	}
+	if patch.hasOutputTokens {
+		usage.OutputTokens = patch.outputTokens
+	}
+	if patch.hasCacheCreation5m {
+		usage.CacheCreation5mTokens = patch.cacheCreation5mTokens
+	}
+	if patch.hasCacheCreation1h {
+		usage.CacheCreation1hTokens = patch.cacheCreation1hTokens
+	}
+}
+
+func parseSSEUsageInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i), true
+		}
+		if f, err := v.Float64(); err == nil {
+			return int(f), true
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return parsed, true
 		}
 	}
+	return 0, false
 }
 
 // applyCacheTTLOverride 将所有 cache creation tokens 归入指定的 TTL 类型。
@@ -5413,25 +5526,32 @@ func applyCacheTTLOverride(usage *ClaudeUsage, target string) bool {
 
 // rewriteCacheCreationJSON 在 JSON usage 对象中重写 cache_creation 嵌套对象的 TTL 分类。
 // usageObj 是 usage JSON 对象（map[string]any）。
-func rewriteCacheCreationJSON(usageObj map[string]any, target string) {
+func rewriteCacheCreationJSON(usageObj map[string]any, target string) bool {
 	ccObj, ok := usageObj["cache_creation"].(map[string]any)
 	if !ok {
-		return
+		return false
 	}
-	v5m, _ := ccObj["ephemeral_5m_input_tokens"].(float64)
-	v1h, _ := ccObj["ephemeral_1h_input_tokens"].(float64)
+	v5m, _ := parseSSEUsageInt(ccObj["ephemeral_5m_input_tokens"])
+	v1h, _ := parseSSEUsageInt(ccObj["ephemeral_1h_input_tokens"])
 	total := v5m + v1h
 	if total == 0 {
-		return
+		return false
 	}
 	switch target {
 	case "1h":
-		ccObj["ephemeral_1h_input_tokens"] = total
+		if v1h == total {
+			return false
+		}
+		ccObj["ephemeral_1h_input_tokens"] = float64(total)
 		ccObj["ephemeral_5m_input_tokens"] = float64(0)
 	default: // "5m"
-		ccObj["ephemeral_5m_input_tokens"] = total
+		if v5m == total {
+			return false
+		}
+		ccObj["ephemeral_5m_input_tokens"] = float64(total)
 		ccObj["ephemeral_1h_input_tokens"] = float64(0)
 	}
+	return true
 }
 
 func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
