@@ -56,11 +56,16 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	if !wsCfg.Enabled {
 		return openAIWSHTTPDecision("global_disabled")
 	}
-	if account.IsOpenAIOAuth() && !wsCfg.OAuthEnabled {
-		return openAIWSHTTPDecision("oauth_disabled")
-	}
-	if account.IsOpenAIApiKey() && !wsCfg.APIKeyEnabled {
-		return openAIWSHTTPDecision("apikey_disabled")
+	if account.IsOpenAIOAuth() {
+		if !wsCfg.OAuthEnabled {
+			return openAIWSHTTPDecision("oauth_disabled")
+		}
+	} else if account.IsOpenAIApiKey() {
+		if !wsCfg.APIKeyEnabled {
+			return openAIWSHTTPDecision("apikey_disabled")
+		}
+	} else {
+		return openAIWSHTTPDecision("unknown_auth_type")
 	}
 	if !account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return openAIWSHTTPDecision("account_disabled")

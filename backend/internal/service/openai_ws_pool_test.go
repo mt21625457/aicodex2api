@@ -42,6 +42,26 @@ func TestOpenAIWSConnPool_CleanupStaleAndTrimIdle(t *testing.T) {
 	require.NotNil(t, ap.conns["idle_new"], "newer idle should be kept")
 }
 
+func TestOpenAIWSConnLease_WriteJSONAndGuards(t *testing.T) {
+	conn := newOpenAIWSConn("lease_write", 1, &openAIWSFakeConn{}, nil)
+	lease := &openAIWSConnLease{conn: conn}
+	require.NoError(t, lease.WriteJSON(map[string]any{"type": "response.create"}, 0))
+
+	var nilLease *openAIWSConnLease
+	err := nilLease.WriteJSONWithContextTimeout(context.Background(), map[string]any{"type": "response.create"}, time.Second)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+
+	err = (&openAIWSConnLease{}).WriteJSONWithContextTimeout(context.Background(), map[string]any{"type": "response.create"}, time.Second)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+}
+
+func TestOpenAIWSConn_WriteJSONWithTimeout_NilParentContextUsesBackground(t *testing.T) {
+	probe := &openAIWSContextProbeConn{}
+	conn := newOpenAIWSConn("ctx_probe", 1, probe, nil)
+	require.NoError(t, conn.writeJSONWithTimeout(nil, map[string]any{"type": "response.create"}, 0))
+	require.NotNil(t, probe.lastWriteCtx)
+}
+
 func TestOpenAIWSConnPool_TargetConnCountAdaptive(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 6
@@ -361,6 +381,232 @@ func TestOpenAIWSConnLease_ReadMessageWithContextTimeout_PerRead(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestOpenAIWSConnLease_WriteJSONWithContextTimeout_RespectsParentContext(t *testing.T) {
+	conn := newOpenAIWSConn("write_timeout_ctx", 1, &openAIWSWriteBlockingConn{}, nil)
+	lease := &openAIWSConnLease{conn: conn}
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := lease.WriteJSONWithContextTimeout(parentCtx, map[string]any{"type": "response.create"}, 2*time.Minute)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Less(t, elapsed, 200*time.Millisecond)
+}
+
+func TestOpenAIWSConn_ReadAndWriteCanProceedConcurrently(t *testing.T) {
+	conn := newOpenAIWSConn("full_duplex", 1, &openAIWSBlockingConn{readDelay: 120 * time.Millisecond}, nil)
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := conn.readMessageWithContextTimeout(context.Background(), 200*time.Millisecond)
+		readDone <- err
+	}()
+
+	// 让读取先占用 readMu。
+	time.Sleep(20 * time.Millisecond)
+
+	start := time.Now()
+	err := conn.pingWithTimeout(50 * time.Millisecond)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Less(t, elapsed, 80*time.Millisecond, "写路径不应被读锁长期阻塞")
+	require.NoError(t, <-readDone)
+}
+
+func TestOpenAIWSConnPool_BackgroundPingSweep_EvictsDeadIdleConn(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	pool := newOpenAIWSConnPool(cfg)
+
+	accountID := int64(301)
+	ap := pool.getOrCreateAccountPool(accountID)
+	conn := newOpenAIWSConn("dead_idle", accountID, &openAIWSPingFailConn{}, nil)
+	ap.mu.Lock()
+	ap.conns[conn.id] = conn
+	ap.mu.Unlock()
+
+	pool.runBackgroundPingSweep()
+
+	ap.mu.Lock()
+	_, exists := ap.conns[conn.id]
+	ap.mu.Unlock()
+	require.False(t, exists, "后台 ping 失败的空闲连接应被回收")
+}
+
+func TestOpenAIWSConnPool_BackgroundCleanupSweep_WithoutAcquire(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 2
+	pool := newOpenAIWSConnPool(cfg)
+
+	accountID := int64(302)
+	ap := pool.getOrCreateAccountPool(accountID)
+	stale := newOpenAIWSConn("stale_bg", accountID, &openAIWSFakeConn{}, nil)
+	stale.createdAtNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	stale.lastUsedNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	ap.mu.Lock()
+	ap.conns[stale.id] = stale
+	ap.mu.Unlock()
+
+	pool.runBackgroundCleanupSweep(time.Now())
+
+	ap.mu.Lock()
+	_, exists := ap.conns[stale.id]
+	ap.mu.Unlock()
+	require.False(t, exists, "后台清理应在无新 acquire 时也回收过期连接")
+}
+
+func TestOpenAIWSConnPool_BackgroundWorkerGuardBranches(t *testing.T) {
+	var nilPool *openAIWSConnPool
+	require.NotPanics(t, func() {
+		nilPool.startBackgroundWorkers()
+		nilPool.runBackgroundPingWorker()
+		nilPool.runBackgroundPingSweep()
+		_ = nilPool.snapshotIdleConnsForPing()
+		nilPool.runBackgroundCleanupWorker()
+		nilPool.runBackgroundCleanupSweep(time.Now())
+	})
+
+	poolNoStop := &openAIWSConnPool{}
+	require.NotPanics(t, func() {
+		poolNoStop.startBackgroundWorkers()
+	})
+
+	poolStopPing := &openAIWSConnPool{workerStopCh: make(chan struct{})}
+	pingDone := make(chan struct{})
+	go func() {
+		poolStopPing.runBackgroundPingWorker()
+		close(pingDone)
+	}()
+	close(poolStopPing.workerStopCh)
+	select {
+	case <-pingDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runBackgroundPingWorker 未在 stop 信号后退出")
+	}
+
+	poolStopCleanup := &openAIWSConnPool{workerStopCh: make(chan struct{})}
+	cleanupDone := make(chan struct{})
+	go func() {
+		poolStopCleanup.runBackgroundCleanupWorker()
+		close(cleanupDone)
+	}()
+	close(poolStopCleanup.workerStopCh)
+	select {
+	case <-cleanupDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runBackgroundCleanupWorker 未在 stop 信号后退出")
+	}
+}
+
+func TestOpenAIWSConnPool_SnapshotIdleConnsForPing_SkipsInvalidEntries(t *testing.T) {
+	pool := &openAIWSConnPool{}
+	pool.accounts.Store("invalid-key", &openAIWSAccountPool{})
+	pool.accounts.Store(int64(123), "invalid-value")
+
+	accountID := int64(123)
+	ap := &openAIWSAccountPool{
+		conns: make(map[string]*openAIWSConn),
+	}
+	ap.conns["nil_conn"] = nil
+
+	leased := newOpenAIWSConn("leased", accountID, &openAIWSFakeConn{}, nil)
+	require.True(t, leased.tryAcquire())
+	ap.conns[leased.id] = leased
+
+	waiting := newOpenAIWSConn("waiting", accountID, &openAIWSFakeConn{}, nil)
+	waiting.waiters.Store(1)
+	ap.conns[waiting.id] = waiting
+
+	idle := newOpenAIWSConn("idle", accountID, &openAIWSFakeConn{}, nil)
+	ap.conns[idle.id] = idle
+
+	pool.accounts.Store(accountID, ap)
+	candidates := pool.snapshotIdleConnsForPing()
+	require.Len(t, candidates, 1)
+	require.Equal(t, idle.id, candidates[0].conn.id)
+}
+
+func TestOpenAIWSConnPool_RunBackgroundCleanupSweep_SkipsInvalidAndUsesAccountCap(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 4
+	cfg.Gateway.OpenAIWS.DynamicMaxConnsByAccountConcurrencyEnabled = true
+
+	pool := &openAIWSConnPool{cfg: cfg}
+	pool.accounts.Store("bad-key", "bad-value")
+
+	accountID := int64(2026)
+	ap := &openAIWSAccountPool{
+		conns: make(map[string]*openAIWSConn),
+	}
+	stale := newOpenAIWSConn("stale_bg_cleanup", accountID, &openAIWSFakeConn{}, nil)
+	stale.createdAtNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	stale.lastUsedNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	ap.conns[stale.id] = stale
+	ap.lastAcquire = &openAIWSAcquireRequest{
+		Account: &Account{
+			ID:          accountID,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Concurrency: 1,
+		},
+	}
+	pool.accounts.Store(accountID, ap)
+
+	now := time.Now()
+	pool.runBackgroundCleanupSweep(now)
+
+	ap.mu.Lock()
+	_, exists := ap.conns[stale.id]
+	lastCleanupAt := ap.lastCleanupAt
+	ap.mu.Unlock()
+
+	require.False(t, exists, "后台清理应清理过期连接")
+	require.Equal(t, now, lastCleanupAt)
+}
+
+func TestOpenAIWSConnPool_QueueLimitPerConn_DefaultAndConfigured(t *testing.T) {
+	var nilPool *openAIWSConnPool
+	require.Equal(t, 256, nilPool.queueLimitPerConn())
+
+	pool := &openAIWSConnPool{cfg: &config.Config{}}
+	require.Equal(t, 256, pool.queueLimitPerConn())
+
+	pool.cfg.Gateway.OpenAIWS.QueueLimitPerConn = 9
+	require.Equal(t, 9, pool.queueLimitPerConn())
+}
+
+func TestOpenAIWSConnPool_Close(t *testing.T) {
+	cfg := &config.Config{}
+	pool := newOpenAIWSConnPool(cfg)
+
+	// Close 应该可以安全调用
+	pool.Close()
+
+	// workerStopCh 应已关闭
+	select {
+	case <-pool.workerStopCh:
+		// 预期：channel 已关闭
+	default:
+		t.Fatal("Close 后 workerStopCh 应已关闭")
+	}
+
+	// 多次调用 Close 不应 panic
+	pool.Close()
+
+	// nil pool 调用 Close 不应 panic
+	var nilPool *openAIWSConnPool
+	nilPool.Close()
+}
+
 type openAIWSFakeDialer struct{}
 
 func (d *openAIWSFakeDialer) Dial(
@@ -502,6 +748,64 @@ func (c *openAIWSBlockingConn) Ping(ctx context.Context) error {
 }
 
 func (c *openAIWSBlockingConn) Close() error {
+	return nil
+}
+
+type openAIWSWriteBlockingConn struct{}
+
+func (c *openAIWSWriteBlockingConn) WriteJSON(ctx context.Context, _ any) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (c *openAIWSWriteBlockingConn) ReadMessage(context.Context) ([]byte, error) {
+	return []byte(`{"type":"response.completed","response":{"id":"resp_write_block"}}`), nil
+}
+
+func (c *openAIWSWriteBlockingConn) Ping(context.Context) error {
+	return nil
+}
+
+func (c *openAIWSWriteBlockingConn) Close() error {
+	return nil
+}
+
+type openAIWSPingFailConn struct{}
+
+func (c *openAIWSPingFailConn) WriteJSON(context.Context, any) error {
+	return nil
+}
+
+func (c *openAIWSPingFailConn) ReadMessage(context.Context) ([]byte, error) {
+	return []byte(`{"type":"response.completed","response":{"id":"resp_ping_fail"}}`), nil
+}
+
+func (c *openAIWSPingFailConn) Ping(context.Context) error {
+	return errors.New("ping failed")
+}
+
+func (c *openAIWSPingFailConn) Close() error {
+	return nil
+}
+
+type openAIWSContextProbeConn struct {
+	lastWriteCtx context.Context
+}
+
+func (c *openAIWSContextProbeConn) WriteJSON(ctx context.Context, _ any) error {
+	c.lastWriteCtx = ctx
+	return nil
+}
+
+func (c *openAIWSContextProbeConn) ReadMessage(context.Context) ([]byte, error) {
+	return []byte(`{"type":"response.completed","response":{"id":"resp_ctx_probe"}}`), nil
+}
+
+func (c *openAIWSContextProbeConn) Ping(context.Context) error {
+	return nil
+}
+
+func (c *openAIWSContextProbeConn) Close() error {
 	return nil
 }
 

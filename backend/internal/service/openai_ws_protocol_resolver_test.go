@@ -106,4 +106,32 @@ func TestOpenAIWSProtocolResolver_Resolve(t *testing.T) {
 		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
 		require.Equal(t, "oauth_disabled", decision.Reason)
 	})
+
+	t.Run("API Key 账号关闭开关时回退HTTP", func(t *testing.T) {
+		cfg := *baseCfg
+		cfg.Gateway.OpenAIWS.APIKeyEnabled = false
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		}
+		decision := NewOpenAIWSProtocolResolver(&cfg).Resolve(account)
+		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
+		require.Equal(t, "apikey_disabled", decision.Reason)
+	})
+
+	t.Run("未知认证类型回退HTTP", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     "unknown_type",
+			Extra: map[string]any{
+				"responses_websockets_v2_enabled": true,
+			},
+		}
+		decision := NewOpenAIWSProtocolResolver(baseCfg).Resolve(account)
+		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
+		require.Equal(t, "unknown_auth_type", decision.Reason)
+	})
 }

@@ -16,6 +16,7 @@ const (
 	openAIWSStateStoreCleanupInterval  = time.Minute
 	openAIWSStateStoreCleanupMaxPerMap = 512
 	openAIWSStateStoreMaxEntriesPerMap = 65536
+	openAIWSStateStoreRedisTimeout     = 3 * time.Second
 )
 
 type openAIWSAccountBinding struct {
@@ -108,7 +109,9 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 		return nil
 	}
 	cacheKey := openAIWSResponseAccountCacheKey(id)
-	return s.cache.SetSessionAccountID(ctx, groupID, cacheKey, accountID, ttl)
+	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+	defer cancel()
+	return s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
 }
 
 func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, groupID int64, responseID string) (int64, error) {
@@ -134,7 +137,9 @@ func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, grou
 	}
 
 	cacheKey := openAIWSResponseAccountCacheKey(id)
-	accountID, err := s.cache.GetSessionAccountID(ctx, groupID, cacheKey)
+	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+	defer cancel()
+	accountID, err := s.cache.GetSessionAccountID(cacheCtx, groupID, cacheKey)
 	if err != nil || accountID <= 0 {
 		// 缓存读取失败不阻断主流程，按未命中降级。
 		return 0, nil
@@ -154,7 +159,9 @@ func (s *defaultOpenAIWSStateStore) DeleteResponseAccount(ctx context.Context, g
 	if s.cache == nil {
 		return nil
 	}
-	return s.cache.DeleteSessionAccountID(ctx, groupID, openAIWSResponseAccountCacheKey(id))
+	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+	defer cancel()
+	return s.cache.DeleteSessionAccountID(cacheCtx, groupID, openAIWSResponseAccountCacheKey(id))
 }
 
 func (s *defaultOpenAIWSStateStore) BindResponseConn(responseID, connID string, ttl time.Duration) {
@@ -423,4 +430,11 @@ func openAIWSSessionTurnStateKey(groupID int64, sessionHash string) string {
 		return ""
 	}
 	return fmt.Sprintf("%d:%s", groupID, hash)
+}
+
+func withOpenAIWSStateStoreRedisTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, openAIWSStateStoreRedisTimeout)
 }

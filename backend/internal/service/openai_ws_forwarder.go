@@ -57,6 +57,13 @@ const (
 	openAIWSStoreDisabledConnModeOff      = "off"
 )
 
+var openAIWSLogValueReplacer = strings.NewReplacer(
+	"error", "err",
+	"fallback", "fb",
+	"warning", "warnx",
+	"failed", "fail",
+)
+
 // openAIWSFallbackError 表示可安全回退到 HTTP 的 WS 错误（尚未写下游）。
 type openAIWSFallbackError struct {
 	Reason string
@@ -142,13 +149,7 @@ func normalizeOpenAIWSLogValue(value string) string {
 	if trimmed == "" {
 		return "-"
 	}
-	replacer := strings.NewReplacer(
-		"error", "err",
-		"fallback", "fb",
-		"warning", "warnx",
-		"failed", "fail",
-	)
-	return replacer.Replace(trimmed)
+	return openAIWSLogValueReplacer.Replace(trimmed)
 }
 
 func truncateOpenAIWSLogValue(value string, maxLen int) string {
@@ -266,6 +267,10 @@ func openAIWSEventMayContainToolCalls(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+func openAIWSEventShouldParseUsage(eventType string) bool {
+	return strings.TrimSpace(eventType) == "response.completed"
 }
 
 func summarizeOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {
@@ -552,6 +557,19 @@ func logOpenAIWSModeDebug(format string, args ...any) {
 	logger.LegacyPrintf("service.openai_gateway", "[debug] [OpenAI WS Mode][openai_ws_mode=true] "+format, args...)
 }
 
+func logOpenAIWSBindResponseAccountWarn(groupID, accountID int64, responseID string, err error) {
+	if err == nil {
+		return
+	}
+	logger.L().Warn(
+		"openai.ws_bind_response_account_failed",
+		zap.Int64("group_id", groupID),
+		zap.Int64("account_id", accountID),
+		zap.String("response_id", truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen)),
+		zap.Error(err),
+	)
+}
+
 func summarizeOpenAIWSReadCloseError(err error) (status string, reason string) {
 	if err == nil {
 		return "-", "-"
@@ -683,7 +701,9 @@ func isOpenAIWSClientDisconnectError(err error) bool {
 	}
 	return strings.Contains(message, "failed to read frame header: eof") ||
 		strings.Contains(message, "unexpected eof") ||
-		strings.Contains(message, "use of closed network connection")
+		strings.Contains(message, "use of closed network connection") ||
+		strings.Contains(message, "connection reset by peer") ||
+		strings.Contains(message, "broken pipe")
 }
 
 func classifyOpenAIWSReadFallbackReason(err error) string {
@@ -1321,7 +1341,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		return nil, err
 	}
 
-	if err := lease.WriteJSON(payload, s.openAIWSWriteTimeout()); err != nil {
+	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
 		logOpenAIWSModeInfo(
 			"write_request_fail account_id=%d conn_id=%s cause=%s payload_bytes=%d",
@@ -1509,15 +1529,19 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			)
 		}
 
-		if needModelReplace && openAIWSEventMayContainModel(eventType) {
-			message = replaceOpenAIWSMessageModel(message, mappedModel, originalModel)
-		}
-		if openAIWSEventMayContainToolCalls(eventType) {
-			if corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(message); changed {
-				message = corrected
+		if !clientDisconnected {
+			if needModelReplace && openAIWSEventMayContainModel(eventType) {
+				message = replaceOpenAIWSMessageModel(message, mappedModel, originalModel)
+			}
+			if openAIWSEventMayContainToolCalls(eventType) {
+				if corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(message); changed {
+					message = corrected
+				}
 			}
 		}
-		s.parseSSEUsageBytes(message, usage)
+		if openAIWSEventShouldParseUsage(eventType) {
+			s.parseSSEUsageBytes(message, usage)
+		}
 
 		if eventType == "error" {
 			errMsg := strings.TrimSpace(gjson.GetBytes(message, "error.message").String())
@@ -1537,9 +1561,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				errType,
 				errMessage,
 			)
+			// error 事件后连接不再可复用，避免回池后污染下一请求。
+			lease.MarkBroken()
 			if !wroteDownstream && canFallback {
-				// 避免复用“已返回 error 且可能被上游关闭”的连接，防止下一轮重试空转 read_fail。
-				lease.MarkBroken()
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
 			statusCode := openAIWSErrorHTTPStatus(message)
@@ -1634,7 +1658,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	if responseID != "" && stateStore != nil {
 		ttl := s.openAIWSResponseStickyTTL()
-		_ = stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl)
+		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
 		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
 	}
 	if stateStore != nil && storeDisabled && sessionHash != "" {
@@ -1957,7 +1981,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return nil, errors.New("upstream websocket lease is nil")
 		}
 		turnStart := time.Now()
-		if err := lease.WriteJSON(payload, s.openAIWSWriteTimeout()); err != nil {
+		if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
 			return nil, fmt.Errorf("write upstream websocket request: %w", err)
 		}
 		logOpenAIWSModeInfo(
@@ -1978,6 +2002,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		firstEventType := ""
 		lastEventType := ""
 		needModelReplace := false
+		clientDisconnected := false
 		mappedModel := ""
 		if originalModel != "" {
 			mappedModel = account.GetMappedModel(originalModel)
@@ -2019,26 +2044,47 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				ms := int(time.Since(turnStart).Milliseconds())
 				firstTokenMs = &ms
 			}
-			s.parseSSEUsageBytes(upstreamMessage, &usage)
-
-			if needModelReplace && openAIWSEventMayContainModel(eventType) {
-				upstreamMessage = replaceOpenAIWSMessageModel(upstreamMessage, mappedModel, originalModel)
+			if openAIWSEventShouldParseUsage(eventType) {
+				s.parseSSEUsageBytes(upstreamMessage, &usage)
 			}
-			if openAIWSEventMayContainToolCalls(eventType) {
-				if corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(upstreamMessage); changed {
-					upstreamMessage = corrected
+
+			if !clientDisconnected {
+				if needModelReplace && openAIWSEventMayContainModel(eventType) {
+					upstreamMessage = replaceOpenAIWSMessageModel(upstreamMessage, mappedModel, originalModel)
+				}
+				if openAIWSEventMayContainToolCalls(eventType) {
+					if corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(upstreamMessage); changed {
+						upstreamMessage = corrected
+					}
+				}
+				if err := writeClientMessage(upstreamMessage); err != nil {
+					if isOpenAIWSClientDisconnectError(err) {
+						clientDisconnected = true
+						closeStatus, closeReason := summarizeOpenAIWSReadCloseError(err)
+						logOpenAIWSModeInfo(
+							"ingress_ws_client_disconnected_drain account_id=%d turn=%d conn_id=%s close_status=%s close_reason=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+							closeStatus,
+							truncateOpenAIWSLogValue(closeReason, openAIWSHeaderValueMaxLen),
+						)
+					} else {
+						return nil, fmt.Errorf("write client websocket event: %w", err)
+					}
 				}
 			}
-			if err := writeClientMessage(upstreamMessage); err != nil {
-				return nil, fmt.Errorf("write client websocket event: %w", err)
-			}
 			if isTerminalEvent {
+				// 客户端已断连时，上游连接的 session 状态不可信，标记 broken 避免回池复用。
+				if clientDisconnected {
+					lease.MarkBroken()
+				}
 				firstTokenMsValue := -1
 				if firstTokenMs != nil {
 					firstTokenMsValue = *firstTokenMs
 				}
 				logOpenAIWSModeInfo(
-					"ingress_ws_turn_completed account_id=%d turn=%d conn_id=%s response_id=%s duration_ms=%d events=%d token_events=%d terminal_events=%d first_event=%s last_event=%s first_token_ms=%d",
+					"ingress_ws_turn_completed account_id=%d turn=%d conn_id=%s response_id=%s duration_ms=%d events=%d token_events=%d terminal_events=%d first_event=%s last_event=%s first_token_ms=%d client_disconnected=%v",
 					account.ID,
 					turn,
 					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
@@ -2050,6 +2096,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					truncateOpenAIWSLogValue(firstEventType, openAIWSLogValueMaxLen),
 					truncateOpenAIWSLogValue(lastEventType, openAIWSLogValueMaxLen),
 					firstTokenMsValue,
+					clientDisconnected,
 				)
 				return &OpenAIForwardResult{
 					RequestID:       responseID,
@@ -2117,7 +2164,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		if responseID != "" && stateStore != nil {
 			ttl := s.openAIWSResponseStickyTTL()
-			_ = stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl)
+			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
 			stateStore.BindResponseConn(responseID, connID, ttl)
 		}
 		if stateStore != nil && storeDisabled && sessionHash != "" {
@@ -2241,7 +2288,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	prewarmPayload["generate"] = false
 	prewarmPayloadJSON := payloadAsJSONBytes(prewarmPayload)
 
-	if err := lease.WriteJSON(prewarmPayload, s.openAIWSWriteTimeout()); err != nil {
+	if err := lease.WriteJSONWithContextTimeout(ctx, prewarmPayload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
 		logOpenAIWSModeInfo(
 			"prewarm_write_fail account_id=%d conn_id=%s cause=%s",
@@ -2326,7 +2373,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	lease.MarkPrewarmed()
 	if prewarmResponseID != "" && stateStore != nil {
 		ttl := s.openAIWSResponseStickyTTL()
-		_ = stateStore.BindResponseAccount(ctx, groupID, prewarmResponseID, account.ID, ttl)
+		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, prewarmResponseID, stateStore.BindResponseAccount(ctx, groupID, prewarmResponseID, account.ID, ttl))
 		stateStore.BindResponseConn(prewarmResponseID, lease.ConnID(), ttl)
 	}
 	logOpenAIWSModeInfo(
@@ -2489,7 +2536,12 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 
 	result, acquireErr := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result.Acquired {
-		_ = store.BindResponseAccount(ctx, derefGroupID(groupID), responseID, accountID, s.openAIWSResponseStickyTTL())
+		logOpenAIWSBindResponseAccountWarn(
+			derefGroupID(groupID),
+			accountID,
+			responseID,
+			store.BindResponseAccount(ctx, derefGroupID(groupID), responseID, accountID, s.openAIWSResponseStickyTTL()),
+		)
 		return &AccountSelectionResult{
 			Account:     account,
 			Acquired:    true,
