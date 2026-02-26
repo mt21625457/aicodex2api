@@ -410,6 +410,7 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		RateMultiplier:        l.RateMultiplier,
 		BillingType:           l.BillingType,
 		Stream:                l.Stream,
+		OpenAIWSMode:          l.OpenAIWSMode,
 		DurationMs:            l.DurationMs,
 		FirstTokenMs:          l.FirstTokenMs,
 		ImageCount:            l.ImageCount,

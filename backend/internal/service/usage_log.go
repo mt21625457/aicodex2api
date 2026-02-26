@@ -41,6 +41,7 @@ type UsageLog struct {
 
 	BillingType  int8
 	Stream       bool
+	OpenAIWSMode bool
 	DurationMs   *int
 	FirstTokenMs *int
 	UserAgent    *string

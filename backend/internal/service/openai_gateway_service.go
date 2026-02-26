@@ -209,6 +209,7 @@ type OpenAIForwardResult struct {
 	// Stored for usage records display; nil means not provided / not applicable.
 	ReasoningEffort *string
 	Stream          bool
+	OpenAIWSMode    bool
 	Duration        time.Duration
 	FirstTokenMs    *int
 }
@@ -1784,6 +1785,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		Model:           originalModel,
 		ReasoningEffort: reasoningEffort,
 		Stream:          reqStream,
+		OpenAIWSMode:    false,
 		Duration:        time.Since(startTime),
 		FirstTokenMs:    firstTokenMs,
 	}, nil
@@ -1937,6 +1939,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		Model:           reqModel,
 		ReasoningEffort: reasoningEffort,
 		Stream:          reqStream,
+		OpenAIWSMode:    false,
 		Duration:        time.Since(startTime),
 		FirstTokenMs:    firstTokenMs,
 	}, nil
@@ -3199,6 +3202,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		AccountRateMultiplier: &accountRateMultiplier,
 		BillingType:           billingType,
 		Stream:                result.Stream,
+		OpenAIWSMode:          result.OpenAIWSMode,
 		DurationMs:            &durationMs,
 		FirstTokenMs:          result.FirstTokenMs,
 		CreatedAt:             time.Now(),

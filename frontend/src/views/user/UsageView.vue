@@ -166,13 +166,9 @@
           <template #cell-stream="{ row }">
             <span
               class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium"
-              :class="
-                row.stream
-                  ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                  : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
-              "
+              :class="getRequestTypeBadgeClass(row)"
             >
-              {{ row.stream ? t('usage.stream') : t('usage.sync') }}
+              {{ getRequestTypeLabel(row) }}
             </span>
           </template>
 
@@ -577,6 +573,18 @@ const formatUserAgent = (ua: string): string => {
   return ua
 }
 
+const getRequestTypeLabel = (log: UsageLog): string => {
+  if (log.openai_ws_mode) return t('usage.ws')
+  return log.stream ? t('usage.stream') : t('usage.sync')
+}
+
+const getRequestTypeBadgeClass = (log: UsageLog): string => {
+  if (log.openai_ws_mode) return 'bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200'
+  return log.stream
+    ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+    : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
+}
+
 const formatTokens = (value: number): string => {
   if (value >= 1_000_000_000) {
     return `${(value / 1_000_000_000).toFixed(2)}B`
@@ -768,7 +776,7 @@ const exportToCSV = async () => {
         log.api_key?.name || '',
         log.model,
         formatReasoningEffort(log.reasoning_effort),
-        log.stream ? 'Stream' : 'Sync',
+        log.openai_ws_mode ? 'WS' : log.stream ? 'Stream' : 'Sync',
         log.input_tokens,
         log.output_tokens,
         log.cache_read_tokens,

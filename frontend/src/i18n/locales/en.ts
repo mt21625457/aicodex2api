@@ -613,6 +613,7 @@ export default {
     firstToken: 'First Token',
     duration: 'Duration',
     time: 'Time',
+    ws: 'WS',
     stream: 'Stream',
     sync: 'Sync',
     in: 'In',

@@ -525,17 +525,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	)
 	setOpsRequestContext(c, reqModel, true, firstMessage)
 
-	userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlot(ctx, subject.UserID, subject.Concurrency)
-	if err != nil {
-		reqLog.Warn("openai.websocket_user_slot_acquire_failed", zap.Error(err))
-		closeOpenAIClientWS(wsConn, coderws.StatusInternalError, "failed to acquire user concurrency slot")
-		return
-	}
-	if !userAcquired {
-		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "too many concurrent requests, please retry later")
-		return
-	}
-	currentUserRelease := wrapReleaseOnDone(ctx, userReleaseFunc)
+	var currentUserRelease func()
 	var currentAccountRelease func()
 	releaseTurnSlots := func() {
 		if currentAccountRelease != nil {
@@ -547,7 +537,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			currentUserRelease = nil
 		}
 	}
+	// 必须尽早注册，确保任何 early return 都能释放已获取的并发槽位。
 	defer releaseTurnSlots()
+
+	userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlot(ctx, subject.UserID, subject.Concurrency)
+	if err != nil {
+		reqLog.Warn("openai.websocket_user_slot_acquire_failed", zap.Error(err))
+		closeOpenAIClientWS(wsConn, coderws.StatusInternalError, "failed to acquire user concurrency slot")
+		return
+	}
+	if !userAcquired {
+		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "too many concurrent requests, please retry later")
+		return
+	}
+	currentUserRelease = wrapReleaseOnDone(ctx, userReleaseFunc)
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	if err := h.billingCacheService.CheckBillingEligibility(ctx, apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
@@ -624,6 +627,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			if turn == 1 {
 				return nil
 			}
+			// 防御式清理：避免异常路径下旧槽位覆盖导致泄漏。
+			releaseTurnSlots()
 			// 非首轮 turn 需要重新抢占并发槽位，避免长连接空闲占槽。
 			userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlot(ctx, subject.UserID, subject.Concurrency)
 			if err != nil {

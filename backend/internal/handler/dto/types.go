@@ -280,6 +280,7 @@ type UsageLog struct {
 
 	BillingType  int8 `json:"billing_type"`
 	Stream       bool `json:"stream"`
+	OpenAIWSMode bool `json:"openai_ws_mode"`
 	DurationMs   *int `json:"duration_ms"`
 	FirstTokenMs *int `json:"first_token_ms"`
 
