@@ -859,6 +859,7 @@ export interface AdminDataImportResult {
 // ==================== Usage & Redeem Types ====================
 
 export type RedeemCodeType = 'balance' | 'concurrency' | 'subscription' | 'invitation'
+export type UsageRequestType = 'unknown' | 'sync' | 'stream' | 'ws_v2'
 
 export interface UsageLog {
   id: number
@@ -888,6 +889,7 @@ export interface UsageLog {
   rate_multiplier: number
   billing_type: number
 
+  request_type?: UsageRequestType
   stream: boolean
   openai_ws_mode?: boolean
   duration_ms: number
@@ -935,6 +937,7 @@ export interface UsageCleanupFilters {
   account_id?: number
   group_id?: number
   model?: string | null
+  request_type?: UsageRequestType | null
   stream?: boolean | null
   billing_type?: number | null
 }
@@ -1179,6 +1182,7 @@ export interface UsageQueryParams {
   account_id?: number
   group_id?: number
   model?: string
+  request_type?: UsageRequestType
   stream?: boolean
   billing_type?: number | null
   start_date?: string

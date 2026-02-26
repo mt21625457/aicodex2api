@@ -362,7 +362,11 @@ func buildUsageCleanupWhere(filters service.UsageCleanupFilters) (string, []any)
 			idx++
 		}
 	}
-	if filters.Stream != nil {
+	if filters.RequestType != nil {
+		conditions = append(conditions, fmt.Sprintf("request_type = $%d", idx))
+		args = append(args, *filters.RequestType)
+		idx++
+	} else if filters.Stream != nil {
 		conditions = append(conditions, fmt.Sprintf("stream = $%d", idx))
 		args = append(args, *filters.Stream)
 		idx++

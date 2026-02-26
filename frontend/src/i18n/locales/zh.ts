@@ -622,6 +622,7 @@ export default {
     ws: 'WS',
     stream: '流式',
     sync: '同步',
+    unknown: '未知',
     in: '输入',
     out: '输出',
     cacheRead: '读取',

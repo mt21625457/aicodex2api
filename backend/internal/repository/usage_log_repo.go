@@ -22,7 +22,7 @@ import (
 	"github.com/lib/pq"
 )
 
-const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, media_type, reasoning_effort, cache_ttl_overridden, created_at"
+const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, media_type, reasoning_effort, cache_ttl_overridden, created_at"
 
 // dateFormatWhitelist 将 granularity 参数映射为 PostgreSQL TO_CHAR 格式字符串，防止外部输入直接拼入 SQL
 var dateFormatWhitelist = map[string]string{
@@ -98,6 +98,8 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 	log.RequestID = requestID
 
 	rateMultiplier := log.RateMultiplier
+	log.SyncRequestTypeAndLegacyFields()
+	requestType := int16(log.RequestType)
 
 	query := `
 		INSERT INTO usage_logs (
@@ -123,6 +125,7 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 			rate_multiplier,
 			account_rate_multiplier,
 			billing_type,
+			request_type,
 			stream,
 			openai_ws_mode,
 			duration_ms,
@@ -141,7 +144,7 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 			$8, $9, $10, $11,
 			$12, $13,
 			$14, $15, $16, $17, $18, $19,
-			$20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34
+			$20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 		RETURNING id, created_at
@@ -185,6 +188,7 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 		rateMultiplier,
 		log.AccountRateMultiplier,
 		log.BillingType,
+		requestType,
 		log.Stream,
 		log.OpenAIWSMode,
 		duration,
@@ -1401,7 +1405,10 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 		conditions = append(conditions, fmt.Sprintf("model = $%d", len(args)+1))
 		args = append(args, filters.Model)
 	}
-	if filters.Stream != nil {
+	if filters.RequestType != nil {
+		conditions = append(conditions, fmt.Sprintf("request_type = $%d", len(args)+1))
+		args = append(args, *filters.RequestType)
+	} else if filters.Stream != nil {
 		conditions = append(conditions, fmt.Sprintf("stream = $%d", len(args)+1))
 		args = append(args, *filters.Stream)
 	}
@@ -1600,7 +1607,7 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 }
 
 // GetUsageTrendWithFilters returns usage trend data with optional filters
-func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, stream *bool, billingType *int8) (results []TrendDataPoint, err error) {
+func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) (results []TrendDataPoint, err error) {
 	dateFormat := safeDateFormat(granularity)
 
 	query := fmt.Sprintf(`
@@ -1638,7 +1645,10 @@ func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, start
 		query += fmt.Sprintf(" AND model = $%d", len(args)+1)
 		args = append(args, model)
 	}
-	if stream != nil {
+	if requestType != nil {
+		query += fmt.Sprintf(" AND request_type = $%d", len(args)+1)
+		args = append(args, *requestType)
+	} else if stream != nil {
 		query += fmt.Sprintf(" AND stream = $%d", len(args)+1)
 		args = append(args, *stream)
 	}
@@ -1669,7 +1679,7 @@ func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, start
 }
 
 // GetModelStatsWithFilters returns model statistics with optional filters
-func (r *usageLogRepository) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, stream *bool, billingType *int8) (results []ModelStat, err error) {
+func (r *usageLogRepository) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) (results []ModelStat, err error) {
 	actualCostExpr := "COALESCE(SUM(actual_cost), 0) as actual_cost"
 	// 当仅按 account_id 聚合时，实际费用使用账号倍率（total_cost * account_rate_multiplier）。
 	if accountID > 0 && userID == 0 && apiKeyID == 0 {
@@ -1706,7 +1716,10 @@ func (r *usageLogRepository) GetModelStatsWithFilters(ctx context.Context, start
 		query += fmt.Sprintf(" AND group_id = $%d", len(args)+1)
 		args = append(args, groupID)
 	}
-	if stream != nil {
+	if requestType != nil {
+		query += fmt.Sprintf(" AND request_type = $%d", len(args)+1)
+		args = append(args, *requestType)
+	} else if stream != nil {
 		query += fmt.Sprintf(" AND stream = $%d", len(args)+1)
 		args = append(args, *stream)
 	}
@@ -1796,7 +1809,10 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 		conditions = append(conditions, fmt.Sprintf("model = $%d", len(args)+1))
 		args = append(args, filters.Model)
 	}
-	if filters.Stream != nil {
+	if filters.RequestType != nil {
+		conditions = append(conditions, fmt.Sprintf("request_type = $%d", len(args)+1))
+		args = append(args, *filters.RequestType)
+	} else if filters.Stream != nil {
 		conditions = append(conditions, fmt.Sprintf("stream = $%d", len(args)+1))
 		args = append(args, *filters.Stream)
 	}
@@ -2019,7 +2035,7 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		}
 	}
 
-	models, err := r.GetModelStatsWithFilters(ctx, startTime, endTime, 0, 0, accountID, 0, nil, nil)
+	models, err := r.GetModelStatsWithFilters(ctx, startTime, endTime, 0, 0, accountID, 0, nil, nil, nil)
 	if err != nil {
 		models = []ModelStat{}
 	}
@@ -2269,6 +2285,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		rateMultiplier        float64
 		accountRateMultiplier sql.NullFloat64
 		billingType           int16
+		requestTypeRaw        int16
 		stream                bool
 		openaiWSMode          bool
 		durationMs            sql.NullInt64
@@ -2307,6 +2324,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		&rateMultiplier,
 		&accountRateMultiplier,
 		&billingType,
+		&requestTypeRaw,
 		&stream,
 		&openaiWSMode,
 		&durationMs,
@@ -2344,12 +2362,16 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		RateMultiplier:        rateMultiplier,
 		AccountRateMultiplier: nullFloat64Ptr(accountRateMultiplier),
 		BillingType:           int8(billingType),
-		Stream:                stream,
-		OpenAIWSMode:          openaiWSMode,
+		RequestType:           service.RequestTypeFromInt16(requestTypeRaw),
 		ImageCount:            imageCount,
 		CacheTTLOverridden:    cacheTTLOverridden,
 		CreatedAt:             createdAt,
 	}
+	// 先回填 legacy 字段，再基于 legacy + request_type 计算最终请求类型，保证历史数据兼容。
+	log.Stream = stream
+	log.OpenAIWSMode = openaiWSMode
+	log.RequestType = log.EffectiveRequestType()
+	log.Stream, log.OpenAIWSMode = service.ApplyLegacyRequestFields(log.RequestType, stream, openaiWSMode)
 
 	if requestID.Valid {
 		log.RequestID = requestID.String
