@@ -1907,6 +1907,23 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	currentPayload := firstPayload
 	currentOriginalModel := firstOriginalModel
+	var sessionLease *openAIWSConnLease
+	sessionConnID := ""
+	releaseSessionLease := func() {
+		if sessionLease == nil {
+			return
+		}
+		sessionLease.Release()
+		if debugEnabled {
+			logOpenAIWSModeDebug(
+				"ingress_ws_upstream_released account_id=%d conn_id=%s",
+				account.ID,
+				truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+			)
+		}
+	}
+	defer releaseSessionLease()
+
 	turn := 1
 	for {
 		if hooks != nil && hooks.BeforeTurn != nil {
@@ -1914,17 +1931,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return err
 			}
 		}
-		turnLease, acquireErr := acquireTurnLease(turn, preferredConnID)
-		if acquireErr != nil {
-			return fmt.Errorf("acquire upstream websocket: %w", acquireErr)
+		if sessionLease == nil {
+			acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID)
+			if acquireErr != nil {
+				return fmt.Errorf("acquire upstream websocket: %w", acquireErr)
+			}
+			sessionLease = acquiredLease
+			sessionConnID = strings.TrimSpace(sessionLease.ConnID())
 		}
-		connID := strings.TrimSpace(turnLease.ConnID())
-		result, relayErr := sendAndRelay(turn, turnLease, currentPayload, currentOriginalModel)
-		turnLease.Release()
+		connID := sessionConnID
+
+		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentOriginalModel)
 		if hooks != nil && hooks.AfterTurn != nil {
 			hooks.AfterTurn(turn, result, relayErr)
 		}
 		if relayErr != nil {
+			sessionLease.MarkBroken()
 			return relayErr
 		}
 		if result == nil {
@@ -1965,12 +1987,25 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return parseErr
 		}
 		if nextPromptCacheKey != "" {
+			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
+			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
 			updatedHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPromptCacheKey)
 			baseAcquireReq.Headers = updatedHeaders
 		}
 		if stateStore != nil && nextPreviousResponseID != "" {
 			if stickyConnID, ok := stateStore.GetResponseConn(nextPreviousResponseID); ok {
-				preferredConnID = stickyConnID
+				if sessionConnID != "" && stickyConnID != "" && stickyConnID != sessionConnID {
+					logOpenAIWSModeInfo(
+						"ingress_ws_keep_session_conn account_id=%d turn=%d conn_id=%s sticky_conn_id=%s previous_response_id=%s",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(stickyConnID, openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(nextPreviousResponseID, openAIWSIDValueMaxLen),
+					)
+				} else {
+					preferredConnID = stickyConnID
+				}
 			}
 		}
 		currentPayload = nextPayload
