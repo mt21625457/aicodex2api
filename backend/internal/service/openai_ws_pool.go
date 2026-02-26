@@ -167,6 +167,13 @@ func (l *openAIWSConnLease) ReadMessageWithContextTimeout(ctx context.Context, t
 	return l.conn.readMessageWithContextTimeout(ctx, timeout)
 }
 
+func (l *openAIWSConnLease) PingWithTimeout(timeout time.Duration) error {
+	if l == nil || l.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	return l.conn.pingWithTimeout(timeout)
+}
+
 func (l *openAIWSConnLease) MarkBroken() {
 	if l == nil || l.pool == nil || l.conn == nil {
 		return

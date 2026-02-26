@@ -64,6 +64,8 @@ var openAIWSLogValueReplacer = strings.NewReplacer(
 	"failed", "fail",
 )
 
+var openAIWSIngressPreflightPingIdle = 20 * time.Second
+
 // openAIWSFallbackError 表示可安全回退到 HTTP 的 WS 错误（尚未写下游）。
 type openAIWSFallbackError struct {
 	Reason string
@@ -96,6 +98,70 @@ type OpenAIWSClientCloseError struct {
 	statusCode coderws.StatusCode
 	reason     string
 	err        error
+}
+
+type openAIWSIngressTurnError struct {
+	stage           string
+	cause           error
+	wroteDownstream bool
+}
+
+func (e *openAIWSIngressTurnError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.cause == nil {
+		return strings.TrimSpace(e.stage)
+	}
+	return e.cause.Error()
+}
+
+func (e *openAIWSIngressTurnError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func wrapOpenAIWSIngressTurnError(stage string, cause error, wroteDownstream bool) error {
+	if cause == nil {
+		return nil
+	}
+	return &openAIWSIngressTurnError{
+		stage:           strings.TrimSpace(stage),
+		cause:           cause,
+		wroteDownstream: wroteDownstream,
+	}
+}
+
+func isOpenAIWSIngressTurnRetryable(err error) bool {
+	var turnErr *openAIWSIngressTurnError
+	if !errors.As(err, &turnErr) || turnErr == nil {
+		return false
+	}
+	if errors.Is(turnErr.cause, context.Canceled) || errors.Is(turnErr.cause, context.DeadlineExceeded) {
+		return false
+	}
+	if turnErr.wroteDownstream {
+		return false
+	}
+	switch turnErr.stage {
+	case "write_upstream", "read_upstream":
+		return true
+	default:
+		return false
+	}
+}
+
+func openAIWSIngressTurnRetryReason(err error) string {
+	var turnErr *openAIWSIngressTurnError
+	if !errors.As(err, &turnErr) || turnErr == nil {
+		return "unknown"
+	}
+	if turnErr.stage == "" {
+		return "unknown"
+	}
+	return turnErr.stage
 }
 
 // NewOpenAIWSClientCloseError 创建一个客户端 WS 关闭错误。
@@ -1981,8 +2047,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return nil, errors.New("upstream websocket lease is nil")
 		}
 		turnStart := time.Now()
+		wroteDownstream := false
 		if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
-			return nil, fmt.Errorf("write upstream websocket request: %w", err)
+			return nil, wrapOpenAIWSIngressTurnError(
+				"write_upstream",
+				fmt.Errorf("write upstream websocket request: %w", err),
+				false,
+			)
 		}
 		logOpenAIWSModeInfo(
 			"ingress_ws_turn_request_sent account_id=%d turn=%d conn_id=%s payload_bytes=%d",
@@ -2018,7 +2089,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, s.openAIWSReadTimeout())
 			if readErr != nil {
 				lease.MarkBroken()
-				return nil, fmt.Errorf("read upstream websocket event: %w", readErr)
+				return nil, wrapOpenAIWSIngressTurnError(
+					"read_upstream",
+					fmt.Errorf("read upstream websocket event: %w", readErr),
+					wroteDownstream,
+				)
 			}
 
 			if responseID == "" {
@@ -2070,8 +2145,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 							truncateOpenAIWSLogValue(closeReason, openAIWSHeaderValueMaxLen),
 						)
 					} else {
-						return nil, fmt.Errorf("write client websocket event: %w", err)
+						return nil, wrapOpenAIWSIngressTurnError(
+							"write_client",
+							fmt.Errorf("write client websocket event: %w", err),
+							wroteDownstream,
+						)
 					}
+				} else {
+					wroteDownstream = true
 				}
 			}
 			if isTerminalEvent {
@@ -2133,12 +2214,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	defer releaseSessionLease()
 
 	turn := 1
+	turnRetry := 0
+	lastTurnFinishedAt := time.Time{}
+	skipBeforeTurn := false
 	for {
-		if hooks != nil && hooks.BeforeTurn != nil {
+		if !skipBeforeTurn && hooks != nil && hooks.BeforeTurn != nil {
 			if err := hooks.BeforeTurn(turn); err != nil {
 				return err
 			}
 		}
+		skipBeforeTurn = false
 		if sessionLease == nil {
 			acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID)
 			if acquireErr != nil {
@@ -2147,15 +2232,71 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			sessionLease = acquiredLease
 			sessionConnID = strings.TrimSpace(sessionLease.ConnID())
 		}
+		shouldPreflightPing := turn > 1 && sessionLease != nil && turnRetry == 0
+		if shouldPreflightPing && openAIWSIngressPreflightPingIdle > 0 && !lastTurnFinishedAt.IsZero() {
+			if time.Since(lastTurnFinishedAt) < openAIWSIngressPreflightPingIdle {
+				shouldPreflightPing = false
+			}
+		}
+		if shouldPreflightPing {
+			if pingErr := sessionLease.PingWithTimeout(openAIWSConnHealthCheckTO); pingErr != nil {
+				logOpenAIWSModeInfo(
+					"ingress_ws_upstream_preflight_ping_fail account_id=%d turn=%d conn_id=%s cause=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(pingErr.Error(), openAIWSLogValueMaxLen),
+				)
+				sessionLease.MarkBroken()
+				releaseSessionLease()
+				sessionLease = nil
+				sessionConnID = ""
+				preferredConnID = ""
+
+				acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID)
+				if acquireErr != nil {
+					return fmt.Errorf("acquire upstream websocket after preflight ping fail: %w", acquireErr)
+				}
+				sessionLease = acquiredLease
+				sessionConnID = strings.TrimSpace(sessionLease.ConnID())
+			}
+		}
 		connID := sessionConnID
 
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel)
-		if hooks != nil && hooks.AfterTurn != nil {
-			hooks.AfterTurn(turn, result, relayErr)
-		}
 		if relayErr != nil {
+			if isOpenAIWSIngressTurnRetryable(relayErr) && turnRetry < 1 {
+				turnRetry++
+				logOpenAIWSModeInfo(
+					"ingress_ws_turn_retry account_id=%d turn=%d retry=%d reason=%s conn_id=%s",
+					account.ID,
+					turn,
+					turnRetry,
+					truncateOpenAIWSLogValue(openAIWSIngressTurnRetryReason(relayErr), openAIWSLogValueMaxLen),
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				)
+				sessionLease.MarkBroken()
+				releaseSessionLease()
+				sessionLease = nil
+				sessionConnID = ""
+				preferredConnID = ""
+				skipBeforeTurn = true
+				continue
+			}
+			finalErr := relayErr
+			if unwrapped := errors.Unwrap(relayErr); unwrapped != nil {
+				finalErr = unwrapped
+			}
+			if hooks != nil && hooks.AfterTurn != nil {
+				hooks.AfterTurn(turn, nil, finalErr)
+			}
 			sessionLease.MarkBroken()
-			return relayErr
+			return finalErr
+		}
+		turnRetry = 0
+		lastTurnFinishedAt = time.Now()
+		if hooks != nil && hooks.AfterTurn != nil {
+			hooks.AfterTurn(turn, result, nil)
 		}
 		if result == nil {
 			return errors.New("websocket turn result is nil")

@@ -400,6 +400,16 @@ func TestOpenAIWSConnLease_WriteJSONWithContextTimeout_RespectsParentContext(t *
 	require.Less(t, elapsed, 200*time.Millisecond)
 }
 
+func TestOpenAIWSConnLease_PingWithTimeout(t *testing.T) {
+	conn := newOpenAIWSConn("ping_ok", 1, &openAIWSFakeConn{}, nil)
+	lease := &openAIWSConnLease{conn: conn}
+	require.NoError(t, lease.PingWithTimeout(50*time.Millisecond))
+
+	var nilLease *openAIWSConnLease
+	err := nilLease.PingWithTimeout(50 * time.Millisecond)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+}
+
 func TestOpenAIWSConn_ReadAndWriteCanProceedConcurrently(t *testing.T) {
 	conn := newOpenAIWSConn("full_duplex", 1, &openAIWSBlockingConn{readDelay: 120 * time.Millisecond}, nil)
 
