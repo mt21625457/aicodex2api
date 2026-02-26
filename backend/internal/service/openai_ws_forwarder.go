@@ -572,6 +572,100 @@ func summarizeOpenAIWSReadCloseError(err error) (status string, reason string) {
 	return normalizeOpenAIWSLogValue(closeStatus), closeReason
 }
 
+func unwrapOpenAIWSDialBaseError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var dialErr *openAIWSDialError
+	if errors.As(err, &dialErr) && dialErr != nil && dialErr.Err != nil {
+		return dialErr.Err
+	}
+	return err
+}
+
+func openAIWSDialRespHeaderForLog(err error, key string) string {
+	var dialErr *openAIWSDialError
+	if !errors.As(err, &dialErr) || dialErr == nil || dialErr.ResponseHeaders == nil {
+		return "-"
+	}
+	return truncateOpenAIWSLogValue(dialErr.ResponseHeaders.Get(key), openAIWSHeaderValueMaxLen)
+}
+
+func classifyOpenAIWSDialError(err error) string {
+	if err == nil {
+		return "-"
+	}
+	baseErr := unwrapOpenAIWSDialBaseError(err)
+	if baseErr == nil {
+		return "-"
+	}
+	if errors.Is(baseErr, context.DeadlineExceeded) {
+		return "ctx_deadline_exceeded"
+	}
+	if errors.Is(baseErr, context.Canceled) {
+		return "ctx_canceled"
+	}
+	var netErr net.Error
+	if errors.As(baseErr, &netErr) && netErr.Timeout() {
+		return "net_timeout"
+	}
+	if status := coderws.CloseStatus(baseErr); status != -1 {
+		return normalizeOpenAIWSLogValue(fmt.Sprintf("ws_close_%d", int(status)))
+	}
+	message := strings.ToLower(strings.TrimSpace(baseErr.Error()))
+	switch {
+	case strings.Contains(message, "handshake not finished"):
+		return "handshake_not_finished"
+	case strings.Contains(message, "bad handshake"):
+		return "bad_handshake"
+	case strings.Contains(message, "connection refused"):
+		return "connection_refused"
+	case strings.Contains(message, "no such host"):
+		return "dns_not_found"
+	case strings.Contains(message, "tls"):
+		return "tls_error"
+	case strings.Contains(message, "i/o timeout"):
+		return "io_timeout"
+	case strings.Contains(message, "context deadline exceeded"):
+		return "ctx_deadline_exceeded"
+	default:
+		return "dial_error"
+	}
+}
+
+func summarizeOpenAIWSDialError(err error) (
+	statusCode int,
+	dialClass string,
+	closeStatus string,
+	closeReason string,
+	respServer string,
+	respVia string,
+	respCFRay string,
+	respRequestID string,
+) {
+	dialClass = "-"
+	closeStatus = "-"
+	closeReason = "-"
+	respServer = "-"
+	respVia = "-"
+	respCFRay = "-"
+	respRequestID = "-"
+	if err == nil {
+		return
+	}
+	var dialErr *openAIWSDialError
+	if errors.As(err, &dialErr) && dialErr != nil {
+		statusCode = dialErr.StatusCode
+		respServer = openAIWSDialRespHeaderForLog(err, "server")
+		respVia = openAIWSDialRespHeaderForLog(err, "via")
+		respCFRay = openAIWSDialRespHeaderForLog(err, "cf-ray")
+		respRequestID = openAIWSDialRespHeaderForLog(err, "x-request-id")
+	}
+	dialClass = normalizeOpenAIWSLogValue(classifyOpenAIWSDialError(err))
+	closeStatus, closeReason = summarizeOpenAIWSReadCloseError(unwrapOpenAIWSDialBaseError(err))
+	return
+}
+
 func isOpenAIWSClientDisconnectError(err error) bool {
 	if err == nil {
 		return false
@@ -1150,20 +1244,27 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}(),
 	})
 	if err != nil {
-		dialStatus := 0
-		var dialErr *openAIWSDialError
-		if errors.As(err, &dialErr) {
-			dialStatus = dialErr.StatusCode
-		}
+		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
 		logOpenAIWSModeInfo(
-			"acquire_fail account_id=%d account_type=%s transport=%s reason=%s dial_status=%d cause=%s preferred_conn_id=%s",
+			"acquire_fail account_id=%d account_type=%s transport=%s reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s force_new_conn=%v ws_host=%s ws_path=%s proxy_enabled=%v",
 			account.ID,
 			account.Type,
 			normalizeOpenAIWSLogValue(string(decision.Transport)),
 			normalizeOpenAIWSLogValue(classifyOpenAIWSAcquireError(err)),
 			dialStatus,
+			dialClass,
+			dialCloseStatus,
+			truncateOpenAIWSLogValue(dialCloseReason, openAIWSHeaderValueMaxLen),
+			dialRespServer,
+			dialRespVia,
+			dialRespCFRay,
+			dialRespReqID,
 			truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
 			truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
+			forceNewConn,
+			wsHost,
+			wsPath,
+			account.ProxyID != nil && account.Proxy != nil,
 		)
 		return nil, wrapOpenAIWSFallback(classifyOpenAIWSAcquireError(err), err)
 	}
@@ -1775,6 +1876,26 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		lease, acquireErr := pool.Acquire(acquireCtx, req)
 		acquireCancel()
 		if acquireErr != nil {
+			dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(acquireErr)
+			logOpenAIWSModeInfo(
+				"ingress_ws_upstream_acquire_fail account_id=%d turn=%d reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s ws_host=%s ws_path=%s proxy_enabled=%v",
+				account.ID,
+				turn,
+				normalizeOpenAIWSLogValue(classifyOpenAIWSAcquireError(acquireErr)),
+				dialStatus,
+				dialClass,
+				dialCloseStatus,
+				truncateOpenAIWSLogValue(dialCloseReason, openAIWSHeaderValueMaxLen),
+				dialRespServer,
+				dialRespVia,
+				dialRespCFRay,
+				dialRespReqID,
+				truncateOpenAIWSLogValue(acquireErr.Error(), openAIWSLogValueMaxLen),
+				truncateOpenAIWSLogValue(preferred, openAIWSIDValueMaxLen),
+				wsHost,
+				wsPath,
+				account.ProxyID != nil && account.Proxy != nil,
+			)
 			if errors.Is(acquireErr, context.DeadlineExceeded) || errors.Is(acquireErr, errOpenAIWSConnQueueFull) {
 				return nil, NewOpenAIWSClientCloseError(
 					coderws.StatusTryAgainLater,

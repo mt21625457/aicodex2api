@@ -32,8 +32,9 @@ var (
 )
 
 type openAIWSDialError struct {
-	StatusCode int
-	Err        error
+	StatusCode      int
+	ResponseHeaders http.Header
+	Err             error
 }
 
 func (e *openAIWSDialError) Error() string {
@@ -1085,10 +1086,18 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	}
 	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
 	if err != nil {
-		return nil, &openAIWSDialError{StatusCode: status, Err: err}
+		return nil, &openAIWSDialError{
+			StatusCode:      status,
+			ResponseHeaders: cloneHeader(handshakeHeaders),
+			Err:             err,
+		}
 	}
 	if conn == nil {
-		return nil, &openAIWSDialError{StatusCode: status, Err: errors.New("openai ws dialer returned nil connection")}
+		return nil, &openAIWSDialError{
+			StatusCode:      status,
+			ResponseHeaders: cloneHeader(handshakeHeaders),
+			Err:             errors.New("openai ws dialer returned nil connection"),
+		}
 	}
 	id := p.nextConnID(req.Account.ID)
 	return newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders), nil

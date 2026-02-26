@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -24,6 +25,47 @@ func TestClassifyOpenAIWSAcquireError(t *testing.T) {
 	t.Run("other", func(t *testing.T) {
 		require.Equal(t, "acquire_conn", classifyOpenAIWSAcquireError(errors.New("x")))
 	})
+}
+
+func TestClassifyOpenAIWSDialError(t *testing.T) {
+	t.Run("handshake_not_finished", func(t *testing.T) {
+		err := &openAIWSDialError{
+			StatusCode: http.StatusBadGateway,
+			Err:        errors.New("WebSocket protocol error: Handshake not finished"),
+		}
+		require.Equal(t, "handshake_not_finished", classifyOpenAIWSDialError(err))
+	})
+
+	t.Run("context_deadline", func(t *testing.T) {
+		err := &openAIWSDialError{
+			StatusCode: 0,
+			Err:        context.DeadlineExceeded,
+		}
+		require.Equal(t, "ctx_deadline_exceeded", classifyOpenAIWSDialError(err))
+	})
+}
+
+func TestSummarizeOpenAIWSDialError(t *testing.T) {
+	err := &openAIWSDialError{
+		StatusCode: http.StatusBadGateway,
+		ResponseHeaders: http.Header{
+			"Server":       []string{"cloudflare"},
+			"Via":          []string{"1.1 example"},
+			"Cf-Ray":       []string{"abcd1234"},
+			"X-Request-Id": []string{"req_123"},
+		},
+		Err: errors.New("WebSocket protocol error: Handshake not finished"),
+	}
+
+	status, class, closeStatus, closeReason, server, via, cfRay, reqID := summarizeOpenAIWSDialError(err)
+	require.Equal(t, http.StatusBadGateway, status)
+	require.Equal(t, "handshake_not_finished", class)
+	require.Equal(t, "-", closeStatus)
+	require.Equal(t, "-", closeReason)
+	require.Equal(t, "cloudflare", server)
+	require.Equal(t, "1.1 example", via)
+	require.Equal(t, "abcd1234", cfRay)
+	require.Equal(t, "req_123", reqID)
 }
 
 func TestClassifyOpenAIWSErrorEvent(t *testing.T) {

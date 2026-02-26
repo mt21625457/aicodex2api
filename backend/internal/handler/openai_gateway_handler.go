@@ -528,12 +528,22 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 	reqLog.Info("openai.websocket_ingress_started")
+	clientIP := ip.GetClientIP(c)
+	userAgent := strings.TrimSpace(c.GetHeader("User-Agent"))
 
 	wsConn, err := coderws.Accept(c.Writer, c.Request, &coderws.AcceptOptions{
 		CompressionMode: coderws.CompressionContextTakeover,
 	})
 	if err != nil {
-		reqLog.Warn("openai.websocket_accept_failed", zap.Error(err))
+		reqLog.Warn("openai.websocket_accept_failed",
+			zap.Error(err),
+			zap.String("client_ip", clientIP),
+			zap.String("request_user_agent", userAgent),
+			zap.String("upgrade_header", strings.TrimSpace(c.GetHeader("Upgrade"))),
+			zap.String("connection_header", strings.TrimSpace(c.GetHeader("Connection"))),
+			zap.String("sec_websocket_version", strings.TrimSpace(c.GetHeader("Sec-WebSocket-Version"))),
+			zap.Bool("has_sec_websocket_key", strings.TrimSpace(c.GetHeader("Sec-WebSocket-Key")) != ""),
+		)
 		return
 	}
 	defer func() {
@@ -546,7 +556,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	msgType, firstMessage, err := wsConn.Read(readCtx)
 	cancel()
 	if err != nil {
-		reqLog.Warn("openai.websocket_read_first_message_failed", zap.Error(err))
+		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+		reqLog.Warn("openai.websocket_read_first_message_failed",
+			zap.Error(err),
+			zap.String("client_ip", clientIP),
+			zap.String("close_status", closeStatus),
+			zap.String("close_reason", closeReason),
+			zap.Duration("read_timeout", 30*time.Second),
+		)
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "missing first response.create message")
 		return
 	}
@@ -667,8 +684,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.Int("candidate_count", scheduleDecision.CandidateCount),
 	)
 
-	userAgent := c.GetHeader("User-Agent")
-	clientIP := ip.GetClientIP(c)
 	hooks := &service.OpenAIWSIngressHooks{
 		BeforeTurn: func(turn int) error {
 			if turn == 1 {
@@ -730,7 +745,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, firstMessage, hooks); err != nil {
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-		reqLog.Warn("openai.websocket_proxy_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+		reqLog.Warn("openai.websocket_proxy_failed",
+			zap.Int64("account_id", account.ID),
+			zap.Error(err),
+			zap.String("close_status", closeStatus),
+			zap.String("close_reason", closeReason),
+		)
 		var closeErr *service.OpenAIWSClientCloseError
 		if errors.As(err, &closeErr) {
 			closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
@@ -968,4 +989,24 @@ func closeOpenAIClientWS(conn *coderws.Conn, status coderws.StatusCode, reason s
 	}
 	_ = conn.Close(status, reason)
 	_ = conn.CloseNow()
+}
+
+func summarizeWSCloseErrorForLog(err error) (string, string) {
+	if err == nil {
+		return "-", "-"
+	}
+	statusCode := coderws.CloseStatus(err)
+	if statusCode == -1 {
+		return "-", "-"
+	}
+	closeStatus := fmt.Sprintf("%d(%s)", int(statusCode), statusCode.String())
+	closeReason := "-"
+	var closeErr coderws.CloseError
+	if errors.As(err, &closeErr) {
+		reason := strings.TrimSpace(closeErr.Reason)
+		if reason != "" {
+			closeReason = reason
+		}
+	}
+	return closeStatus, closeReason
 }
