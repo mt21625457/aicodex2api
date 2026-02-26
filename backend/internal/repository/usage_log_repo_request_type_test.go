@@ -98,10 +98,10 @@ func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
 		Stream:      &stream,
 	}
 
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM usage_logs WHERE request_type = \\$1").
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM usage_logs WHERE \\(request_type = \\$1 OR \\(request_type = 0 AND openai_ws_mode = TRUE\\)\\)").
 		WithArgs(requestType).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
-	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE request_type = \\$1 ORDER BY id DESC LIMIT \\$2 OFFSET \\$3").
+	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE \\(request_type = \\$1 OR \\(request_type = 0 AND openai_ws_mode = TRUE\\)\\) ORDER BY id DESC LIMIT \\$2 OFFSET \\$3").
 		WithArgs(requestType, 20, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
@@ -122,7 +122,7 @@ func TestUsageLogRepositoryGetUsageTrendWithFiltersRequestTypePriority(t *testin
 	requestType := int16(service.RequestTypeStream)
 	stream := true
 
-	mock.ExpectQuery("AND request_type = \\$3").
+	mock.ExpectQuery("AND \\(request_type = \\$3 OR \\(request_type = 0 AND stream = TRUE AND openai_ws_mode = FALSE\\)\\)").
 		WithArgs(start, end, requestType).
 		WillReturnRows(sqlmock.NewRows([]string{"date", "requests", "input_tokens", "output_tokens", "cache_tokens", "total_tokens", "cost", "actual_cost"}))
 
@@ -141,7 +141,7 @@ func TestUsageLogRepositoryGetModelStatsWithFiltersRequestTypePriority(t *testin
 	requestType := int16(service.RequestTypeWSV2)
 	stream := false
 
-	mock.ExpectQuery("AND request_type = \\$3").
+	mock.ExpectQuery("AND \\(request_type = \\$3 OR \\(request_type = 0 AND openai_ws_mode = TRUE\\)\\)").
 		WithArgs(start, end, requestType).
 		WillReturnRows(sqlmock.NewRows([]string{"model", "requests", "input_tokens", "output_tokens", "total_tokens", "cost", "actual_cost"}))
 
@@ -162,7 +162,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T) 
 		Stream:      &stream,
 	}
 
-	mock.ExpectQuery("FROM usage_logs\\s+WHERE request_type = \\$1").
+	mock.ExpectQuery("FROM usage_logs\\s+WHERE \\(request_type = \\$1 OR \\(request_type = 0 AND stream = FALSE AND openai_ws_mode = FALSE\\)\\)").
 		WithArgs(requestType).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"total_requests",
@@ -180,6 +180,48 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T) 
 	require.Equal(t, int64(1), stats.TotalRequests)
 	require.Equal(t, int64(9), stats.TotalTokens)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBuildRequestTypeFilterConditionLegacyFallback(t *testing.T) {
+	tests := []struct {
+		name      string
+		request   int16
+		wantWhere string
+		wantArg   int16
+	}{
+		{
+			name:      "sync_with_legacy_fallback",
+			request:   int16(service.RequestTypeSync),
+			wantWhere: "(request_type = $3 OR (request_type = 0 AND stream = FALSE AND openai_ws_mode = FALSE))",
+			wantArg:   int16(service.RequestTypeSync),
+		},
+		{
+			name:      "stream_with_legacy_fallback",
+			request:   int16(service.RequestTypeStream),
+			wantWhere: "(request_type = $3 OR (request_type = 0 AND stream = TRUE AND openai_ws_mode = FALSE))",
+			wantArg:   int16(service.RequestTypeStream),
+		},
+		{
+			name:      "ws_v2_with_legacy_fallback",
+			request:   int16(service.RequestTypeWSV2),
+			wantWhere: "(request_type = $3 OR (request_type = 0 AND openai_ws_mode = TRUE))",
+			wantArg:   int16(service.RequestTypeWSV2),
+		},
+		{
+			name:      "invalid_request_type_normalized_to_unknown",
+			request:   int16(99),
+			wantWhere: "request_type = $3",
+			wantArg:   int16(service.RequestTypeUnknown),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			where, args := buildRequestTypeFilterCondition(3, tt.request)
+			require.Equal(t, tt.wantWhere, where)
+			require.Equal(t, []any{tt.wantArg}, args)
+		})
+	}
 }
 
 type usageLogScannerStub struct {
