@@ -2205,6 +2205,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	for scanner.Scan() {
 		line := scanner.Text()
 		if data, ok := extractOpenAISSEDataLine(line); ok {
+			dataBytes := []byte(data)
 			trimmedData := strings.TrimSpace(data)
 			if trimmedData == "[DONE]" {
 				sawDone = true
@@ -2213,7 +2214,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
-			s.parseSSEUsage(data, usage)
+			s.parseSSEUsageBytes(dataBytes, usage)
 		}
 
 		if !clientDisconnected {
@@ -2706,19 +2707,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return
 		}
 		errorEventSent = true
-		payload := map[string]any{
-			"type":            "error",
-			"sequence_number": 0,
-			"error": map[string]any{
-				"type":    "upstream_error",
-				"message": reason,
-				"code":    reason,
-			},
-		}
-		if b, err := json.Marshal(payload); err == nil {
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
-			flusher.Flush()
-		}
+		payload := `{"type":"error","sequence_number":0,"error":{"type":"upstream_error","message":` + strconv.Quote(reason) + `,"code":` + strconv.Quote(reason) + `}}`
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+		flusher.Flush()
 	}
 
 	needModelReplace := originalModel != mappedModel
@@ -2761,10 +2752,13 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 				}
 
+				dataBytes := []byte(data)
+
 				// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
-				if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEData(data); corrected {
-					data = correctedData
-					line = "data: " + correctedData
+				if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
+					dataBytes = correctedData
+					data = string(correctedData)
+					line = "data: " + data
 				}
 
 				// 写入客户端（客户端断开后继续 drain 上游）
@@ -2782,7 +2776,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
 				}
-				s.parseSSEUsage(data, usage)
+				s.parseSSEUsageBytes(dataBytes, usage)
 			} else {
 				// Forward non-data lines as-is
 				if !clientDisconnected {
@@ -2882,10 +2876,9 @@ func (s *OpenAIGatewayService) correctToolCallsInResponseBody(body []byte) []byt
 		return body
 	}
 
-	bodyStr := string(body)
-	corrected, changed := s.toolCorrector.CorrectToolCallsInSSEData(bodyStr)
+	corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(body)
 	if changed {
-		return []byte(corrected)
+		return corrected
 	}
 	return body
 }
@@ -3036,16 +3029,10 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 		if data == "" || data == "[DONE]" {
 			continue
 		}
-		var event struct {
-			Type     string          `json:"type"`
-			Response json.RawMessage `json:"response"`
-		}
-		if json.Unmarshal([]byte(data), &event) != nil {
-			continue
-		}
-		if event.Type == "response.done" || event.Type == "response.completed" {
-			if len(event.Response) > 0 {
-				return event.Response, true
+		eventType := gjson.Get(data, "type").String()
+		if eventType == "response.done" || eventType == "response.completed" {
+			if response := gjson.Get(data, "response"); response.Exists() && response.Type == gjson.JSON && response.Raw != "" {
+				return []byte(response.Raw), true
 			}
 		}
 	}
@@ -3063,7 +3050,7 @@ func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {
 		if data == "" || data == "[DONE]" {
 			continue
 		}
-		s.parseSSEUsage(data, usage)
+		s.parseSSEUsageBytes([]byte(data), usage)
 	}
 	return usage
 }

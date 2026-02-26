@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -868,19 +869,8 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
-			// Send error event in OpenAI SSE format with proper JSON marshaling
-			errorData := map[string]any{
-				"error": map[string]string{
-					"type":    errType,
-					"message": message,
-				},
-			}
-			jsonBytes, err := json.Marshal(errorData)
-			if err != nil {
-				_ = c.Error(err)
-				return
-			}
-			errorEvent := fmt.Sprintf("event: error\ndata: %s\n\n", string(jsonBytes))
+			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
+			errorEvent := "event: error\ndata: " + `{"error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
 			}
