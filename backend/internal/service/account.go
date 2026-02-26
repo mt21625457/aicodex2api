@@ -3,6 +3,7 @@ package service
 
 import (
 	"encoding/json"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,6 +51,13 @@ type Account struct {
 	AccountGroups []AccountGroup
 	GroupIDs      []int64
 	Groups        []*Group
+
+	// model_mapping 热路径缓存（非持久化字段）
+	modelMappingCache               map[string]string
+	modelMappingCacheReady          bool
+	modelMappingCacheCredentialsPtr uintptr
+	modelMappingCacheRawPtr         uintptr
+	modelMappingCacheRawLen         int
 }
 
 type TempUnschedulableRule struct {
@@ -349,6 +357,29 @@ func parseTempUnschedInt(value any) int {
 }
 
 func (a *Account) GetModelMapping() map[string]string {
+	credentialsPtr := mapPtr(a.Credentials)
+	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
+	rawPtr := mapPtr(rawMapping)
+	rawLen := len(rawMapping)
+
+	if a.modelMappingCacheReady &&
+		a.modelMappingCacheCredentialsPtr == credentialsPtr &&
+		a.modelMappingCacheRawPtr == rawPtr &&
+		a.modelMappingCacheRawLen == rawLen {
+		return a.modelMappingCache
+	}
+
+	mapping := a.resolveModelMapping(rawMapping)
+
+	a.modelMappingCache = mapping
+	a.modelMappingCacheReady = true
+	a.modelMappingCacheCredentialsPtr = credentialsPtr
+	a.modelMappingCacheRawPtr = rawPtr
+	a.modelMappingCacheRawLen = rawLen
+	return mapping
+}
+
+func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]string {
 	if a.Credentials == nil {
 		// Antigravity 平台使用默认映射
 		if a.Platform == domain.PlatformAntigravity {
@@ -356,37 +387,43 @@ func (a *Account) GetModelMapping() map[string]string {
 		}
 		return nil
 	}
-	raw, ok := a.Credentials["model_mapping"]
-	if !ok || raw == nil {
+	if len(rawMapping) == 0 {
 		// Antigravity 平台使用默认映射
 		if a.Platform == domain.PlatformAntigravity {
 			return domain.DefaultAntigravityModelMapping
 		}
 		return nil
 	}
-	if m, ok := raw.(map[string]any); ok {
-		result := make(map[string]string)
-		for k, v := range m {
-			if s, ok := v.(string); ok {
-				result[k] = s
-			}
-		}
-		if len(result) > 0 {
-			if a.Platform == domain.PlatformAntigravity {
-				ensureAntigravityDefaultPassthroughs(result, []string{
-					"gemini-3-flash",
-					"gemini-3.1-pro-high",
-					"gemini-3.1-pro-low",
-				})
-			}
-			return result
+
+	result := make(map[string]string)
+	for k, v := range rawMapping {
+		if s, ok := v.(string); ok {
+			result[k] = s
 		}
 	}
+	if len(result) > 0 {
+		if a.Platform == domain.PlatformAntigravity {
+			ensureAntigravityDefaultPassthroughs(result, []string{
+				"gemini-3-flash",
+				"gemini-3.1-pro-high",
+				"gemini-3.1-pro-low",
+			})
+		}
+		return result
+	}
+
 	// Antigravity 平台使用默认映射
 	if a.Platform == domain.PlatformAntigravity {
 		return domain.DefaultAntigravityModelMapping
 	}
 	return nil
+}
+
+func mapPtr(m map[string]any) uintptr {
+	if m == nil {
+		return 0
+	}
+	return reflect.ValueOf(m).Pointer()
 }
 
 func ensureAntigravityDefaultPassthrough(mapping map[string]string, model string) {

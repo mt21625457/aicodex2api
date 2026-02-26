@@ -611,6 +611,43 @@ func (r *accountRepository) syncSchedulerAccountSnapshot(ctx context.Context, ac
 	}
 }
 
+func (r *accountRepository) syncSchedulerAccountSnapshots(ctx context.Context, accountIDs []int64) {
+	if r == nil || r.schedulerCache == nil || len(accountIDs) == 0 {
+		return
+	}
+
+	uniqueIDs := make([]int64, 0, len(accountIDs))
+	seen := make(map[int64]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return
+	}
+
+	accounts, err := r.GetByIDs(ctx, uniqueIDs)
+	if err != nil {
+		logger.LegacyPrintf("repository.account", "[Scheduler] batch sync account snapshot read failed: count=%d err=%v", len(uniqueIDs), err)
+		return
+	}
+
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		if err := r.schedulerCache.SetAccount(ctx, account); err != nil {
+			logger.LegacyPrintf("repository.account", "[Scheduler] batch sync account snapshot write failed: id=%d err=%v", account.ID, err)
+		}
+	}
+}
+
 func (r *accountRepository) ClearError(ctx context.Context, id int64) error {
 	_, err := r.client.Account.Update().
 		Where(dbaccount.IDEQ(id)).
@@ -1197,9 +1234,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			shouldSync = true
 		}
 		if shouldSync {
-			for _, id := range ids {
-				r.syncSchedulerAccountSnapshot(ctx, id)
-			}
+			r.syncSchedulerAccountSnapshots(ctx, ids)
 		}
 	}
 	return rows, nil
