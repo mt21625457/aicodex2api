@@ -458,6 +458,7 @@ func (s *adminServiceImpl) ListUsers(ctx context.Context, page, pageSize int, fi
 			ratesByUser, err := batchRepo.GetByUserIDs(ctx, userIDs)
 			if err != nil {
 				logger.LegacyPrintf("service.admin", "failed to load user group rates in batch: err=%v", err)
+				s.loadUserGroupRatesOneByOne(ctx, users)
 			} else {
 				for i := range users {
 					if rates, ok := ratesByUser[users[i].ID]; ok {
@@ -466,17 +467,24 @@ func (s *adminServiceImpl) ListUsers(ctx context.Context, page, pageSize int, fi
 				}
 			}
 		} else {
-			for i := range users {
-				rates, err := s.userGroupRateRepo.GetByUserID(ctx, users[i].ID)
-				if err != nil {
-					logger.LegacyPrintf("service.admin", "failed to load user group rates: user_id=%d err=%v", users[i].ID, err)
-					continue
-				}
-				users[i].GroupRates = rates
-			}
+			s.loadUserGroupRatesOneByOne(ctx, users)
 		}
 	}
 	return users, result.Total, nil
+}
+
+func (s *adminServiceImpl) loadUserGroupRatesOneByOne(ctx context.Context, users []User) {
+	if s.userGroupRateRepo == nil {
+		return
+	}
+	for i := range users {
+		rates, err := s.userGroupRateRepo.GetByUserID(ctx, users[i].ID)
+		if err != nil {
+			logger.LegacyPrintf("service.admin", "failed to load user group rates: user_id=%d err=%v", users[i].ID, err)
+			continue
+		}
+		users[i].GroupRates = rates
+	}
 }
 
 func (s *adminServiceImpl) GetUser(ctx context.Context, id int64) (*User, error) {
@@ -1446,11 +1454,12 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// Handle group bindings per account (requires individual operations).
 	for _, accountID := range input.AccountIDs {
 		entry := BulkUpdateAccountResult{AccountID: accountID}
+		platform := ""
 
 		if input.GroupIDs != nil {
 			// 检查混合渠道风险（除非用户已确认）
 			if !input.SkipMixedChannelCheck {
-				platform := platformByID[accountID]
+				platform = platformByID[accountID]
 				if platform == "" {
 					account, err := s.accountRepo.GetByID(ctx, accountID)
 					if err != nil {
@@ -1480,6 +1489,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				result.FailedIDs = append(result.FailedIDs, accountID)
 				result.Results = append(result.Results, entry)
 				continue
+			}
+			if !input.SkipMixedChannelCheck && platform != "" {
+				updateMixedChannelPreloadedAccounts(groupAccountsByID, *input.GroupIDs, accountID, platform)
 			}
 		}
 
@@ -2191,6 +2203,9 @@ func (s *adminServiceImpl) validateGroupIDsExist(ctx context.Context, groupIDs [
 	if len(groupIDs) == 0 {
 		return nil
 	}
+	if s.groupRepo == nil {
+		return errors.New("group repository not configured")
+	}
 
 	if batchReader, ok := s.groupRepo.(groupExistenceBatchReader); ok {
 		existsByID, err := batchReader.ExistsByIDs(ctx, groupIDs)
@@ -2248,6 +2263,34 @@ func (s *adminServiceImpl) checkMixedChannelRiskWithPreloaded(currentAccountID i
 	}
 
 	return nil
+}
+
+func updateMixedChannelPreloadedAccounts(accountsByGroup map[int64][]Account, groupIDs []int64, accountID int64, platform string) {
+	if len(groupIDs) == 0 || accountID <= 0 || platform == "" {
+		return
+	}
+	for _, groupID := range groupIDs {
+		if groupID <= 0 {
+			continue
+		}
+		accounts := accountsByGroup[groupID]
+		found := false
+		for i := range accounts {
+			if accounts[i].ID != accountID {
+				continue
+			}
+			accounts[i].Platform = platform
+			found = true
+			break
+		}
+		if !found {
+			accounts = append(accounts, Account{
+				ID:       accountID,
+				Platform: platform,
+			})
+		}
+		accountsByGroup[groupID] = accounts
+	}
 }
 
 // CheckMixedChannelRisk checks whether target groups contain mixed channels for the current account platform.
