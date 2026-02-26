@@ -1639,18 +1639,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 
 		eventType := openAIWSPayloadString(payload, "type")
-		if eventType == "" {
+		switch eventType {
+		case "":
 			eventType = "response.create"
 			payload["type"] = eventType
-		}
-		if eventType != "response.create" {
-			if eventType == "response.append" {
-				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
-					coderws.StatusPolicyViolation,
-					"response.append is not supported in ws v2; use response.create with previous_response_id",
-					nil,
-				)
-			}
+		case "response.create":
+		case "response.append":
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
+				coderws.StatusPolicyViolation,
+				"response.append is not supported in ws v2; use response.create with previous_response_id",
+				nil,
+			)
+		default:
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
 				coderws.StatusPolicyViolation,
 				fmt.Sprintf("unsupported websocket request type: %s", eventType),
