@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     actual_cost                 DECIMAL(20, 10) NOT NULL DEFAULT 0,  -- 实际扣除费用
 
     -- 元数据
+    request_type                SMALLINT NOT NULL DEFAULT 0 CHECK (request_type IN (0, 1, 2, 3)),
     stream                      BOOLEAN NOT NULL DEFAULT FALSE,
     duration_ms                 INT,
 
@@ -170,3 +171,4 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_account_id ON usage_logs(account_id);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_model ON usage_logs(model);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_user_created ON usage_logs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_logs_request_type_created_at ON usage_logs(request_type, created_at);

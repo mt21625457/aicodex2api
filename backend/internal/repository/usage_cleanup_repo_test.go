@@ -466,6 +466,23 @@ func TestBuildUsageCleanupWhere(t *testing.T) {
 	require.Equal(t, []any{start, end, userID, apiKeyID, accountID, groupID, "gpt-4", stream, billingType}, args)
 }
 
+func TestBuildUsageCleanupWhereRequestTypePriority(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	requestType := int16(service.RequestTypeWSV2)
+	stream := false
+
+	where, args := buildUsageCleanupWhere(service.UsageCleanupFilters{
+		StartTime:   start,
+		EndTime:     end,
+		RequestType: &requestType,
+		Stream:      &stream,
+	})
+
+	require.Equal(t, "created_at >= $1 AND created_at <= $2 AND request_type = $3", where)
+	require.Equal(t, []any{start, end, requestType}, args)
+}
+
 func TestBuildUsageCleanupWhereModelEmpty(t *testing.T) {
 	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)

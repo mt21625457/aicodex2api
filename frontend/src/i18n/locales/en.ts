@@ -616,6 +616,7 @@ export default {
     ws: 'WS',
     stream: 'Stream',
     sync: 'Sync',
+    unknown: 'Unknown',
     in: 'In',
     out: 'Out',
     cacheRead: 'Read',
