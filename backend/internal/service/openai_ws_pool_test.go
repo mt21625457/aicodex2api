@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -40,6 +41,18 @@ func TestOpenAIWSConnPool_CleanupStaleAndTrimIdle(t *testing.T) {
 	require.Nil(t, ap.conns["stale"], "stale connection should be rotated")
 	require.Nil(t, ap.conns["idle_old"], "old idle should be trimmed by max_idle")
 	require.NotNil(t, ap.conns["idle_new"], "newer idle should be kept")
+}
+
+func TestOpenAIWSConnPool_NextConnIDFormat(t *testing.T) {
+	pool := newOpenAIWSConnPool(&config.Config{})
+	id1 := pool.nextConnID(42)
+	id2 := pool.nextConnID(42)
+
+	require.True(t, strings.HasPrefix(id1, "oa_ws_42_"))
+	require.True(t, strings.HasPrefix(id2, "oa_ws_42_"))
+	require.NotEqual(t, id1, id2)
+	require.Equal(t, "oa_ws_42_1", id1)
+	require.Equal(t, "oa_ws_42_2", id2)
 }
 
 func TestOpenAIWSConnLease_WriteJSONAndGuards(t *testing.T) {

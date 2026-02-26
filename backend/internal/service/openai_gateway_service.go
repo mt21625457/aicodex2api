@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"math/rand"
 	"net/http"
@@ -855,8 +856,9 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 		return ""
 	}
 
-	hash := sha256.Sum256([]byte(sessionID))
-	return hex.EncodeToString(hash[:])
+	h := fnv.New128a()
+	_, _ = h.Write([]byte(sessionID))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // BindStickySession sets session -> account binding with standard TTL.
@@ -2619,6 +2621,14 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	bufferedWriter := bufio.NewWriterSize(w, 4*1024)
+	flushBuffered := func() error {
+		if err := bufferedWriter.Flush(); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
 
 	usage := &OpenAIUsage{}
 	var firstTokenMs *int
@@ -2629,38 +2639,6 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
-
-	type scanEvent struct {
-		line string
-		err  error
-	}
-	// 独立 goroutine 读取上游，避免读取阻塞影响 keepalive/超时处理
-	events := make(chan scanEvent, 16)
-	done := make(chan struct{})
-	sendEvent := func(ev scanEvent) bool {
-		select {
-		case events <- ev:
-			return true
-		case <-done:
-			return false
-		}
-	}
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
-	go func(scanBuf *sseScannerBuf64K) {
-		defer putSSEScannerBuf64K(scanBuf)
-		defer close(events)
-		for scanner.Scan() {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
-			if !sendEvent(scanEvent{line: scanner.Text()}) {
-				return
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			_ = sendEvent(scanEvent{err: err})
-		}
-	}(scanBuf)
-	defer close(done)
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -2705,86 +2683,177 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		}
 		errorEventSent = true
 		payload := `{"type":"error","sequence_number":0,"error":{"type":"upstream_error","message":` + strconv.Quote(reason) + `,"code":` + strconv.Quote(reason) + `}}`
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
-		flusher.Flush()
+		if err := flushBuffered(); err != nil {
+			clientDisconnected = true
+			return
+		}
+		if _, err := bufferedWriter.WriteString("data: " + payload + "\n\n"); err != nil {
+			clientDisconnected = true
+			return
+		}
+		if err := flushBuffered(); err != nil {
+			clientDisconnected = true
+		}
 	}
 
 	needModelReplace := originalModel != mappedModel
+	resultWithUsage := func() *openaiStreamingResult {
+		return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}
+	}
+	finalizeStream := func() (*openaiStreamingResult, error) {
+		if !clientDisconnected {
+			if err := flushBuffered(); err != nil {
+				clientDisconnected = true
+				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during final flush, returning collected usage")
+			}
+		}
+		return resultWithUsage(), nil
+	}
+	handleScanErr := func(scanErr error) (*openaiStreamingResult, error, bool) {
+		if scanErr == nil {
+			return nil, nil, false
+		}
+		// 客户端断开/取消请求时，上游读取往往会返回 context canceled。
+		// /v1/responses 的 SSE 事件必须符合 OpenAI 协议；这里不注入自定义 error event，避免下游 SDK 解析失败。
+		if errors.Is(scanErr, context.Canceled) || errors.Is(scanErr, context.DeadlineExceeded) {
+			logger.LegacyPrintf("service.openai_gateway", "Context canceled during streaming, returning collected usage")
+			return resultWithUsage(), nil, true
+		}
+		// 客户端已断开时，上游出错仅影响体验，不影响计费；返回已收集 usage
+		if clientDisconnected {
+			logger.LegacyPrintf("service.openai_gateway", "Upstream read error after client disconnect: %v, returning collected usage", scanErr)
+			return resultWithUsage(), nil, true
+		}
+		if errors.Is(scanErr, bufio.ErrTooLong) {
+			logger.LegacyPrintf("service.openai_gateway", "SSE line too long: account=%d max_size=%d error=%v", account.ID, maxLineSize, scanErr)
+			sendErrorEvent("response_too_large")
+			return resultWithUsage(), scanErr, true
+		}
+		sendErrorEvent("stream_read_error")
+		return resultWithUsage(), fmt.Errorf("stream read error: %w", scanErr), true
+	}
+	processSSELine := func(line string, queueDrained bool) {
+		lastDataAt = time.Now()
+
+		// Extract data from SSE line (supports both "data: " and "data:" formats)
+		if data, ok := extractOpenAISSEDataLine(line); ok {
+
+			// Replace model in response if needed.
+			// Fast path: most events do not contain model field values.
+			if needModelReplace && mappedModel != "" && strings.Contains(data, mappedModel) {
+				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
+			}
+
+			dataBytes := []byte(data)
+
+			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
+			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
+				dataBytes = correctedData
+				data = string(correctedData)
+				line = "data: " + data
+			}
+
+			// 写入客户端（客户端断开后继续 drain 上游）
+			if !clientDisconnected {
+				shouldFlush := queueDrained
+				if firstTokenMs == nil && data != "" && data != "[DONE]" {
+					// 保证首个 token 事件尽快出站，避免影响 TTFT。
+					shouldFlush = true
+				}
+				if _, err := bufferedWriter.WriteString(line); err != nil {
+					clientDisconnected = true
+					logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
+				} else if _, err := bufferedWriter.WriteString("\n"); err != nil {
+					clientDisconnected = true
+					logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
+				} else if shouldFlush {
+					if err := flushBuffered(); err != nil {
+						clientDisconnected = true
+						logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming flush, continuing to drain upstream for billing")
+					}
+				}
+			}
+
+			// Record first token time
+			if firstTokenMs == nil && data != "" && data != "[DONE]" {
+				ms := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &ms
+			}
+			s.parseSSEUsageBytes(dataBytes, usage)
+			return
+		}
+
+		// Forward non-data lines as-is
+		if !clientDisconnected {
+			if _, err := bufferedWriter.WriteString(line); err != nil {
+				clientDisconnected = true
+				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
+			} else if _, err := bufferedWriter.WriteString("\n"); err != nil {
+				clientDisconnected = true
+				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
+			} else if queueDrained {
+				if err := flushBuffered(); err != nil {
+					clientDisconnected = true
+					logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming flush, continuing to drain upstream for billing")
+				}
+			}
+		}
+	}
+
+	// 无超时/无 keepalive 的常见路径走同步扫描，减少 goroutine 与 channel 开销。
+	if streamInterval <= 0 && keepaliveInterval <= 0 {
+		defer putSSEScannerBuf64K(scanBuf)
+		for scanner.Scan() {
+			processSSELine(scanner.Text(), true)
+		}
+		if result, err, done := handleScanErr(scanner.Err()); done {
+			return result, err
+		}
+		return finalizeStream()
+	}
+
+	type scanEvent struct {
+		line string
+		err  error
+	}
+	// 独立 goroutine 读取上游，避免读取阻塞影响 keepalive/超时处理
+	events := make(chan scanEvent, 16)
+	done := make(chan struct{})
+	sendEvent := func(ev scanEvent) bool {
+		select {
+		case events <- ev:
+			return true
+		case <-done:
+			return false
+		}
+	}
+	var lastReadAt int64
+	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+	go func(scanBuf *sseScannerBuf64K) {
+		defer putSSEScannerBuf64K(scanBuf)
+		defer close(events)
+		for scanner.Scan() {
+			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+			if !sendEvent(scanEvent{line: scanner.Text()}) {
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			_ = sendEvent(scanEvent{err: err})
+		}
+	}(scanBuf)
+	defer close(done)
 
 	for {
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, nil
+				return finalizeStream()
 			}
-			if ev.err != nil {
-				// 客户端断开/取消请求时，上游读取往往会返回 context canceled。
-				// /v1/responses 的 SSE 事件必须符合 OpenAI 协议；这里不注入自定义 error event，避免下游 SDK 解析失败。
-				if errors.Is(ev.err, context.Canceled) || errors.Is(ev.err, context.DeadlineExceeded) {
-					logger.LegacyPrintf("service.openai_gateway", "Context canceled during streaming, returning collected usage")
-					return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, nil
-				}
-				// 客户端已断开时，上游出错仅影响体验，不影响计费；返回已收集 usage
-				if clientDisconnected {
-					logger.LegacyPrintf("service.openai_gateway", "Upstream read error after client disconnect: %v, returning collected usage", ev.err)
-					return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, nil
-				}
-				if errors.Is(ev.err, bufio.ErrTooLong) {
-					logger.LegacyPrintf("service.openai_gateway", "SSE line too long: account=%d max_size=%d error=%v", account.ID, maxLineSize, ev.err)
-					sendErrorEvent("response_too_large")
-					return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
-				}
-				sendErrorEvent("stream_read_error")
-				return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
+			if result, err, done := handleScanErr(ev.err); done {
+				return result, err
 			}
-
-			line := ev.line
-			lastDataAt = time.Now()
-
-			// Extract data from SSE line (supports both "data: " and "data:" formats)
-			if data, ok := extractOpenAISSEDataLine(line); ok {
-
-				// Replace model in response if needed
-				if needModelReplace {
-					line = s.replaceModelInSSELine(line, mappedModel, originalModel)
-				}
-
-				dataBytes := []byte(data)
-
-				// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
-				if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
-					dataBytes = correctedData
-					data = string(correctedData)
-					line = "data: " + data
-				}
-
-				// 写入客户端（客户端断开后继续 drain 上游）
-				if !clientDisconnected {
-					if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
-						clientDisconnected = true
-						logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
-					} else {
-						flusher.Flush()
-					}
-				}
-
-				// Record first token time
-				if firstTokenMs == nil && data != "" && data != "[DONE]" {
-					ms := int(time.Since(startTime).Milliseconds())
-					firstTokenMs = &ms
-				}
-				s.parseSSEUsageBytes(dataBytes, usage)
-			} else {
-				// Forward non-data lines as-is
-				if !clientDisconnected {
-					if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
-						clientDisconnected = true
-						logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
-					} else {
-						flusher.Flush()
-					}
-				}
-			}
+			processSSELine(ev.line, len(events) == 0)
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
@@ -2793,7 +2862,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 			if clientDisconnected {
 				logger.LegacyPrintf("service.openai_gateway", "Upstream timeout after client disconnect, returning collected usage")
-				return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, nil
+				return resultWithUsage(), nil
 			}
 			logger.LegacyPrintf("service.openai_gateway", "Stream data interval timeout: account=%d model=%s interval=%s", account.ID, originalModel, streamInterval)
 			// 处理流超时，可能标记账户为临时不可调度或错误状态
@@ -2801,7 +2870,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
 			sendErrorEvent("stream_timeout")
-			return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
+			return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
 			if clientDisconnected {
@@ -2810,12 +2879,15 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if time.Since(lastDataAt) < keepaliveInterval {
 				continue
 			}
-			if _, err := fmt.Fprint(w, ":\n\n"); err != nil {
+			if _, err := bufferedWriter.WriteString(":\n\n"); err != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
 				continue
 			}
-			flusher.Flush()
+			if err := flushBuffered(); err != nil {
+				clientDisconnected = true
+				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during keepalive flush, continuing to drain upstream for billing")
+			}
 		}
 	}
 
@@ -2889,7 +2961,7 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 		return
 	}
 	// 选择性解析：仅在数据中包含 completed 事件标识时才进入字段提取。
-	if !bytes.Contains(data, []byte(`"response.completed"`)) {
+	if len(data) < 80 || !bytes.Contains(data, []byte(`"response.completed"`)) {
 		return
 	}
 	if gjson.GetBytes(data, "type").String() != "response.completed" {
