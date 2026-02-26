@@ -889,6 +889,7 @@ export interface UsageLog {
   billing_type: number
 
   stream: boolean
+  openai_ws_mode?: boolean
   duration_ms: number
   first_token_ms: number | null
 

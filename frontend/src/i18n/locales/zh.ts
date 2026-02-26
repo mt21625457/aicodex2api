@@ -619,6 +619,7 @@ export default {
     firstToken: '首 Token',
     duration: '耗时',
     time: '时间',
+    ws: 'WS',
     stream: '流式',
     sync: '同步',
     in: '输入',

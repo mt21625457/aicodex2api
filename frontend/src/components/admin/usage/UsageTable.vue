@@ -35,8 +35,8 @@
         </template>
 
         <template #cell-stream="{ row }">
-          <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium" :class="row.stream ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'">
-            {{ row.stream ? t('usage.stream') : t('usage.sync') }}
+          <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium" :class="getRequestTypeBadgeClass(row)">
+            {{ getRequestTypeLabel(row) }}
           </span>
         </template>
 
@@ -305,6 +305,18 @@ const cols = computed(() => [
   { key: 'user_agent', label: t('usage.userAgent'), sortable: false },
   { key: 'ip_address', label: t('admin.usage.ipAddress'), sortable: false }
 ])
+
+const getRequestTypeLabel = (row: AdminUsageLog): string => {
+  if (row.openai_ws_mode) return t('usage.ws')
+  return row.stream ? t('usage.stream') : t('usage.sync')
+}
+
+const getRequestTypeBadgeClass = (row: AdminUsageLog): string => {
+  if (row.openai_ws_mode) return 'bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200'
+  return row.stream
+    ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+    : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
+}
 
 const formatCacheTokens = (tokens: number): string => {
   if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`
