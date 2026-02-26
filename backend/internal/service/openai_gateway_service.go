@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"math/rand"
 	"net/http"
@@ -856,9 +855,8 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 		return ""
 	}
 
-	h := fnv.New128a()
-	_, _ = h.Write([]byte(sessionID))
-	return hex.EncodeToString(h.Sum(nil))
+	hash := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(hash[:])
 }
 
 // BindStickySession sets session -> account binding with standard TTL.

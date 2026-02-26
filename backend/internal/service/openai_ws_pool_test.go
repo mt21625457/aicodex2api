@@ -55,6 +55,11 @@ func TestOpenAIWSConnPool_NextConnIDFormat(t *testing.T) {
 	require.Equal(t, "oa_ws_42_2", id2)
 }
 
+func TestOpenAIWSConnPool_AcquireCleanupInterval(t *testing.T) {
+	require.Equal(t, 3*time.Second, openAIWSAcquireCleanupInterval)
+	require.Less(t, openAIWSAcquireCleanupInterval, openAIWSBackgroundSweepTicker)
+}
+
 func TestOpenAIWSConnLease_WriteJSONAndGuards(t *testing.T) {
 	conn := newOpenAIWSConn("lease_write", 1, &openAIWSFakeConn{}, nil)
 	lease := &openAIWSConnLease{conn: conn}

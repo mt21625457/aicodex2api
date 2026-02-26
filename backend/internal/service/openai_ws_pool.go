@@ -21,9 +21,9 @@ const (
 	openAIWSConnHealthCheckIdle    = 90 * time.Second
 	openAIWSConnHealthCheckTO      = 2 * time.Second
 	openAIWSConnPrewarmExtraDelay  = 2 * time.Second
+	openAIWSAcquireCleanupInterval = 3 * time.Second
 	openAIWSBackgroundPingInterval = 30 * time.Second
 	openAIWSBackgroundSweepTicker  = 30 * time.Second
-	openAIWSAcquireCleanupInterval = openAIWSBackgroundSweepTicker
 
 	openAIWSPrewarmFailureWindow   = 30 * time.Second
 	openAIWSPrewarmFailureSuppress = 2

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -164,6 +166,21 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	if h4 != "" {
 		t.Fatalf("expected empty hash when no signals")
 	}
+}
+
+func TestOpenAIGatewayService_GenerateSessionHash_UsesSHA256(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	c.Request.Header.Set("session_id", "sess-fixed-value")
+	svc := &OpenAIGatewayService{}
+
+	got := svc.GenerateSessionHash(c, nil)
+	sum := sha256.Sum256([]byte("sess-fixed-value"))
+	want := hex.EncodeToString(sum[:])
+	require.Equal(t, want, got)
 }
 
 func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
