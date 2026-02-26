@@ -150,18 +150,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		var reqBody map[string]any
 		if err := json.Unmarshal(body, &reqBody); err == nil {
 			c.Set(service.OpenAIParsedRequestBodyKey, reqBody)
-			if service.HasFunctionCallOutput(reqBody) {
+			validation := service.ValidateFunctionCallOutputContext(reqBody)
+			if validation.HasFunctionCallOutput {
 				previousResponseID, _ := reqBody["previous_response_id"].(string)
-				if strings.TrimSpace(previousResponseID) == "" && !service.HasToolCallContext(reqBody) {
-					if service.HasFunctionCallOutputMissingCallID(reqBody) {
+				if strings.TrimSpace(previousResponseID) == "" && !validation.HasToolCallContext {
+					if validation.HasFunctionCallOutputMissingCallID {
 						reqLog.Warn("openai.request_validation_failed",
 							zap.String("reason", "function_call_output_missing_call_id"),
 						)
 						h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires call_id or previous_response_id; if relying on history, ensure store=true and reuse previous_response_id")
 						return
 					}
-					callIDs := service.FunctionCallOutputCallIDs(reqBody)
-					if !service.HasItemReferenceForCallIDs(reqBody, callIDs) {
+					if !validation.HasItemReferenceForAllCallIDs {
 						reqLog.Warn("openai.request_validation_failed",
 							zap.String("reason", "function_call_output_missing_item_reference"),
 						)
@@ -492,7 +492,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		reqLog.Warn("openai.websocket_accept_failed", zap.Error(err))
 		return
 	}
-	defer wsConn.CloseNow()
+	defer func() {
+		_ = wsConn.CloseNow()
+	}()
 	wsConn.SetReadLimit(128 * 1024 * 1024)
 
 	ctx := c.Request.Context()
