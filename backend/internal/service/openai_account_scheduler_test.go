@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -272,4 +273,90 @@ func TestOpenAIGatewayService_OpenAIAccountSchedulerMetrics(t *testing.T) {
 
 func intPtrForTest(v int) *int {
 	return &v
+}
+
+func TestOpenAIAccountRuntimeStats_ReportAndSnapshot(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	stats.report(1001, true, nil)
+	firstTTFT := 100
+	stats.report(1001, false, &firstTTFT)
+	secondTTFT := 200
+	stats.report(1001, false, &secondTTFT)
+
+	errorRate, ttft, hasTTFT := stats.snapshot(1001)
+	require.True(t, hasTTFT)
+	require.InDelta(t, 0.36, errorRate, 1e-9)
+	require.InDelta(t, 120.0, ttft, 1e-9)
+	require.Equal(t, 1, stats.size())
+}
+
+func TestOpenAIAccountRuntimeStats_ReportConcurrent(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+
+	const (
+		accountCount = 4
+		workers      = 16
+		iterations   = 800
+	)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				accountID := int64(i%accountCount + 1)
+				success := (i+worker)%3 != 0
+				ttft := 80 + (i+worker)%40
+				stats.report(accountID, success, &ttft)
+			}
+		}()
+	}
+	wg.Wait()
+
+	require.Equal(t, accountCount, stats.size())
+	for accountID := int64(1); accountID <= accountCount; accountID++ {
+		errorRate, ttft, hasTTFT := stats.snapshot(accountID)
+		require.GreaterOrEqual(t, errorRate, 0.0)
+		require.LessOrEqual(t, errorRate, 1.0)
+		require.True(t, hasTTFT)
+		require.Greater(t, ttft, 0.0)
+	}
+}
+
+func TestSelectTopKOpenAICandidates(t *testing.T) {
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:  &Account{ID: 11, Priority: 2},
+			loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 1},
+			score:    10.0,
+		},
+		{
+			account:  &Account{ID: 12, Priority: 1},
+			loadInfo: &AccountLoadInfo{LoadRate: 20, WaitingCount: 1},
+			score:    9.5,
+		},
+		{
+			account:  &Account{ID: 13, Priority: 1},
+			loadInfo: &AccountLoadInfo{LoadRate: 30, WaitingCount: 0},
+			score:    10.0,
+		},
+		{
+			account:  &Account{ID: 14, Priority: 0},
+			loadInfo: &AccountLoadInfo{LoadRate: 40, WaitingCount: 0},
+			score:    8.0,
+		},
+	}
+
+	top2 := selectTopKOpenAICandidates(candidates, 2)
+	require.Len(t, top2, 2)
+	require.Equal(t, int64(13), top2[0].account.ID)
+	require.Equal(t, int64(11), top2[1].account.ID)
+
+	topAll := selectTopKOpenAICandidates(candidates, 8)
+	require.Len(t, topAll, len(candidates))
+	require.Equal(t, int64(13), topAll[0].account.ID)
+	require.Equal(t, int64(11), topAll[1].account.ID)
+	require.Equal(t, int64(12), topAll[2].account.ID)
+	require.Equal(t, int64(14), topAll[3].account.ID)
 }

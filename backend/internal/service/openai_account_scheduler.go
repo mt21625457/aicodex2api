@@ -1,6 +1,7 @@
 package service
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"math"
@@ -94,19 +95,49 @@ func (m *openAIAccountSchedulerMetrics) recordSwitch() {
 }
 
 type openAIAccountRuntimeStats struct {
-	mu       sync.RWMutex
-	accounts map[int64]*openAIAccountRuntimeStat
+	accounts     sync.Map
+	accountCount atomic.Int64
 }
 
 type openAIAccountRuntimeStat struct {
-	errorRateEWMA float64
-	ttftEWMA      float64
-	hasTTFT       bool
+	errorRateEWMABits atomic.Uint64
+	ttftEWMABits      atomic.Uint64
 }
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
-	return &openAIAccountRuntimeStats{
-		accounts: make(map[int64]*openAIAccountRuntimeStat, 64),
+	return &openAIAccountRuntimeStats{}
+}
+
+func (s *openAIAccountRuntimeStats) loadOrCreate(accountID int64) *openAIAccountRuntimeStat {
+	if value, ok := s.accounts.Load(accountID); ok {
+		stat, _ := value.(*openAIAccountRuntimeStat)
+		if stat != nil {
+			return stat
+		}
+	}
+
+	stat := &openAIAccountRuntimeStat{}
+	stat.ttftEWMABits.Store(math.Float64bits(math.NaN()))
+	actual, loaded := s.accounts.LoadOrStore(accountID, stat)
+	if !loaded {
+		s.accountCount.Add(1)
+		return stat
+	}
+	existing, _ := actual.(*openAIAccountRuntimeStat)
+	if existing != nil {
+		return existing
+	}
+	return stat
+}
+
+func updateEWMAAtomic(target *atomic.Uint64, sample float64, alpha float64) {
+	for {
+		oldBits := target.Load()
+		oldValue := math.Float64frombits(oldBits)
+		newValue := alpha*sample + (1-alpha)*oldValue
+		if target.CompareAndSwap(oldBits, math.Float64bits(newValue)) {
+			return
+		}
 	}
 }
 
@@ -115,28 +146,30 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 		return
 	}
 	const alpha = 0.2
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	stat, ok := s.accounts[accountID]
-	if !ok {
-		stat = &openAIAccountRuntimeStat{}
-		s.accounts[accountID] = stat
-	}
+	stat := s.loadOrCreate(accountID)
 
 	errorSample := 1.0
 	if success {
 		errorSample = 0.0
 	}
-	stat.errorRateEWMA = alpha*errorSample + (1-alpha)*stat.errorRateEWMA
+	updateEWMAAtomic(&stat.errorRateEWMABits, errorSample, alpha)
 
 	if firstTokenMs != nil && *firstTokenMs > 0 {
 		ttft := float64(*firstTokenMs)
-		if !stat.hasTTFT {
-			stat.ttftEWMA = ttft
-			stat.hasTTFT = true
-		} else {
-			stat.ttftEWMA = alpha*ttft + (1-alpha)*stat.ttftEWMA
+		ttftBits := math.Float64bits(ttft)
+		for {
+			oldBits := stat.ttftEWMABits.Load()
+			oldValue := math.Float64frombits(oldBits)
+			if math.IsNaN(oldValue) {
+				if stat.ttftEWMABits.CompareAndSwap(oldBits, ttftBits) {
+					break
+				}
+				continue
+			}
+			newValue := alpha*ttft + (1-alpha)*oldValue
+			if stat.ttftEWMABits.CompareAndSwap(oldBits, math.Float64bits(newValue)) {
+				break
+			}
 		}
 	}
 }
@@ -145,22 +178,27 @@ func (s *openAIAccountRuntimeStats) snapshot(accountID int64) (errorRate float64
 	if s == nil || accountID <= 0 {
 		return 0, 0, false
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	stat, ok := s.accounts[accountID]
-	if !ok || stat == nil {
+	value, ok := s.accounts.Load(accountID)
+	if !ok {
 		return 0, 0, false
 	}
-	return clamp01(stat.errorRateEWMA), stat.ttftEWMA, stat.hasTTFT
+	stat, _ := value.(*openAIAccountRuntimeStat)
+	if stat == nil {
+		return 0, 0, false
+	}
+	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
+	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
+	if math.IsNaN(ttftValue) {
+		return errorRate, 0, false
+	}
+	return errorRate, ttftValue, true
 }
 
 func (s *openAIAccountRuntimeStats) size() int {
 	if s == nil {
 		return 0
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.accounts)
+	return int(s.accountCount.Load())
 }
 
 type defaultOpenAIAccountScheduler struct {
@@ -316,6 +354,84 @@ type openAIAccountCandidateScore struct {
 	hasTTFT   bool
 }
 
+type openAIAccountCandidateHeap []openAIAccountCandidateScore
+
+func (h openAIAccountCandidateHeap) Len() int {
+	return len(h)
+}
+
+func (h openAIAccountCandidateHeap) Less(i, j int) bool {
+	// 最小堆根节点保存“最差”候选，便于 O(log k) 维护 topK。
+	return isOpenAIAccountCandidateBetter(h[j], h[i])
+}
+
+func (h openAIAccountCandidateHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *openAIAccountCandidateHeap) Push(x any) {
+	*h = append(*h, x.(openAIAccountCandidateScore))
+}
+
+func (h *openAIAccountCandidateHeap) Pop() any {
+	old := *h
+	n := len(old)
+	last := old[n-1]
+	*h = old[:n-1]
+	return last
+}
+
+func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right openAIAccountCandidateScore) bool {
+	if left.score != right.score {
+		return left.score > right.score
+	}
+	if left.account.Priority != right.account.Priority {
+		return left.account.Priority < right.account.Priority
+	}
+	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
+		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
+	}
+	if left.loadInfo.WaitingCount != right.loadInfo.WaitingCount {
+		return left.loadInfo.WaitingCount < right.loadInfo.WaitingCount
+	}
+	return left.account.ID < right.account.ID
+}
+
+func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK int) []openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if topK <= 0 {
+		topK = 1
+	}
+	if topK >= len(candidates) {
+		ranked := append([]openAIAccountCandidateScore(nil), candidates...)
+		sort.Slice(ranked, func(i, j int) bool {
+			return isOpenAIAccountCandidateBetter(ranked[i], ranked[j])
+		})
+		return ranked
+	}
+
+	best := make(openAIAccountCandidateHeap, 0, topK)
+	for _, candidate := range candidates {
+		if len(best) < topK {
+			heap.Push(&best, candidate)
+			continue
+		}
+		if isOpenAIAccountCandidateBetter(candidate, best[0]) {
+			best[0] = candidate
+			heap.Fix(&best, 0)
+		}
+	}
+
+	ranked := make([]openAIAccountCandidateScore, len(best))
+	copy(ranked, best)
+	sort.Slice(ranked, func(i, j int) bool {
+		return isOpenAIAccountCandidateBetter(ranked[i], ranked[j])
+	})
+	return ranked
+}
+
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
@@ -329,6 +445,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	filtered := make([]*Account, 0, len(accounts))
+	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
 		if req.ExcludedIDs != nil {
@@ -343,6 +460,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			continue
 		}
 		filtered = append(filtered, account)
+		loadReq = append(loadReq, AccountWithConcurrency{
+			ID:             account.ID,
+			MaxConcurrency: account.Concurrency,
+		})
 	}
 	if len(filtered) == 0 {
 		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
@@ -350,13 +471,6 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	loadMap := map[int64]*AccountLoadInfo{}
 	if s.service.concurrencyService != nil {
-		loadReq := make([]AccountWithConcurrency, 0, len(filtered))
-		for _, account := range filtered {
-			loadReq = append(loadReq, AccountWithConcurrency{
-				ID:             account.ID,
-				MaxConcurrency: account.Concurrency,
-			})
-		}
 		if batchLoad, loadErr := s.service.concurrencyService.GetAccountsLoadBatch(ctx, loadReq); loadErr == nil {
 			loadMap = batchLoad
 		}
@@ -364,8 +478,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	minPriority, maxPriority := filtered[0].Priority, filtered[0].Priority
 	maxWaiting := 1
-	loadRates := make([]float64, 0, len(filtered))
-	ttftSamples := make([]float64, 0, len(filtered))
+	loadRateSum := 0.0
+	loadRateSumSquares := 0.0
+	minTTFT, maxTTFT := 0.0, 0.0
+	hasTTFTSample := false
 	candidates := make([]openAIAccountCandidateScore, 0, len(filtered))
 	for _, account := range filtered {
 		loadInfo := loadMap[account.ID]
@@ -383,9 +499,21 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		errorRate, ttft, hasTTFT := s.stats.snapshot(account.ID)
 		if hasTTFT && ttft > 0 {
-			ttftSamples = append(ttftSamples, ttft)
+			if !hasTTFTSample {
+				minTTFT, maxTTFT = ttft, ttft
+				hasTTFTSample = true
+			} else {
+				if ttft < minTTFT {
+					minTTFT = ttft
+				}
+				if ttft > maxTTFT {
+					maxTTFT = ttft
+				}
+			}
 		}
-		loadRates = append(loadRates, float64(loadInfo.LoadRate))
+		loadRate := float64(loadInfo.LoadRate)
+		loadRateSum += loadRate
+		loadRateSumSquares += loadRate * loadRate
 		candidates = append(candidates, openAIAccountCandidateScore{
 			account:   account,
 			loadInfo:  loadInfo,
@@ -394,19 +522,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			hasTTFT:   hasTTFT,
 		})
 	}
-
-	minTTFT, maxTTFT := 0.0, 0.0
-	if len(ttftSamples) > 0 {
-		minTTFT, maxTTFT = ttftSamples[0], ttftSamples[0]
-		for _, sample := range ttftSamples[1:] {
-			if sample < minTTFT {
-				minTTFT = sample
-			}
-			if sample > maxTTFT {
-				maxTTFT = sample
-			}
-		}
-	}
+	loadSkew := calcLoadSkewByMoments(loadRateSum, loadRateSumSquares, len(candidates))
 
 	weights := s.service.openAIWSSchedulerWeights()
 	for i := range candidates {
@@ -419,7 +535,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		queueFactor := 1 - clamp01(float64(item.loadInfo.WaitingCount)/float64(maxWaiting))
 		errorFactor := 1 - clamp01(item.errorRate)
 		ttftFactor := 0.5
-		if item.hasTTFT && maxTTFT > minTTFT {
+		if item.hasTTFT && hasTTFTSample && maxTTFT > minTTFT {
 			ttftFactor = 1 - clamp01((item.ttft-minTTFT)/(maxTTFT-minTTFT))
 		}
 
@@ -430,24 +546,6 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			weights.TTFT*ttftFactor
 	}
 
-	sort.SliceStable(candidates, func(i, j int) bool {
-		left := candidates[i]
-		right := candidates[j]
-		if left.score != right.score {
-			return left.score > right.score
-		}
-		if left.account.Priority != right.account.Priority {
-			return left.account.Priority < right.account.Priority
-		}
-		if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
-			return left.loadInfo.LoadRate < right.loadInfo.LoadRate
-		}
-		if left.loadInfo.WaitingCount != right.loadInfo.WaitingCount {
-			return left.loadInfo.WaitingCount < right.loadInfo.WaitingCount
-		}
-		return left.account.ID < right.account.ID
-	})
-
 	topK := s.service.openAIWSLBTopK()
 	if topK > len(candidates) {
 		topK = len(candidates)
@@ -455,12 +553,13 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if topK <= 0 {
 		topK = 1
 	}
+	rankedCandidates := selectTopKOpenAICandidates(candidates, topK)
 
 	for i := 0; i < topK; i++ {
-		candidate := candidates[i]
+		candidate := rankedCandidates[i]
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, candidate.account.ID, candidate.account.Concurrency)
 		if acquireErr != nil {
-			return nil, len(candidates), topK, calcLoadSkew(loadRates), acquireErr
+			return nil, len(candidates), topK, loadSkew, acquireErr
 		}
 		if result != nil && result.Acquired {
 			if req.SessionHash != "" {
@@ -470,12 +569,12 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				Account:     candidate.account,
 				Acquired:    true,
 				ReleaseFunc: result.ReleaseFunc,
-			}, len(candidates), topK, calcLoadSkew(loadRates), nil
+			}, len(candidates), topK, loadSkew, nil
 		}
 	}
 
 	cfg := s.service.schedulingConfig()
-	candidate := candidates[0]
+	candidate := rankedCandidates[0]
 	return &AccountSelectionResult{
 		Account: candidate.account,
 		WaitPlan: &AccountWaitPlan{
@@ -484,7 +583,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			Timeout:        cfg.FallbackWaitTimeout,
 			MaxWaiting:     cfg.FallbackMaxWaiting,
 		},
-	}, len(candidates), topK, calcLoadSkew(loadRates), nil
+	}, len(candidates), topK, loadSkew, nil
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
@@ -647,19 +746,23 @@ func clamp01(value float64) float64 {
 }
 
 func calcLoadSkew(loadRates []float64) float64 {
-	if len(loadRates) <= 1 {
-		return 0
-	}
 	sum := 0.0
+	sumSquares := 0.0
 	for _, value := range loadRates {
 		sum += value
+		sumSquares += value * value
 	}
-	mean := sum / float64(len(loadRates))
-	variance := 0.0
-	for _, value := range loadRates {
-		diff := value - mean
-		variance += diff * diff
+	return calcLoadSkewByMoments(sum, sumSquares, len(loadRates))
+}
+
+func calcLoadSkewByMoments(sum float64, sumSquares float64, count int) float64 {
+	if count <= 1 {
+		return 0
 	}
-	variance /= float64(len(loadRates))
+	mean := sum / float64(count)
+	variance := sumSquares/float64(count) - mean*mean
+	if variance < 0 {
+		variance = 0
+	}
 	return math.Sqrt(variance)
 }

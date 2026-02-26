@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,9 +21,9 @@ const (
 	openAIWSConnHealthCheckIdle    = 90 * time.Second
 	openAIWSConnHealthCheckTO      = 2 * time.Second
 	openAIWSConnPrewarmExtraDelay  = 2 * time.Second
-	openAIWSAcquireCleanupInterval = 3 * time.Second
 	openAIWSBackgroundPingInterval = 30 * time.Second
 	openAIWSBackgroundSweepTicker  = 30 * time.Second
+	openAIWSAcquireCleanupInterval = openAIWSBackgroundSweepTicker
 
 	openAIWSPrewarmFailureWindow   = 30 * time.Second
 	openAIWSPrewarmFailureSuppress = 2
@@ -1277,7 +1278,12 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 
 func (p *openAIWSConnPool) nextConnID(accountID int64) string {
 	seq := p.seq.Add(1)
-	return fmt.Sprintf("oa_ws_%d_%d", accountID, seq)
+	buf := make([]byte, 0, 32)
+	buf = append(buf, "oa_ws_"...)
+	buf = strconv.AppendInt(buf, accountID, 10)
+	buf = append(buf, '_')
+	buf = strconv.AppendUint(buf, seq, 10)
+	return string(buf)
 }
 
 func (p *openAIWSConnPool) shouldHealthCheckConn(conn *openAIWSConn) bool {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,34 @@ type OpenAIGatewayHandler struct {
 	errorPassthroughService *service.ErrorPassthroughService
 	concurrencyHelper       *ConcurrencyHelper
 	maxAccountSwitches      int
+}
+
+const (
+	openAIRequestBodyReadInitCap    = 512
+	openAIRequestBodyReadMaxInitCap = 1 << 20
+)
+
+func readRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
+	if req == nil || req.Body == nil {
+		return nil, nil
+	}
+	capHint := openAIRequestBodyReadInitCap
+	if req.ContentLength > 0 {
+		switch {
+		case req.ContentLength < int64(openAIRequestBodyReadInitCap):
+			capHint = openAIRequestBodyReadInitCap
+		case req.ContentLength > int64(openAIRequestBodyReadMaxInitCap):
+			capHint = openAIRequestBodyReadMaxInitCap
+		default:
+			capHint = int(req.ContentLength)
+		}
+	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, capHint))
+	if _, err := io.Copy(buf, req.Body); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -97,7 +126,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// Read request body
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := readRequestBodyWithPrealloc(c.Request)
 	if err != nil {
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
@@ -111,8 +140,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
-
-	setOpsRequestContext(c, "", false, body)
 
 	// 校验请求体 JSON 合法性
 	if !gjson.ValidBytes(body) {

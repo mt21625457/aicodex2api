@@ -107,6 +107,27 @@ func TestOpenAIHandleStreamingAwareError_NonStreaming(t *testing.T) {
 	assert.Equal(t, "test error", errorObj["message"])
 }
 
+func TestReadRequestBodyWithPrealloc(t *testing.T) {
+	payload := `{"model":"gpt-5","input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(payload))
+	req.ContentLength = int64(len(payload))
+
+	body, err := readRequestBodyWithPrealloc(req)
+	require.NoError(t, err)
+	require.Equal(t, payload, string(body))
+}
+
+func TestReadRequestBodyWithPrealloc_MaxBytesError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(strings.Repeat("x", 8)))
+	req.Body = http.MaxBytesReader(rec, req.Body, 4)
+
+	_, err := readRequestBodyWithPrealloc(req)
+	require.Error(t, err)
+	var maxErr *http.MaxBytesError
+	require.ErrorAs(t, err, &maxErr)
+}
+
 func TestOpenAIEnsureForwardErrorResponse_WritesFallbackWhenNotWritten(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
