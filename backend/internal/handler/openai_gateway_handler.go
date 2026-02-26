@@ -141,6 +141,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	setOpsRequestContext(c, "", false, body)
+
 	// 校验请求体 JSON 合法性
 	if !gjson.ValidBytes(body) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
