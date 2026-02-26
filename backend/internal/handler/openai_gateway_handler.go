@@ -143,34 +143,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, reqStream, body)
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
-	// 要求 previous_response_id，或 input 内存在带 call_id 的 tool_call/function_call，
-	// 或带 id 且与 call_id 匹配的 item_reference。
-	// 此路径需要遍历 input 数组做 call_id 关联检查，保留 Unmarshal
-	if gjson.GetBytes(body, `input.#(type=="function_call_output")`).Exists() {
-		var reqBody map[string]any
-		if err := json.Unmarshal(body, &reqBody); err == nil {
-			c.Set(service.OpenAIParsedRequestBodyKey, reqBody)
-			validation := service.ValidateFunctionCallOutputContext(reqBody)
-			if validation.HasFunctionCallOutput {
-				previousResponseID, _ := reqBody["previous_response_id"].(string)
-				if strings.TrimSpace(previousResponseID) == "" && !validation.HasToolCallContext {
-					if validation.HasFunctionCallOutputMissingCallID {
-						reqLog.Warn("openai.request_validation_failed",
-							zap.String("reason", "function_call_output_missing_call_id"),
-						)
-						h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires call_id or previous_response_id; if relying on history, ensure store=true and reuse previous_response_id")
-						return
-					}
-					if !validation.HasItemReferenceForAllCallIDs {
-						reqLog.Warn("openai.request_validation_failed",
-							zap.String("reason", "function_call_output_missing_item_reference"),
-						)
-						h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires item_reference ids matching each call_id, or previous_response_id/tool_call context; if relying on history, ensure store=true and reuse previous_response_id")
-						return
-					}
-				}
-			}
-		}
+	if !h.validateFunctionCallOutputRequest(c, body, reqLog) {
+		return
 	}
 
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
@@ -184,51 +158,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
-	// 0. 先尝试直接抢占用户槽位（快速路径）
-	userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlot(c.Request.Context(), subject.UserID, subject.Concurrency)
-	if err != nil {
-		reqLog.Warn("openai.user_slot_acquire_failed", zap.Error(err))
-		h.handleConcurrencyError(c, err, "user", streamStarted)
+	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted, reqLog)
+	if !acquired {
 		return
 	}
-
-	waitCounted := false
-	if !userAcquired {
-		// 仅在抢槽失败时才进入等待队列，减少常态请求 Redis 写入。
-		maxWait := service.CalculateMaxWait(subject.Concurrency)
-		canWait, waitErr := h.concurrencyHelper.IncrementWaitCount(c.Request.Context(), subject.UserID, maxWait)
-		if waitErr != nil {
-			reqLog.Warn("openai.user_wait_counter_increment_failed", zap.Error(waitErr))
-			// 按现有降级语义：等待计数异常时放行后续抢槽流程
-		} else if !canWait {
-			reqLog.Info("openai.user_wait_queue_full", zap.Int("max_wait", maxWait))
-			h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
-			return
-		}
-		if waitErr == nil && canWait {
-			waitCounted = true
-		}
-		defer func() {
-			if waitCounted {
-				h.concurrencyHelper.DecrementWaitCount(c.Request.Context(), subject.UserID)
-			}
-		}()
-
-		userReleaseFunc, err = h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
-		if err != nil {
-			reqLog.Warn("openai.user_slot_acquire_failed_after_wait", zap.Error(err))
-			h.handleConcurrencyError(c, err, "user", streamStarted)
-			return
-		}
-	}
-
-	// 用户槽位已获取：退出等待队列计数。
-	if waitCounted {
-		h.concurrencyHelper.DecrementWaitCount(c.Request.Context(), subject.UserID)
-		waitCounted = false
-	}
 	// 确保请求取消时也会释放槽位，避免长连接被动中断造成泄漏
-	userReleaseFunc = wrapReleaseOnDone(c.Request.Context(), userReleaseFunc)
 	if userReleaseFunc != nil {
 		defer userReleaseFunc()
 	}
@@ -296,76 +230,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		// 3. Acquire account concurrency slot
-		accountReleaseFunc := selection.ReleaseFunc
-		if !selection.Acquired {
-			if selection.WaitPlan == nil {
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
-				return
-			}
-
-			// 先快速尝试一次账号槽位，命中则跳过等待计数写入。
-			fastReleaseFunc, fastAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(
-				c.Request.Context(),
-				account.ID,
-				selection.WaitPlan.MaxConcurrency,
-			)
-			if err != nil {
-				reqLog.Warn("openai.account_slot_quick_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				h.handleConcurrencyError(c, err, "account", streamStarted)
-				return
-			}
-			if fastAcquired {
-				accountReleaseFunc = fastReleaseFunc
-				if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
-					reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				}
-			} else {
-				accountWaitCounted := false
-				canWait, err := h.concurrencyHelper.IncrementAccountWaitCount(c.Request.Context(), account.ID, selection.WaitPlan.MaxWaiting)
-				if err != nil {
-					reqLog.Warn("openai.account_wait_counter_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				} else if !canWait {
-					reqLog.Info("openai.account_wait_queue_full",
-						zap.Int64("account_id", account.ID),
-						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
-					)
-					h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", streamStarted)
-					return
-				}
-				if err == nil && canWait {
-					accountWaitCounted = true
-				}
-				releaseWait := func() {
-					if accountWaitCounted {
-						h.concurrencyHelper.DecrementAccountWaitCount(c.Request.Context(), account.ID)
-						accountWaitCounted = false
-					}
-				}
-
-				accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
-					c,
-					account.ID,
-					selection.WaitPlan.MaxConcurrency,
-					selection.WaitPlan.Timeout,
-					reqStream,
-					&streamStarted,
-				)
-				if err != nil {
-					reqLog.Warn("openai.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-					releaseWait()
-					h.handleConcurrencyError(c, err, "account", streamStarted)
-					return
-				}
-				// Slot acquired: no longer waiting in queue.
-				releaseWait()
-				if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
-					reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				}
-			}
+		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		if !acquired {
+			return
 		}
-		// 账号槽位/等待计数需要在超时或断开时安全回收
-		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
@@ -451,6 +319,182 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context, body []byte, reqLog *zap.Logger) bool {
+	if !gjson.GetBytes(body, `input.#(type=="function_call_output")`).Exists() {
+		return true
+	}
+
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		// 保持原有容错语义：解析失败时跳过预校验，沿用后续上游校验结果。
+		return true
+	}
+
+	c.Set(service.OpenAIParsedRequestBodyKey, reqBody)
+	validation := service.ValidateFunctionCallOutputContext(reqBody)
+	if !validation.HasFunctionCallOutput {
+		return true
+	}
+
+	previousResponseID, _ := reqBody["previous_response_id"].(string)
+	if strings.TrimSpace(previousResponseID) != "" || validation.HasToolCallContext {
+		return true
+	}
+
+	if validation.HasFunctionCallOutputMissingCallID {
+		reqLog.Warn("openai.request_validation_failed",
+			zap.String("reason", "function_call_output_missing_call_id"),
+		)
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires call_id or previous_response_id; if relying on history, ensure store=true and reuse previous_response_id")
+		return false
+	}
+	if validation.HasItemReferenceForAllCallIDs {
+		return true
+	}
+
+	reqLog.Warn("openai.request_validation_failed",
+		zap.String("reason", "function_call_output_missing_item_reference"),
+	)
+	h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires item_reference ids matching each call_id, or previous_response_id/tool_call context; if relying on history, ensure store=true and reuse previous_response_id")
+	return false
+}
+
+func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
+	c *gin.Context,
+	userID int64,
+	userConcurrency int,
+	reqStream bool,
+	streamStarted *bool,
+	reqLog *zap.Logger,
+) (func(), bool) {
+	ctx := c.Request.Context()
+	userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlot(ctx, userID, userConcurrency)
+	if err != nil {
+		reqLog.Warn("openai.user_slot_acquire_failed", zap.Error(err))
+		h.handleConcurrencyError(c, err, "user", *streamStarted)
+		return nil, false
+	}
+	if userAcquired {
+		return wrapReleaseOnDone(ctx, userReleaseFunc), true
+	}
+
+	maxWait := service.CalculateMaxWait(userConcurrency)
+	canWait, waitErr := h.concurrencyHelper.IncrementWaitCount(ctx, userID, maxWait)
+	if waitErr != nil {
+		reqLog.Warn("openai.user_wait_counter_increment_failed", zap.Error(waitErr))
+		// 按现有降级语义：等待计数异常时放行后续抢槽流程
+	} else if !canWait {
+		reqLog.Info("openai.user_wait_queue_full", zap.Int("max_wait", maxWait))
+		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
+		return nil, false
+	}
+
+	waitCounted := waitErr == nil && canWait
+	defer func() {
+		if waitCounted {
+			h.concurrencyHelper.DecrementWaitCount(ctx, userID)
+		}
+	}()
+
+	userReleaseFunc, err = h.concurrencyHelper.AcquireUserSlotWithWait(c, userID, userConcurrency, reqStream, streamStarted)
+	if err != nil {
+		reqLog.Warn("openai.user_slot_acquire_failed_after_wait", zap.Error(err))
+		h.handleConcurrencyError(c, err, "user", *streamStarted)
+		return nil, false
+	}
+
+	// 槽位获取成功后，立刻退出等待计数。
+	if waitCounted {
+		h.concurrencyHelper.DecrementWaitCount(ctx, userID)
+		waitCounted = false
+	}
+	return wrapReleaseOnDone(ctx, userReleaseFunc), true
+}
+
+func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
+	c *gin.Context,
+	groupID *int64,
+	sessionHash string,
+	selection *service.AccountSelectionResult,
+	reqStream bool,
+	streamStarted *bool,
+	reqLog *zap.Logger,
+) (func(), bool) {
+	if selection == nil || selection.Account == nil {
+		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
+		return nil, false
+	}
+
+	ctx := c.Request.Context()
+	account := selection.Account
+	if selection.Acquired {
+		return wrapReleaseOnDone(ctx, selection.ReleaseFunc), true
+	}
+	if selection.WaitPlan == nil {
+		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
+		return nil, false
+	}
+
+	fastReleaseFunc, fastAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(
+		ctx,
+		account.ID,
+		selection.WaitPlan.MaxConcurrency,
+	)
+	if err != nil {
+		reqLog.Warn("openai.account_slot_quick_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		h.handleConcurrencyError(c, err, "account", *streamStarted)
+		return nil, false
+	}
+	if fastAcquired {
+		if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
+			reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		}
+		return wrapReleaseOnDone(ctx, fastReleaseFunc), true
+	}
+
+	canWait, waitErr := h.concurrencyHelper.IncrementAccountWaitCount(ctx, account.ID, selection.WaitPlan.MaxWaiting)
+	if waitErr != nil {
+		reqLog.Warn("openai.account_wait_counter_increment_failed", zap.Int64("account_id", account.ID), zap.Error(waitErr))
+	} else if !canWait {
+		reqLog.Info("openai.account_wait_queue_full",
+			zap.Int64("account_id", account.ID),
+			zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
+		)
+		h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", *streamStarted)
+		return nil, false
+	}
+
+	accountWaitCounted := waitErr == nil && canWait
+	releaseWait := func() {
+		if accountWaitCounted {
+			h.concurrencyHelper.DecrementAccountWaitCount(ctx, account.ID)
+			accountWaitCounted = false
+		}
+	}
+	defer releaseWait()
+
+	accountReleaseFunc, err := h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
+		c,
+		account.ID,
+		selection.WaitPlan.MaxConcurrency,
+		selection.WaitPlan.Timeout,
+		reqStream,
+		streamStarted,
+	)
+	if err != nil {
+		reqLog.Warn("openai.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		h.handleConcurrencyError(c, err, "account", *streamStarted)
+		return nil, false
+	}
+
+	// Slot acquired: no longer waiting in queue.
+	releaseWait()
+	if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
+		reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+	}
+	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
 }
 
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
