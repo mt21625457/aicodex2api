@@ -304,7 +304,7 @@ func shouldLogOpenAIWSBufferedEvent(idx int) bool {
 }
 
 func openAIWSEventMayContainModel(eventType string) bool {
-	switch strings.TrimSpace(eventType) {
+	switch eventType {
 	case "response.created",
 		"response.in_progress",
 		"response.completed",
@@ -315,7 +315,23 @@ func openAIWSEventMayContainModel(eventType string) bool {
 		"response.canceled":
 		return true
 	default:
-		return false
+		trimmed := strings.TrimSpace(eventType)
+		if trimmed == eventType {
+			return false
+		}
+		switch trimmed {
+		case "response.created",
+			"response.in_progress",
+			"response.completed",
+			"response.done",
+			"response.failed",
+			"response.incomplete",
+			"response.cancelled",
+			"response.canceled":
+			return true
+		default:
+			return false
+		}
 	}
 }
 
@@ -336,17 +352,67 @@ func openAIWSEventMayContainToolCalls(eventType string) bool {
 }
 
 func openAIWSEventShouldParseUsage(eventType string) bool {
-	return strings.TrimSpace(eventType) == "response.completed"
+	return eventType == "response.completed" || strings.TrimSpace(eventType) == "response.completed"
+}
+
+func parseOpenAIWSEventEnvelope(message []byte) (eventType string, responseID string, response gjson.Result) {
+	if len(message) == 0 {
+		return "", "", gjson.Result{}
+	}
+	values := gjson.GetManyBytes(message, "type", "response.id", "id", "response")
+	eventType = strings.TrimSpace(values[0].String())
+	if id := strings.TrimSpace(values[1].String()); id != "" {
+		responseID = id
+	} else {
+		responseID = strings.TrimSpace(values[2].String())
+	}
+	return eventType, responseID, values[3]
+}
+
+func openAIWSMessageLikelyContainsToolCalls(message []byte) bool {
+	if len(message) == 0 {
+		return false
+	}
+	return bytes.Contains(message, []byte(`"tool_calls"`)) ||
+		bytes.Contains(message, []byte(`"tool_call"`)) ||
+		bytes.Contains(message, []byte(`"function_call"`))
+}
+
+func parseOpenAIWSResponseUsageFromCompletedEvent(message []byte, usage *OpenAIUsage) {
+	if usage == nil || len(message) == 0 {
+		return
+	}
+	values := gjson.GetManyBytes(
+		message,
+		"response.usage.input_tokens",
+		"response.usage.output_tokens",
+		"response.usage.input_tokens_details.cached_tokens",
+	)
+	usage.InputTokens = int(values[0].Int())
+	usage.OutputTokens = int(values[1].Int())
+	usage.CacheReadInputTokens = int(values[2].Int())
+}
+
+func parseOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {
+	if len(message) == 0 {
+		return "", "", ""
+	}
+	values := gjson.GetManyBytes(message, "error.code", "error.type", "error.message")
+	return strings.TrimSpace(values[0].String()), strings.TrimSpace(values[1].String()), strings.TrimSpace(values[2].String())
+}
+
+func summarizeOpenAIWSErrorEventFieldsFromRaw(codeRaw, errTypeRaw, errMessageRaw string) (code string, errType string, errMessage string) {
+	code = truncateOpenAIWSLogValue(codeRaw, openAIWSLogValueMaxLen)
+	errType = truncateOpenAIWSLogValue(errTypeRaw, openAIWSLogValueMaxLen)
+	errMessage = truncateOpenAIWSLogValue(errMessageRaw, openAIWSLogValueMaxLen)
+	return code, errType, errMessage
 }
 
 func summarizeOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {
 	if len(message) == 0 {
 		return "-", "-", "-"
 	}
-	code = truncateOpenAIWSLogValue(gjson.GetBytes(message, "error.code").String(), openAIWSLogValueMaxLen)
-	errType = truncateOpenAIWSLogValue(gjson.GetBytes(message, "error.type").String(), openAIWSLogValueMaxLen)
-	errMessage = truncateOpenAIWSLogValue(gjson.GetBytes(message, "error.message").String(), openAIWSLogValueMaxLen)
-	return code, errType, errMessage
+	return summarizeOpenAIWSErrorEventFieldsFromRaw(parseOpenAIWSErrorEventFields(message))
 }
 
 func summarizeOpenAIWSPayloadKeySizes(payload map[string]any, topN int) string {
@@ -1435,6 +1501,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	var finalResponse []byte
 	wroteDownstream := false
 	needModelReplace := originalModel != mappedModel
+	var mappedModelBytes []byte
+	if needModelReplace && mappedModel != "" {
+		mappedModelBytes = []byte(mappedModel)
+	}
 	bufferedStreamEvents := make([][]byte, 0, 4)
 	eventCount := 0
 	tokenEventCount := 0
@@ -1483,12 +1553,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if clientDisconnected {
 			return
 		}
-		wErr := error(nil)
-		if _, wErr = io.WriteString(c.Writer, "data: "); wErr == nil {
-			if _, wErr = c.Writer.Write(message); wErr == nil {
-				_, wErr = io.WriteString(c.Writer, "\n\n")
-			}
-		}
+		frame := make([]byte, 0, len(message)+8)
+		frame = append(frame, "data: "...)
+		frame = append(frame, message...)
+		frame = append(frame, '\n', '\n')
+		_, wErr := c.Writer.Write(frame)
 		if wErr == nil {
 			wroteDownstream = true
 			pendingFlushEvents++
@@ -1555,7 +1624,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
 
-		eventType := strings.TrimSpace(gjson.GetBytes(message, "type").String())
+		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
 		if eventType == "" {
 			continue
 		}
@@ -1565,8 +1634,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		lastEventType = eventType
 
-		if responseID == "" {
-			responseID = extractOpenAIWSResponseID(message)
+		if responseID == "" && eventResponseID != "" {
+			responseID = eventResponseID
 		}
 
 		isTokenEvent := isOpenAIWSTokenEvent(eventType)
@@ -1596,26 +1665,27 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 
 		if !clientDisconnected {
-			if needModelReplace && openAIWSEventMayContainModel(eventType) {
+			if needModelReplace && len(mappedModelBytes) > 0 && openAIWSEventMayContainModel(eventType) && bytes.Contains(message, mappedModelBytes) {
 				message = replaceOpenAIWSMessageModel(message, mappedModel, originalModel)
 			}
-			if openAIWSEventMayContainToolCalls(eventType) {
+			if openAIWSEventMayContainToolCalls(eventType) && openAIWSMessageLikelyContainsToolCalls(message) {
 				if corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(message); changed {
 					message = corrected
 				}
 			}
 		}
 		if openAIWSEventShouldParseUsage(eventType) {
-			s.parseSSEUsageBytes(message, usage)
+			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
 		}
 
 		if eventType == "error" {
-			errMsg := strings.TrimSpace(gjson.GetBytes(message, "error.message").String())
+			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "Upstream websocket error"
 			}
-			fallbackReason, canFallback := classifyOpenAIWSErrorEvent(message)
-			errCode, errType, errMessage := summarizeOpenAIWSErrorEventFields(message)
+			fallbackReason, canFallback := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
+			errCode, errType, errMessage := summarizeOpenAIWSErrorEventFieldsFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
 			logOpenAIWSModeInfo(
 				"error_event account_id=%d conn_id=%s idx=%d fallback_reason=%s can_fallback=%v err_code=%s err_type=%s err_message=%s",
 				account.ID,
@@ -1632,7 +1702,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if !wroteDownstream && canFallback {
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
-			statusCode := openAIWSErrorHTTPStatus(message)
+			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 			setOpsUpstreamError(c, statusCode, errMsg, "")
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
@@ -1674,19 +1744,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				emitStreamMessage(message, isTerminalEvent)
 			}
 		} else {
-			if response := gjson.GetBytes(message, "response"); response.Exists() && response.Type == gjson.JSON {
-				finalResponse = []byte(response.Raw)
+			if responseField.Exists() && responseField.Type == gjson.JSON {
+				finalResponse = []byte(responseField.Raw)
 			}
 		}
 
 		if isTerminalEvent {
-			if !reqStream {
-				if len(finalResponse) == 0 {
-					if resp := gjson.GetBytes(message, "response"); resp.Exists() && resp.Type == gjson.JSON {
-						finalResponse = []byte(resp.Raw)
-					}
-				}
-			}
 			break
 		}
 	}
@@ -2055,13 +2118,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				false,
 			)
 		}
-		logOpenAIWSModeInfo(
-			"ingress_ws_turn_request_sent account_id=%d turn=%d conn_id=%s payload_bytes=%d",
-			account.ID,
-			turn,
-			truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
-			payloadBytes,
-		)
+		if debugEnabled {
+			logOpenAIWSModeDebug(
+				"ingress_ws_turn_request_sent account_id=%d turn=%d conn_id=%s payload_bytes=%d",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+				payloadBytes,
+			)
+		}
 
 		responseID := ""
 		usage := OpenAIUsage{}
@@ -2075,12 +2140,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		needModelReplace := false
 		clientDisconnected := false
 		mappedModel := ""
+		var mappedModelBytes []byte
 		if originalModel != "" {
 			mappedModel = account.GetMappedModel(originalModel)
 			if normalizedModel := normalizeCodexModel(mappedModel); normalizedModel != "" {
 				mappedModel = normalizedModel
 			}
 			needModelReplace = mappedModel != "" && mappedModel != originalModel
+			if needModelReplace {
+				mappedModelBytes = []byte(mappedModel)
+			}
 		}
 		if streamValue, ok := payload["stream"].(bool); ok {
 			reqStream = streamValue
@@ -2096,10 +2165,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 			}
 
-			if responseID == "" {
-				responseID = strings.TrimSpace(extractOpenAIWSResponseID(upstreamMessage))
+			eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
+			if responseID == "" && eventResponseID != "" {
+				responseID = eventResponseID
 			}
-			eventType := strings.TrimSpace(gjson.GetBytes(upstreamMessage, "type").String())
 			if eventType != "" {
 				eventCount++
 				if firstEventType == "" {
@@ -2120,14 +2189,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				firstTokenMs = &ms
 			}
 			if openAIWSEventShouldParseUsage(eventType) {
-				s.parseSSEUsageBytes(upstreamMessage, &usage)
+				parseOpenAIWSResponseUsageFromCompletedEvent(upstreamMessage, &usage)
 			}
 
 			if !clientDisconnected {
-				if needModelReplace && openAIWSEventMayContainModel(eventType) {
+				if needModelReplace && len(mappedModelBytes) > 0 && openAIWSEventMayContainModel(eventType) && bytes.Contains(upstreamMessage, mappedModelBytes) {
 					upstreamMessage = replaceOpenAIWSMessageModel(upstreamMessage, mappedModel, originalModel)
 				}
-				if openAIWSEventMayContainToolCalls(eventType) {
+				if openAIWSEventMayContainToolCalls(eventType) && openAIWSMessageLikelyContainsToolCalls(upstreamMessage) {
 					if corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(upstreamMessage); changed {
 						upstreamMessage = corrected
 					}
@@ -2164,21 +2233,23 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				if firstTokenMs != nil {
 					firstTokenMsValue = *firstTokenMs
 				}
-				logOpenAIWSModeInfo(
-					"ingress_ws_turn_completed account_id=%d turn=%d conn_id=%s response_id=%s duration_ms=%d events=%d token_events=%d terminal_events=%d first_event=%s last_event=%s first_token_ms=%d client_disconnected=%v",
-					account.ID,
-					turn,
-					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
-					truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
-					time.Since(turnStart).Milliseconds(),
-					eventCount,
-					tokenEventCount,
-					terminalEventCount,
-					truncateOpenAIWSLogValue(firstEventType, openAIWSLogValueMaxLen),
-					truncateOpenAIWSLogValue(lastEventType, openAIWSLogValueMaxLen),
-					firstTokenMsValue,
-					clientDisconnected,
-				)
+				if debugEnabled {
+					logOpenAIWSModeDebug(
+						"ingress_ws_turn_completed account_id=%d turn=%d conn_id=%s response_id=%s duration_ms=%d events=%d token_events=%d terminal_events=%d first_event=%s last_event=%s first_token_ms=%d client_disconnected=%v",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
+						time.Since(turnStart).Milliseconds(),
+						eventCount,
+						tokenEventCount,
+						terminalEventCount,
+						truncateOpenAIWSLogValue(firstEventType, openAIWSLogValueMaxLen),
+						truncateOpenAIWSLogValue(lastEventType, openAIWSLogValueMaxLen),
+						firstTokenMsValue,
+						clientDisconnected,
+					)
+				}
 				return &OpenAIForwardResult{
 					RequestID:       responseID,
 					Usage:           usage,
@@ -2461,13 +2532,13 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 			return wrapOpenAIWSFallback("prewarm_"+classifyOpenAIWSReadFallbackReason(readErr), readErr)
 		}
 
-		eventType := strings.TrimSpace(gjson.GetBytes(message, "type").String())
+		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(message)
 		if eventType == "" {
 			continue
 		}
 		prewarmEventCount++
-		if prewarmResponseID == "" {
-			prewarmResponseID = extractOpenAIWSResponseID(message)
+		if prewarmResponseID == "" && eventResponseID != "" {
+			prewarmResponseID = eventResponseID
 		}
 		if prewarmEventCount <= openAIWSPrewarmEventLogHead || eventType == "error" || isOpenAIWSTerminalEvent(eventType) {
 			logOpenAIWSModeInfo(
@@ -2481,12 +2552,13 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		}
 
 		if eventType == "error" {
-			errMsg := strings.TrimSpace(gjson.GetBytes(message, "error.message").String())
+			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "OpenAI websocket prewarm error"
 			}
-			fallbackReason, canFallback := classifyOpenAIWSErrorEvent(message)
-			errCode, errType, errMessage := summarizeOpenAIWSErrorEventFields(message)
+			fallbackReason, canFallback := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
+			errCode, errType, errMessage := summarizeOpenAIWSErrorEventFieldsFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
 			logOpenAIWSModeInfo(
 				"prewarm_error_event account_id=%d conn_id=%s idx=%d fallback_reason=%s can_fallback=%v err_code=%s err_type=%s err_message=%s",
 				account.ID,
@@ -2545,10 +2617,14 @@ func payloadAsJSONBytes(payload map[string]any) []byte {
 }
 
 func extractOpenAIWSResponseID(message []byte) string {
-	if id := strings.TrimSpace(gjson.GetBytes(message, "response.id").String()); id != "" {
+	if len(message) == 0 {
+		return ""
+	}
+	values := gjson.GetManyBytes(message, "response.id", "id")
+	if id := strings.TrimSpace(values[0].String()); id != "" {
 		return id
 	}
-	if id := strings.TrimSpace(gjson.GetBytes(message, "id").String()); id != "" {
+	if id := strings.TrimSpace(values[1].String()); id != "" {
 		return id
 	}
 	return ""
@@ -2588,13 +2664,25 @@ func replaceOpenAIWSMessageModel(message []byte, fromModel, toModel string) []by
 	if len(message) == 0 {
 		return message
 	}
+	if strings.TrimSpace(fromModel) == "" || strings.TrimSpace(toModel) == "" || fromModel == toModel {
+		return message
+	}
+	if !bytes.Contains(message, []byte(`"model"`)) || !bytes.Contains(message, []byte(fromModel)) {
+		return message
+	}
+	modelValues := gjson.GetManyBytes(message, "model", "response.model")
+	replaceModel := modelValues[0].Exists() && modelValues[0].Str == fromModel
+	replaceResponseModel := modelValues[1].Exists() && modelValues[1].Str == fromModel
+	if !replaceModel && !replaceResponseModel {
+		return message
+	}
 	updated := message
-	if m := gjson.GetBytes(updated, "model"); m.Exists() && m.Str == fromModel {
+	if replaceModel {
 		if next, err := sjson.SetBytes(updated, "model", toModel); err == nil {
 			updated = next
 		}
 	}
-	if m := gjson.GetBytes(updated, "response.model"); m.Exists() && m.Str == fromModel {
+	if replaceResponseModel {
 		if next, err := sjson.SetBytes(updated, "response.model", toModel); err == nil {
 			updated = next
 		}
@@ -2606,9 +2694,15 @@ func populateOpenAIUsageFromResponseJSON(body []byte, usage *OpenAIUsage) {
 	if usage == nil || len(body) == 0 {
 		return
 	}
-	usage.InputTokens = int(gjson.GetBytes(body, "usage.input_tokens").Int())
-	usage.OutputTokens = int(gjson.GetBytes(body, "usage.output_tokens").Int())
-	usage.CacheReadInputTokens = int(gjson.GetBytes(body, "usage.input_tokens_details.cached_tokens").Int())
+	values := gjson.GetManyBytes(
+		body,
+		"usage.input_tokens",
+		"usage.output_tokens",
+		"usage.input_tokens_details.cached_tokens",
+	)
+	usage.InputTokens = int(values[0].Int())
+	usage.OutputTokens = int(values[1].Int())
+	usage.CacheReadInputTokens = int(values[2].Int())
 }
 
 func getOpenAIGroupIDFromContext(c *gin.Context) int64 {
@@ -2736,13 +2830,10 @@ func classifyOpenAIWSAcquireError(err error) string {
 	return "acquire_conn"
 }
 
-func classifyOpenAIWSErrorEvent(message []byte) (string, bool) {
-	if len(message) == 0 {
-		return "event_error", false
-	}
-	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(message, "error.code").String()))
-	errType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(message, "error.type").String()))
-	msg := strings.ToLower(strings.TrimSpace(gjson.GetBytes(message, "error.message").String()))
+func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (string, bool) {
+	code := strings.ToLower(strings.TrimSpace(codeRaw))
+	errType := strings.ToLower(strings.TrimSpace(errTypeRaw))
+	msg := strings.ToLower(strings.TrimSpace(msgRaw))
 
 	switch code {
 	case "upgrade_required":
@@ -2776,13 +2867,16 @@ func classifyOpenAIWSErrorEvent(message []byte) (string, bool) {
 	return "event_error", false
 }
 
-func openAIWSErrorHTTPStatus(message []byte) int {
+func classifyOpenAIWSErrorEvent(message []byte) (string, bool) {
 	if len(message) == 0 {
-		return http.StatusBadGateway
+		return "event_error", false
 	}
-	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(message, "error.code").String()))
-	errType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(message, "error.type").String()))
+	return classifyOpenAIWSErrorEventFromRaw(parseOpenAIWSErrorEventFields(message))
+}
 
+func openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw string) int {
+	code := strings.ToLower(strings.TrimSpace(codeRaw))
+	errType := strings.ToLower(strings.TrimSpace(errTypeRaw))
 	switch {
 	case strings.Contains(errType, "invalid_request"),
 		strings.Contains(code, "invalid_request"),
@@ -2803,6 +2897,14 @@ func openAIWSErrorHTTPStatus(message []byte) int {
 	default:
 		return http.StatusBadGateway
 	}
+}
+
+func openAIWSErrorHTTPStatus(message []byte) int {
+	if len(message) == 0 {
+		return http.StatusBadGateway
+	}
+	codeRaw, errTypeRaw, _ := parseOpenAIWSErrorEventFields(message)
+	return openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw)
 }
 
 func (s *OpenAIGatewayService) openAIWSFallbackCooldown() time.Duration {
