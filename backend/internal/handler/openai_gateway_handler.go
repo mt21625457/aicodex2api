@@ -549,7 +549,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	defer func() {
 		_ = wsConn.CloseNow()
 	}()
-	wsConn.SetReadLimit(128 * 1024 * 1024)
+	wsConn.SetReadLimit(16 * 1024 * 1024)
 
 	ctx := c.Request.Context()
 	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -643,6 +643,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 
 	account := selection.Account
+	accountMaxConcurrency := account.Concurrency
+	if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
+		accountMaxConcurrency = selection.WaitPlan.MaxConcurrency
+	}
 	accountReleaseFunc := selection.ReleaseFunc
 	if !selection.Acquired {
 		if selection.WaitPlan == nil {
@@ -699,7 +703,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			if !userAcquired {
 				return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "too many concurrent requests, please retry later", nil)
 			}
-			accountReleaseFunc, accountAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+			accountReleaseFunc, accountAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(ctx, account.ID, accountMaxConcurrency)
 			if err != nil {
 				if userReleaseFunc != nil {
 					userReleaseFunc()

@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -93,4 +94,19 @@ func TestCoderOpenAIWSClientDialer_ProxyClientCacheIdleTTL(t *testing.T) {
 	impl.proxyMu.Unlock()
 
 	require.False(t, exists, "超过空闲 TTL 的代理客户端应被回收")
+}
+
+func TestCoderOpenAIWSClientDialer_ProxyTransportTLSHandshakeTimeout(t *testing.T) {
+	dialer := newDefaultOpenAIWSClientDialer()
+	impl, ok := dialer.(*coderOpenAIWSClientDialer)
+	require.True(t, ok)
+
+	client, err := impl.proxyHTTPClient("http://127.0.0.1:38080")
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, transport)
+	require.Equal(t, 10*time.Second, transport.TLSHandshakeTimeout)
 }

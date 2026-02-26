@@ -15,7 +15,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-const openAIWSMessageReadLimitBytes int64 = 128 * 1024 * 1024
+const openAIWSMessageReadLimitBytes int64 = 16 * 1024 * 1024
 const (
 	openAIWSProxyTransportMaxIdleConns        = 128
 	openAIWSProxyTransportMaxIdleConnsPerHost = 64
@@ -135,6 +135,7 @@ func (d *coderOpenAIWSClientDialer) proxyHTTPClient(proxy string) (*http.Client,
 		MaxIdleConns:        openAIWSProxyTransportMaxIdleConns,
 		MaxIdleConnsPerHost: openAIWSProxyTransportMaxIdleConnsPerHost,
 		IdleConnTimeout:     openAIWSProxyTransportIdleConnTimeout,
+		TLSHandshakeTimeout: 10 * time.Second,
 		ForceAttemptHTTP2:   true,
 	}
 	client := &http.Client{Transport: transport}

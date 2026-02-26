@@ -21,6 +21,8 @@ const (
 	openAIWSConnHealthCheckTO      = 2 * time.Second
 	openAIWSConnPrewarmExtraDelay  = 2 * time.Second
 	openAIWSAcquireCleanupInterval = 3 * time.Second
+	openAIWSBackgroundPingInterval = 30 * time.Second
+	openAIWSBackgroundSweepTicker  = 30 * time.Second
 
 	openAIWSPrewarmFailureWindow   = 30 * time.Second
 	openAIWSPrewarmFailureSuppress = 2
@@ -127,7 +129,14 @@ func (l *openAIWSConnLease) WriteJSON(value any, timeout time.Duration) error {
 	if l == nil || l.conn == nil {
 		return errOpenAIWSConnClosed
 	}
-	return l.conn.writeJSONWithTimeout(value, timeout)
+	return l.conn.writeJSONWithTimeout(context.Background(), value, timeout)
+}
+
+func (l *openAIWSConnLease) WriteJSONWithContextTimeout(ctx context.Context, value any, timeout time.Duration) error {
+	if l == nil || l.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	return l.conn.writeJSONWithTimeout(ctx, value, timeout)
 }
 
 func (l *openAIWSConnLease) WriteJSONContext(ctx context.Context, value any) error {
@@ -185,7 +194,8 @@ type openAIWSConn struct {
 	closedCh  chan struct{}
 	closeOnce sync.Once
 
-	ioMu sync.Mutex
+	readMu  sync.Mutex
+	writeMu sync.Mutex
 
 	waiters       atomic.Int32
 	createdAtNano atomic.Int64
@@ -280,7 +290,7 @@ func (c *openAIWSConn) close() {
 	})
 }
 
-func (c *openAIWSConn) writeJSONWithTimeout(value any, timeout time.Duration) error {
+func (c *openAIWSConn) writeJSONWithTimeout(parent context.Context, value any, timeout time.Duration) error {
 	if c == nil {
 		return errOpenAIWSConnClosed
 	}
@@ -290,7 +300,10 @@ func (c *openAIWSConn) writeJSONWithTimeout(value any, timeout time.Duration) er
 	default:
 	}
 
-	writeCtx := context.Background()
+	writeCtx := parent
+	if writeCtx == nil {
+		writeCtx = context.Background()
+	}
 	if timeout <= 0 {
 		return c.writeJSON(value, writeCtx)
 	}
@@ -301,8 +314,8 @@ func (c *openAIWSConn) writeJSONWithTimeout(value any, timeout time.Duration) er
 }
 
 func (c *openAIWSConn) writeJSON(value any, writeCtx context.Context) error {
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if c.ws == nil {
 		return errOpenAIWSConnClosed
 	}
@@ -342,8 +355,8 @@ func (c *openAIWSConn) readMessageWithContextTimeout(parent context.Context, tim
 }
 
 func (c *openAIWSConn) readMessage(readCtx context.Context) ([]byte, error) {
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	if c.ws == nil {
 		return nil, errOpenAIWSConnClosed
 	}
@@ -368,8 +381,8 @@ func (c *openAIWSConn) pingWithTimeout(timeout time.Duration) error {
 	default:
 	}
 
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if c.ws == nil {
 		return errOpenAIWSConnClosed
 	}
@@ -508,13 +521,19 @@ type openAIWSConnPool struct {
 	seq      atomic.Uint64
 
 	metrics openAIWSPoolMetrics
+
+	workerStopCh chan struct{}
+	closeOnce    sync.Once
 }
 
 func newOpenAIWSConnPool(cfg *config.Config) *openAIWSConnPool {
-	return &openAIWSConnPool{
+	pool := &openAIWSConnPool{
 		cfg:          cfg,
 		clientDialer: newDefaultOpenAIWSClientDialer(),
+		workerStopCh: make(chan struct{}),
 	}
+	pool.startBackgroundWorkers()
+	return pool
 }
 
 func (p *openAIWSConnPool) SnapshotMetrics() OpenAIWSPoolMetricsSnapshot {
@@ -549,6 +568,152 @@ func (p *openAIWSConnPool) setClientDialerForTest(dialer openAIWSClientDialer) {
 		return
 	}
 	p.clientDialer = dialer
+}
+
+// Close 停止后台 worker 并关闭所有空闲连接，应在优雅关闭时调用。
+func (p *openAIWSConnPool) Close() {
+	if p == nil {
+		return
+	}
+	p.closeOnce.Do(func() {
+		close(p.workerStopCh)
+		// 遍历所有账户池，关闭全部空闲连接。
+		p.accounts.Range(func(key, value any) bool {
+			ap, ok := value.(*openAIWSAccountPool)
+			if !ok || ap == nil {
+				return true
+			}
+			ap.mu.Lock()
+			for _, conn := range ap.conns {
+				if conn != nil && !conn.isLeased() {
+					conn.close()
+				}
+			}
+			ap.mu.Unlock()
+			return true
+		})
+	})
+}
+
+func (p *openAIWSConnPool) startBackgroundWorkers() {
+	if p == nil || p.workerStopCh == nil {
+		return
+	}
+	go p.runBackgroundPingWorker()
+	go p.runBackgroundCleanupWorker()
+}
+
+type openAIWSIdlePingCandidate struct {
+	accountID int64
+	conn      *openAIWSConn
+}
+
+func (p *openAIWSConnPool) runBackgroundPingWorker() {
+	if p == nil {
+		return
+	}
+	ticker := time.NewTicker(openAIWSBackgroundPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.runBackgroundPingSweep()
+		case <-p.workerStopCh:
+			return
+		}
+	}
+}
+
+func (p *openAIWSConnPool) runBackgroundPingSweep() {
+	if p == nil {
+		return
+	}
+	candidates := p.snapshotIdleConnsForPing()
+	for _, item := range candidates {
+		if item.conn == nil || item.conn.isLeased() || item.conn.waiters.Load() > 0 {
+			continue
+		}
+		if err := item.conn.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+			p.evictConn(item.accountID, item.conn.id)
+		}
+	}
+}
+
+func (p *openAIWSConnPool) snapshotIdleConnsForPing() []openAIWSIdlePingCandidate {
+	if p == nil {
+		return nil
+	}
+	candidates := make([]openAIWSIdlePingCandidate, 0)
+	p.accounts.Range(func(key, value any) bool {
+		accountID, ok := key.(int64)
+		if !ok || accountID <= 0 {
+			return true
+		}
+		ap, ok := value.(*openAIWSAccountPool)
+		if !ok || ap == nil {
+			return true
+		}
+		ap.mu.Lock()
+		for _, conn := range ap.conns {
+			if conn == nil || conn.isLeased() || conn.waiters.Load() > 0 {
+				continue
+			}
+			candidates = append(candidates, openAIWSIdlePingCandidate{
+				accountID: accountID,
+				conn:      conn,
+			})
+		}
+		ap.mu.Unlock()
+		return true
+	})
+	return candidates
+}
+
+func (p *openAIWSConnPool) runBackgroundCleanupWorker() {
+	if p == nil {
+		return
+	}
+	ticker := time.NewTicker(openAIWSBackgroundSweepTicker)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.runBackgroundCleanupSweep(time.Now())
+		case <-p.workerStopCh:
+			return
+		}
+	}
+}
+
+func (p *openAIWSConnPool) runBackgroundCleanupSweep(now time.Time) {
+	if p == nil {
+		return
+	}
+	type cleanupResult struct {
+		evicted []*openAIWSConn
+	}
+	results := make([]cleanupResult, 0)
+	p.accounts.Range(func(_ any, value any) bool {
+		ap, ok := value.(*openAIWSAccountPool)
+		if !ok || ap == nil {
+			return true
+		}
+		maxConns := p.maxConnsHardCap()
+		ap.mu.Lock()
+		if ap.lastAcquire != nil && ap.lastAcquire.Account != nil {
+			maxConns = p.effectiveMaxConnsByAccount(ap.lastAcquire.Account)
+		}
+		evicted := p.cleanupAccountLocked(ap, now, maxConns)
+		ap.lastCleanupAt = now
+		ap.mu.Unlock()
+		if len(evicted) > 0 {
+			results = append(results, cleanupResult{evicted: evicted})
+		}
+		return true
+	})
+	for _, result := range results {
+		closeOpenAIWSConns(result.evicted)
+	}
 }
 
 func (p *openAIWSConnPool) Acquire(ctx context.Context, req openAIWSAcquireRequest) (*openAIWSConnLease, error) {
