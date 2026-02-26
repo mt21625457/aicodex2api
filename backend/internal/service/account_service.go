@@ -302,6 +302,9 @@ func (s *AccountService) validateGroupIDsExist(ctx context.Context, groupIDs []i
 	if len(groupIDs) == 0 {
 		return nil
 	}
+	if s.groupRepo == nil {
+		return fmt.Errorf("group repository not configured")
+	}
 
 	if batchChecker, ok := s.groupRepo.(groupExistenceBatchChecker); ok {
 		existsByID, err := batchChecker.ExistsByIDs(ctx, groupIDs)
