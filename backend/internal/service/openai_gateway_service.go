@@ -2287,19 +2287,8 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	usage := &OpenAIUsage{}
 	usageParsed := false
 	if len(body) > 0 {
-		var response struct {
-			Usage struct {
-				InputTokens       int `json:"input_tokens"`
-				OutputTokens      int `json:"output_tokens"`
-				InputTokenDetails struct {
-					CachedTokens int `json:"cached_tokens"`
-				} `json:"input_tokens_details"`
-			} `json:"usage"`
-		}
-		if json.Unmarshal(body, &response) == nil {
-			usage.InputTokens = response.Usage.InputTokens
-			usage.OutputTokens = response.Usage.OutputTokens
-			usage.CacheReadInputTokens = response.Usage.InputTokenDetails.CachedTokens
+		if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(body); ok {
+			*usage = parsedUsage
 			usageParsed = true
 		}
 	}
@@ -2904,6 +2893,23 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 	usage.CacheReadInputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens_details.cached_tokens").Int())
 }
 
+func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return OpenAIUsage{}, false
+	}
+	values := gjson.GetManyBytes(
+		body,
+		"usage.input_tokens",
+		"usage.output_tokens",
+		"usage.input_tokens_details.cached_tokens",
+	)
+	return OpenAIUsage{
+		InputTokens:          int(values[0].Int()),
+		OutputTokens:         int(values[1].Int()),
+		CacheReadInputTokens: int(values[2].Int()),
+	}, true
+}
+
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
@@ -2927,25 +2933,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 
-	// Parse usage
-	var response struct {
-		Usage struct {
-			InputTokens       int `json:"input_tokens"`
-			OutputTokens      int `json:"output_tokens"`
-			InputTokenDetails struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"input_tokens_details"`
-		} `json:"usage"`
+	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
+	if !usageOK {
+		return nil, fmt.Errorf("parse response: invalid json response")
 	}
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-
-	usage := &OpenAIUsage{
-		InputTokens:          response.Usage.InputTokens,
-		OutputTokens:         response.Usage.OutputTokens,
-		CacheReadInputTokens: response.Usage.InputTokenDetails.CachedTokens,
-	}
+	usage := &usageValue
 
 	// Replace model in response if needed
 	if originalModel != mappedModel {
@@ -2977,19 +2969,8 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 
 	usage := &OpenAIUsage{}
 	if ok {
-		var response struct {
-			Usage struct {
-				InputTokens       int `json:"input_tokens"`
-				OutputTokens      int `json:"output_tokens"`
-				InputTokenDetails struct {
-					CachedTokens int `json:"cached_tokens"`
-				} `json:"input_tokens_details"`
-			} `json:"usage"`
-		}
-		if err := json.Unmarshal(finalResponse, &response); err == nil {
-			usage.InputTokens = response.Usage.InputTokens
-			usage.OutputTokens = response.Usage.OutputTokens
-			usage.CacheReadInputTokens = response.Usage.InputTokenDetails.CachedTokens
+		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+			*usage = parsedUsage
 		}
 		body = finalResponse
 		if originalModel != mappedModel {

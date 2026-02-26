@@ -148,6 +148,7 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
 	require.Equal(t, 7, result.Usage.OutputTokens)
 	require.Equal(t, 3, result.Usage.CacheReadInputTokens)
 	require.Equal(t, "resp_new_1", result.RequestID)
+	require.True(t, result.OpenAIWSMode)
 	require.False(t, gjson.GetBytes(upstream.lastBody, "model").Exists(), "WSv2 成功时不应回落 HTTP 上游")
 
 	received := <-receivedCh
@@ -177,6 +178,20 @@ func requestToJSONString(payload map[string]any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+func TestOpenAIWSPayloadString_OnlyAcceptsStringValues(t *testing.T) {
+	payload := map[string]any{
+		"type":                 nil,
+		"model":                123,
+		"prompt_cache_key":     " cache-key ",
+		"previous_response_id": []byte(" resp_1 "),
+	}
+
+	require.Equal(t, "", openAIWSPayloadString(payload, "type"))
+	require.Equal(t, "", openAIWSPayloadString(payload, "model"))
+	require.Equal(t, "cache-key", openAIWSPayloadString(payload, "prompt_cache_key"))
+	require.Equal(t, "resp_1", openAIWSPayloadString(payload, "previous_response_id"))
 }
 
 func TestOpenAIGatewayService_Forward_WSv2_PoolReuseNotOneToOne(t *testing.T) {

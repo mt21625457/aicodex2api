@@ -388,10 +388,14 @@ func openAIWSPayloadString(payload map[string]any, key string) string {
 		return ""
 	}
 	switch v := raw.(type) {
+	case nil:
+		return ""
 	case string:
 		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
 	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", raw))
+		return ""
 	}
 }
 
@@ -1564,6 +1568,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		Model:           originalModel,
 		ReasoningEffort: extractOpenAIReasoningEffort(reqBody, originalModel),
 		Stream:          reqStream,
+		OpenAIWSMode:    true,
 		Duration:        time.Since(startTime),
 		FirstTokenMs:    firstTokenMs,
 	}, nil
@@ -1628,10 +1633,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "empty websocket request payload", nil)
 		}
 
-		values := gjson.GetManyBytes(trimmed, "type", "model", "prompt_cache_key", "previous_response_id")
-		eventType := strings.TrimSpace(values[0].String())
+		payload := make(map[string]any)
+		if err := json.Unmarshal(trimmed, &payload); err != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", err)
+		}
+
+		eventType := openAIWSPayloadString(payload, "type")
 		if eventType == "" {
 			eventType = "response.create"
+			payload["type"] = eventType
 		}
 		if eventType != "response.create" {
 			if eventType == "response.append" {
@@ -1648,7 +1658,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
-		originalModel := strings.TrimSpace(values[1].String())
+		originalModel := openAIWSPayloadString(payload, "model")
 		if originalModel == "" {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
 				coderws.StatusPolicyViolation,
@@ -1656,21 +1666,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nil,
 			)
 		}
-		promptCacheKey := strings.TrimSpace(values[2].String())
-		previousResponseID := strings.TrimSpace(values[3].String())
-
-		payload := make(map[string]any)
-		if err := json.Unmarshal(trimmed, &payload); err != nil {
-			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", err)
-		}
-		if _, exists := payload["type"]; !exists {
-			payload["type"] = "response.create"
-		}
+		promptCacheKey := openAIWSPayloadString(payload, "prompt_cache_key")
+		previousResponseID := openAIWSPayloadString(payload, "previous_response_id")
 		if turnMetadata := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)); turnMetadata != "" {
 			setOpenAIWSTurnMetadata(payload, turnMetadata)
 		}
-		mappedModel := originalModel
-		mappedModel = account.GetMappedModel(originalModel)
+		mappedModel := account.GetMappedModel(originalModel)
 		if normalizedModel := normalizeCodexModel(mappedModel); normalizedModel != "" {
 			mappedModel = normalizedModel
 		}
@@ -1935,6 +1936,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					Model:           originalModel,
 					ReasoningEffort: extractOpenAIReasoningEffort(payload, originalModel),
 					Stream:          reqStream,
+					OpenAIWSMode:    true,
 					Duration:        time.Since(turnStart),
 					FirstTokenMs:    firstTokenMs,
 				}, nil
