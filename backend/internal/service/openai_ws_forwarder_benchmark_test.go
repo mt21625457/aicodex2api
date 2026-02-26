@@ -11,6 +11,7 @@ var (
 	benchmarkOpenAIWSPayloadJSONSink string
 	benchmarkOpenAIWSStringSink      string
 	benchmarkOpenAIWSBoolSink        bool
+	benchmarkOpenAIWSBytesSink       []byte
 )
 
 func BenchmarkOpenAIWSForwarderHotPath(b *testing.B) {
@@ -73,5 +74,54 @@ func benchmarkOpenAIWSHotPathRequest() map[string]any {
 		"reasoning":            map[string]any{"effort": "medium"},
 		"instructions":         "benchmark instructions",
 		"store":                false,
+	}
+}
+
+func BenchmarkOpenAIWSEventEnvelopeParse(b *testing.B) {
+	event := []byte(`{"type":"response.completed","response":{"id":"resp_bench_1","model":"gpt-5.1","usage":{"input_tokens":12,"output_tokens":8}}}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		eventType, responseID, response := parseOpenAIWSEventEnvelope(event)
+		benchmarkOpenAIWSStringSink = eventType
+		benchmarkOpenAIWSStringSink = responseID
+		benchmarkOpenAIWSBoolSink = response.Exists()
+	}
+}
+
+func BenchmarkOpenAIWSErrorEventFieldReuse(b *testing.B) {
+	event := []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_request","message":"invalid input"}}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		codeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(event)
+		benchmarkOpenAIWSStringSink, benchmarkOpenAIWSBoolSink = classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, errMsgRaw)
+		code, errType, errMsg := summarizeOpenAIWSErrorEventFieldsFromRaw(codeRaw, errTypeRaw, errMsgRaw)
+		benchmarkOpenAIWSStringSink = code
+		benchmarkOpenAIWSStringSink = errType
+		benchmarkOpenAIWSStringSink = errMsg
+		benchmarkOpenAIWSBoolSink = openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw) > 0
+	}
+}
+
+func BenchmarkReplaceOpenAIWSMessageModel_NoMatchFastPath(b *testing.B) {
+	event := []byte(`{"type":"response.output_text.delta","delta":"hello world"}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSBytesSink = replaceOpenAIWSMessageModel(event, "gpt-5.1", "custom-model")
+	}
+}
+
+func BenchmarkReplaceOpenAIWSMessageModel_DualReplace(b *testing.B) {
+	event := []byte(`{"type":"response.completed","model":"gpt-5.1","response":{"id":"resp_1","model":"gpt-5.1"}}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSBytesSink = replaceOpenAIWSMessageModel(event, "gpt-5.1", "custom-model")
 	}
 }
