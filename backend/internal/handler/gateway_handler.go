@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -956,20 +957,8 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
-			// Send error event in SSE format with proper JSON marshaling
-			errorData := map[string]any{
-				"type": "error",
-				"error": map[string]string{
-					"type":    errType,
-					"message": message,
-				},
-			}
-			jsonBytes, err := json.Marshal(errorData)
-			if err != nil {
-				_ = c.Error(err)
-				return
-			}
-			errorEvent := fmt.Sprintf("data: %s\n\n", string(jsonBytes))
+			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
+			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
 			}
@@ -1217,24 +1206,8 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 		textDeltas = []string{"New", " Conversation"}
 	}
 
-	// Build message_start event with proper JSON marshaling
-	messageStart := map[string]any{
-		"type": "message_start",
-		"message": map[string]any{
-			"id":            msgID,
-			"type":          "message",
-			"role":          "assistant",
-			"model":         model,
-			"content":       []any{},
-			"stop_reason":   nil,
-			"stop_sequence": nil,
-			"usage": map[string]int{
-				"input_tokens":  10,
-				"output_tokens": 0,
-			},
-		},
-	}
-	messageStartJSON, _ := json.Marshal(messageStart)
+	// Build message_start event with fixed schema.
+	messageStartJSON := `{"type":"message_start","message":{"id":` + strconv.Quote(msgID) + `,"type":"message","role":"assistant","model":` + strconv.Quote(model) + `,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`
 
 	// Build events
 	events := []string{
@@ -1244,31 +1217,12 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 
 	// Add text deltas
 	for _, text := range textDeltas {
-		delta := map[string]any{
-			"type":  "content_block_delta",
-			"index": 0,
-			"delta": map[string]string{
-				"type": "text_delta",
-				"text": text,
-			},
-		}
-		deltaJSON, _ := json.Marshal(delta)
+		deltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + strconv.Quote(text) + `}}`
 		events = append(events, `event: content_block_delta`+"\n"+`data: `+string(deltaJSON))
 	}
 
 	// Add final events
-	messageDelta := map[string]any{
-		"type": "message_delta",
-		"delta": map[string]any{
-			"stop_reason":   "end_turn",
-			"stop_sequence": nil,
-		},
-		"usage": map[string]int{
-			"input_tokens":  10,
-			"output_tokens": outputTokens,
-		},
-	}
-	messageDeltaJSON, _ := json.Marshal(messageDelta)
+	messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"output_tokens":` + strconv.Itoa(outputTokens) + `}}`
 
 	events = append(events,
 		`event: content_block_stop`+"\n"+`data: {"index":0,"type":"content_block_stop"}`,
