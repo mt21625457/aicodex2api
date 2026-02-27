@@ -342,6 +342,199 @@ func TestOpenAIWSConnPool_ForceNewConnSkipsReuse(t *testing.T) {
 	require.Equal(t, 2, dialer.DialCount(), "ForceNewConn=true 时应跳过空闲连接复用并新建连接")
 }
 
+func TestOpenAIWSConnPool_AcquireForcePreferredConnUnavailable(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 2
+
+	pool := newOpenAIWSConnPool(cfg)
+	account := &Account{ID: 124, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	ap := pool.getOrCreateAccountPool(account.ID)
+	otherConn := newOpenAIWSConn("other_conn", account.ID, &openAIWSFakeConn{}, nil)
+	ap.mu.Lock()
+	ap.conns[otherConn.id] = otherConn
+	ap.mu.Unlock()
+
+	_, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account:            account,
+		WSURL:              "wss://example.com/v1/responses",
+		ForcePreferredConn: true,
+	})
+	require.ErrorIs(t, err, errOpenAIWSPreferredConnUnavailable)
+
+	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account:            account,
+		WSURL:              "wss://example.com/v1/responses",
+		PreferredConnID:    "missing_conn",
+		ForcePreferredConn: true,
+	})
+	require.ErrorIs(t, err, errOpenAIWSPreferredConnUnavailable)
+}
+
+func TestOpenAIWSConnPool_AcquireForcePreferredConnQueuesOnPreferredOnly(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 2
+	cfg.Gateway.OpenAIWS.QueueLimitPerConn = 4
+
+	pool := newOpenAIWSConnPool(cfg)
+	account := &Account{ID: 125, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	ap := pool.getOrCreateAccountPool(account.ID)
+	preferredConn := newOpenAIWSConn("preferred_conn", account.ID, &openAIWSFakeConn{}, nil)
+	otherConn := newOpenAIWSConn("other_conn_idle", account.ID, &openAIWSFakeConn{}, nil)
+	require.True(t, preferredConn.tryAcquire(), "先占用 preferred 连接，触发排队获取")
+	ap.mu.Lock()
+	ap.conns[preferredConn.id] = preferredConn
+	ap.conns[otherConn.id] = otherConn
+	ap.lastCleanupAt = time.Now()
+	ap.mu.Unlock()
+
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		preferredConn.release()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	lease, err := pool.Acquire(ctx, openAIWSAcquireRequest{
+		Account:            account,
+		WSURL:              "wss://example.com/v1/responses",
+		PreferredConnID:    preferredConn.id,
+		ForcePreferredConn: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease)
+	require.Equal(t, preferredConn.id, lease.ConnID(), "严格模式应只等待并复用 preferred 连接，不可漂移")
+	require.GreaterOrEqual(t, lease.QueueWaitDuration(), 40*time.Millisecond)
+	lease.Release()
+	require.True(t, otherConn.tryAcquire(), "other 连接不应被严格模式抢占")
+	otherConn.release()
+}
+
+func TestOpenAIWSConnPool_AcquireForcePreferredConnDirectAndQueueFull(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 2
+	cfg.Gateway.OpenAIWS.QueueLimitPerConn = 1
+
+	pool := newOpenAIWSConnPool(cfg)
+	account := &Account{ID: 127, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	ap := pool.getOrCreateAccountPool(account.ID)
+	preferredConn := newOpenAIWSConn("preferred_conn_direct", account.ID, &openAIWSFakeConn{}, nil)
+	otherConn := newOpenAIWSConn("other_conn_direct", account.ID, &openAIWSFakeConn{}, nil)
+	ap.mu.Lock()
+	ap.conns[preferredConn.id] = preferredConn
+	ap.conns[otherConn.id] = otherConn
+	ap.lastCleanupAt = time.Now()
+	ap.mu.Unlock()
+
+	lease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account:            account,
+		WSURL:              "wss://example.com/v1/responses",
+		PreferredConnID:    preferredConn.id,
+		ForcePreferredConn: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, preferredConn.id, lease.ConnID(), "preferred 空闲时应直接命中")
+	lease.Release()
+
+	require.True(t, preferredConn.tryAcquire())
+	preferredConn.waiters.Store(1)
+	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account:            account,
+		WSURL:              "wss://example.com/v1/responses",
+		PreferredConnID:    preferredConn.id,
+		ForcePreferredConn: true,
+	})
+	require.ErrorIs(t, err, errOpenAIWSConnQueueFull, "严格模式下队列满应直接失败，不得漂移")
+	preferredConn.waiters.Store(0)
+	preferredConn.release()
+}
+
+func TestOpenAIWSConnPool_CleanupSkipsPinnedConn(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 0
+
+	pool := newOpenAIWSConnPool(cfg)
+	accountID := int64(126)
+	ap := pool.getOrCreateAccountPool(accountID)
+	pinnedConn := newOpenAIWSConn("pinned_conn", accountID, &openAIWSFakeConn{}, nil)
+	idleConn := newOpenAIWSConn("idle_conn", accountID, &openAIWSFakeConn{}, nil)
+	ap.mu.Lock()
+	ap.conns[pinnedConn.id] = pinnedConn
+	ap.conns[idleConn.id] = idleConn
+	ap.mu.Unlock()
+
+	require.True(t, pool.PinConn(accountID, pinnedConn.id))
+	evicted := pool.cleanupAccountLocked(ap, time.Now(), pool.maxConnsHardCap())
+	closeOpenAIWSConns(evicted)
+
+	ap.mu.Lock()
+	_, pinnedExists := ap.conns[pinnedConn.id]
+	_, idleExists := ap.conns[idleConn.id]
+	ap.mu.Unlock()
+	require.True(t, pinnedExists, "被 active ingress 绑定的连接不应被 cleanup 回收")
+	require.False(t, idleExists, "非绑定的空闲连接应被回收")
+
+	pool.UnpinConn(accountID, pinnedConn.id)
+	evicted = pool.cleanupAccountLocked(ap, time.Now(), pool.maxConnsHardCap())
+	closeOpenAIWSConns(evicted)
+	ap.mu.Lock()
+	_, pinnedExists = ap.conns[pinnedConn.id]
+	ap.mu.Unlock()
+	require.False(t, pinnedExists, "解绑后连接应可被正常回收")
+}
+
+func TestOpenAIWSConnPool_PinUnpinConnBranches(t *testing.T) {
+	var nilPool *openAIWSConnPool
+	require.False(t, nilPool.PinConn(1, "x"))
+	nilPool.UnpinConn(1, "x")
+
+	cfg := &config.Config{}
+	pool := newOpenAIWSConnPool(cfg)
+	accountID := int64(128)
+	ap := &openAIWSAccountPool{
+		conns: map[string]*openAIWSConn{},
+	}
+	pool.accounts.Store(accountID, ap)
+
+	require.False(t, pool.PinConn(0, "x"))
+	require.False(t, pool.PinConn(999, "x"))
+	require.False(t, pool.PinConn(accountID, ""))
+	require.False(t, pool.PinConn(accountID, "missing"))
+
+	conn := newOpenAIWSConn("pin_refcount", accountID, &openAIWSFakeConn{}, nil)
+	ap.mu.Lock()
+	ap.conns[conn.id] = conn
+	ap.mu.Unlock()
+	require.True(t, pool.PinConn(accountID, conn.id))
+	require.True(t, pool.PinConn(accountID, conn.id))
+
+	ap.mu.Lock()
+	require.Equal(t, 2, ap.pinnedConns[conn.id])
+	ap.mu.Unlock()
+
+	pool.UnpinConn(accountID, conn.id)
+	ap.mu.Lock()
+	require.Equal(t, 1, ap.pinnedConns[conn.id])
+	ap.mu.Unlock()
+
+	pool.UnpinConn(accountID, conn.id)
+	ap.mu.Lock()
+	_, exists := ap.pinnedConns[conn.id]
+	ap.mu.Unlock()
+	require.False(t, exists)
+
+	pool.UnpinConn(accountID, conn.id)
+	pool.UnpinConn(accountID, "")
+	pool.UnpinConn(0, conn.id)
+	pool.UnpinConn(999, conn.id)
+}
+
 func TestOpenAIWSConnPool_EffectiveMaxConnsByAccount(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 8
