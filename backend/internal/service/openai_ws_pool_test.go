@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -635,6 +636,507 @@ func TestOpenAIWSConnPool_Close(t *testing.T) {
 	nilPool.Close()
 }
 
+func TestOpenAIWSDialError_ErrorAndUnwrap(t *testing.T) {
+	baseErr := errors.New("boom")
+	dialErr := &openAIWSDialError{StatusCode: 502, Err: baseErr}
+	require.Contains(t, dialErr.Error(), "status=502")
+	require.ErrorIs(t, dialErr.Unwrap(), baseErr)
+
+	noStatus := &openAIWSDialError{Err: baseErr}
+	require.Contains(t, noStatus.Error(), "boom")
+
+	var nilDialErr *openAIWSDialError
+	require.Equal(t, "", nilDialErr.Error())
+	require.NoError(t, nilDialErr.Unwrap())
+}
+
+func TestOpenAIWSConnLease_ReadWriteHelpersAndConnStats(t *testing.T) {
+	conn := newOpenAIWSConn("helper_conn", 1, &openAIWSFakeConn{}, http.Header{
+		"X-Test": []string{" value "},
+	})
+	lease := &openAIWSConnLease{conn: conn}
+
+	require.NoError(t, lease.WriteJSONContext(context.Background(), map[string]any{"type": "response.create"}))
+	payload, err := lease.ReadMessage(100 * time.Millisecond)
+	require.NoError(t, err)
+	require.Contains(t, string(payload), "response.completed")
+
+	payload, err = lease.ReadMessageContext(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, string(payload), "response.completed")
+
+	payload, err = conn.readMessageWithTimeout(100 * time.Millisecond)
+	require.NoError(t, err)
+	require.Contains(t, string(payload), "response.completed")
+
+	require.Equal(t, "value", conn.handshakeHeader(" X-Test "))
+	require.NotZero(t, conn.createdAt())
+	require.NotZero(t, conn.lastUsedAt())
+	require.GreaterOrEqual(t, conn.age(time.Now()), time.Duration(0))
+	require.GreaterOrEqual(t, conn.idleDuration(time.Now()), time.Duration(0))
+	require.False(t, conn.isLeased())
+
+	// 覆盖空上下文路径
+	_, err = conn.readMessage(nil)
+	require.NoError(t, err)
+
+	// 覆盖 nil 保护分支
+	var nilConn *openAIWSConn
+	require.ErrorIs(t, nilConn.writeJSONWithTimeout(context.Background(), map[string]any{}, time.Second), errOpenAIWSConnClosed)
+	_, err = nilConn.readMessageWithTimeout(10 * time.Millisecond)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	_, err = nilConn.readMessageWithContextTimeout(context.Background(), 10*time.Millisecond)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+}
+
+func TestOpenAIWSConnPool_PickOldestIdleAndAccountPoolLoad(t *testing.T) {
+	pool := &openAIWSConnPool{}
+	accountID := int64(404)
+	ap := &openAIWSAccountPool{conns: map[string]*openAIWSConn{}}
+
+	idleOld := newOpenAIWSConn("idle_old", accountID, &openAIWSFakeConn{}, nil)
+	idleOld.lastUsedNano.Store(time.Now().Add(-10 * time.Minute).UnixNano())
+	idleNew := newOpenAIWSConn("idle_new", accountID, &openAIWSFakeConn{}, nil)
+	idleNew.lastUsedNano.Store(time.Now().Add(-1 * time.Minute).UnixNano())
+	leased := newOpenAIWSConn("leased", accountID, &openAIWSFakeConn{}, nil)
+	require.True(t, leased.tryAcquire())
+	leased.waiters.Store(2)
+
+	ap.conns[idleOld.id] = idleOld
+	ap.conns[idleNew.id] = idleNew
+	ap.conns[leased.id] = leased
+
+	oldest := pool.pickOldestIdleConnLocked(ap)
+	require.NotNil(t, oldest)
+	require.Equal(t, idleOld.id, oldest.id)
+
+	inflight, waiters := accountPoolLoadLocked(ap)
+	require.Equal(t, 1, inflight)
+	require.Equal(t, 2, waiters)
+
+	pool.accounts.Store(accountID, ap)
+	loadInflight, loadWaiters, conns := pool.AccountPoolLoad(accountID)
+	require.Equal(t, 1, loadInflight)
+	require.Equal(t, 2, loadWaiters)
+	require.Equal(t, 3, conns)
+
+	zeroInflight, zeroWaiters, zeroConns := pool.AccountPoolLoad(0)
+	require.Equal(t, 0, zeroInflight)
+	require.Equal(t, 0, zeroWaiters)
+	require.Equal(t, 0, zeroConns)
+}
+
+func TestOpenAIWSConnPool_Close_WaitsWorkerGroupAndNilStopChannel(t *testing.T) {
+	pool := &openAIWSConnPool{}
+	release := make(chan struct{})
+	pool.workerWg.Add(1)
+	go func() {
+		defer pool.workerWg.Done()
+		<-release
+	}()
+
+	closed := make(chan struct{})
+	go func() {
+		pool.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close 不应在 WaitGroup 未完成时提前返回")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close 未等待 workerWg 完成")
+	}
+}
+
+func TestOpenAIWSConnPool_Close_ClosesOnlyIdleConnections(t *testing.T) {
+	pool := &openAIWSConnPool{
+		workerStopCh: make(chan struct{}),
+	}
+
+	accountID := int64(606)
+	ap := &openAIWSAccountPool{
+		conns: map[string]*openAIWSConn{},
+	}
+	idle := newOpenAIWSConn("idle_conn", accountID, &openAIWSFakeConn{}, nil)
+	leased := newOpenAIWSConn("leased_conn", accountID, &openAIWSFakeConn{}, nil)
+	require.True(t, leased.tryAcquire())
+
+	ap.conns[idle.id] = idle
+	ap.conns[leased.id] = leased
+	pool.accounts.Store(accountID, ap)
+	pool.accounts.Store("invalid-key", "invalid-value")
+
+	pool.Close()
+
+	select {
+	case <-idle.closedCh:
+		// idle should be closed
+	default:
+		t.Fatal("空闲连接应在 Close 时被关闭")
+	}
+
+	select {
+	case <-leased.closedCh:
+		t.Fatal("已租赁连接不应在 Close 时被关闭")
+	default:
+	}
+
+	leased.release()
+	pool.Close()
+}
+
+func TestOpenAIWSConnPool_RunBackgroundPingSweep_ConcurrencyLimit(t *testing.T) {
+	cfg := &config.Config{}
+	pool := newOpenAIWSConnPool(cfg)
+	accountID := int64(505)
+	ap := pool.getOrCreateAccountPool(accountID)
+
+	var current atomic.Int32
+	var maxConcurrent atomic.Int32
+	release := make(chan struct{})
+	for i := 0; i < 25; i++ {
+		conn := newOpenAIWSConn(pool.nextConnID(accountID), accountID, &openAIWSPingBlockingConn{
+			current:       &current,
+			maxConcurrent: &maxConcurrent,
+			release:       release,
+		}, nil)
+		ap.mu.Lock()
+		ap.conns[conn.id] = conn
+		ap.mu.Unlock()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		pool.runBackgroundPingSweep()
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool {
+		return maxConcurrent.Load() >= 10
+	}, time.Second, 10*time.Millisecond)
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBackgroundPingSweep 未在释放后完成")
+	}
+
+	require.LessOrEqual(t, maxConcurrent.Load(), int32(10))
+}
+
+func TestOpenAIWSConnLease_BasicGetterBranches(t *testing.T) {
+	var nilLease *openAIWSConnLease
+	require.Equal(t, "", nilLease.ConnID())
+	require.Equal(t, time.Duration(0), nilLease.QueueWaitDuration())
+	require.Equal(t, time.Duration(0), nilLease.ConnPickDuration())
+	require.False(t, nilLease.Reused())
+	require.Equal(t, "", nilLease.HandshakeHeader("x-test"))
+	require.False(t, nilLease.IsPrewarmed())
+	nilLease.MarkPrewarmed()
+	nilLease.Release()
+
+	conn := newOpenAIWSConn("getter_conn", 1, &openAIWSFakeConn{}, http.Header{"X-Test": []string{"ok"}})
+	lease := &openAIWSConnLease{
+		conn:      conn,
+		queueWait: 3 * time.Millisecond,
+		connPick:  4 * time.Millisecond,
+		reused:    true,
+	}
+	require.Equal(t, "getter_conn", lease.ConnID())
+	require.Equal(t, 3*time.Millisecond, lease.QueueWaitDuration())
+	require.Equal(t, 4*time.Millisecond, lease.ConnPickDuration())
+	require.True(t, lease.Reused())
+	require.Equal(t, "ok", lease.HandshakeHeader("x-test"))
+	require.False(t, lease.IsPrewarmed())
+	lease.MarkPrewarmed()
+	require.True(t, lease.IsPrewarmed())
+	lease.Release()
+}
+
+func TestOpenAIWSConnPool_UtilityBranches(t *testing.T) {
+	var nilPool *openAIWSConnPool
+	require.Equal(t, OpenAIWSPoolMetricsSnapshot{}, nilPool.SnapshotMetrics())
+	require.Equal(t, OpenAIWSTransportMetricsSnapshot{}, nilPool.SnapshotTransportMetrics())
+
+	pool := &openAIWSConnPool{cfg: &config.Config{}}
+	pool.metrics.acquireTotal.Store(7)
+	pool.metrics.acquireReuseTotal.Store(3)
+	metrics := pool.SnapshotMetrics()
+	require.Equal(t, int64(7), metrics.AcquireTotal)
+	require.Equal(t, int64(3), metrics.AcquireReuseTotal)
+
+	// 非 transport metrics dialer 路径
+	pool.clientDialer = &openAIWSFakeDialer{}
+	require.Equal(t, OpenAIWSTransportMetricsSnapshot{}, pool.SnapshotTransportMetrics())
+	pool.setClientDialerForTest(nil)
+	require.NotNil(t, pool.clientDialer)
+
+	require.Equal(t, 8, nilPool.maxConnsHardCap())
+	require.False(t, nilPool.dynamicMaxConnsEnabled())
+	require.Equal(t, 1.0, nilPool.maxConnsFactorByAccount(nil))
+	require.Equal(t, 0, nilPool.minIdlePerAccount())
+	require.Equal(t, 4, nilPool.maxIdlePerAccount())
+	require.Equal(t, 256, nilPool.queueLimitPerConn())
+	require.Equal(t, 0.7, nilPool.targetUtilization())
+	require.Equal(t, time.Duration(0), nilPool.prewarmCooldown())
+	require.Equal(t, 10*time.Second, nilPool.dialTimeout())
+
+	// shouldSuppressPrewarmLocked 覆盖 3 条分支
+	now := time.Now()
+	apNilFail := &openAIWSAccountPool{prewarmFails: 1}
+	require.False(t, pool.shouldSuppressPrewarmLocked(apNilFail, now))
+	apZeroTime := &openAIWSAccountPool{prewarmFails: 2}
+	require.False(t, pool.shouldSuppressPrewarmLocked(apZeroTime, now))
+	require.Equal(t, 0, apZeroTime.prewarmFails)
+	apOldFail := &openAIWSAccountPool{prewarmFails: 2, prewarmFailAt: now.Add(-openAIWSPrewarmFailureWindow - time.Second)}
+	require.False(t, pool.shouldSuppressPrewarmLocked(apOldFail, now))
+	apRecentFail := &openAIWSAccountPool{prewarmFails: openAIWSPrewarmFailureSuppress, prewarmFailAt: now}
+	require.True(t, pool.shouldSuppressPrewarmLocked(apRecentFail, now))
+
+	// recordConnPickDuration 的保护分支
+	nilPool.recordConnPickDuration(10 * time.Millisecond)
+	pool.recordConnPickDuration(-10 * time.Millisecond)
+	require.Equal(t, int64(1), pool.metrics.connPickTotal.Load())
+
+	// account pool 读写分支
+	require.Nil(t, nilPool.getOrCreateAccountPool(1))
+	require.Nil(t, pool.getOrCreateAccountPool(0))
+	pool.accounts.Store(int64(7), "invalid")
+	ap := pool.getOrCreateAccountPool(7)
+	require.NotNil(t, ap)
+	_, ok := pool.getAccountPool(0)
+	require.False(t, ok)
+	_, ok = pool.getAccountPool(12345)
+	require.False(t, ok)
+	pool.accounts.Store(int64(8), "bad-type")
+	_, ok = pool.getAccountPool(8)
+	require.False(t, ok)
+
+	// health check 条件
+	require.False(t, pool.shouldHealthCheckConn(nil))
+	conn := newOpenAIWSConn("health", 1, &openAIWSFakeConn{}, nil)
+	conn.lastUsedNano.Store(time.Now().Add(-openAIWSConnHealthCheckIdle - time.Second).UnixNano())
+	require.True(t, pool.shouldHealthCheckConn(conn))
+}
+
+func TestOpenAIWSConn_LeaseAndTimeHelpers_NilAndClosedBranches(t *testing.T) {
+	var nilConn *openAIWSConn
+	nilConn.touch()
+	require.Equal(t, time.Time{}, nilConn.createdAt())
+	require.Equal(t, time.Time{}, nilConn.lastUsedAt())
+	require.Equal(t, time.Duration(0), nilConn.idleDuration(time.Now()))
+	require.Equal(t, time.Duration(0), nilConn.age(time.Now()))
+	require.False(t, nilConn.isLeased())
+	require.False(t, nilConn.isPrewarmed())
+	nilConn.markPrewarmed()
+
+	conn := newOpenAIWSConn("lease_state", 1, &openAIWSFakeConn{}, nil)
+	require.True(t, conn.tryAcquire())
+	require.True(t, conn.isLeased())
+	conn.release()
+	require.False(t, conn.isLeased())
+	conn.close()
+	require.False(t, conn.tryAcquire())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := conn.acquire(ctx)
+	require.Error(t, err)
+}
+
+func TestOpenAIWSConnLease_ReadWriteNilConnBranches(t *testing.T) {
+	lease := &openAIWSConnLease{}
+	require.ErrorIs(t, lease.WriteJSON(map[string]any{"k": "v"}, time.Second), errOpenAIWSConnClosed)
+	require.ErrorIs(t, lease.WriteJSONContext(context.Background(), map[string]any{"k": "v"}), errOpenAIWSConnClosed)
+	_, err := lease.ReadMessage(10 * time.Millisecond)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	_, err = lease.ReadMessageContext(context.Background())
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	_, err = lease.ReadMessageWithContextTimeout(context.Background(), 10*time.Millisecond)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+}
+
+func TestOpenAIWSConn_AdditionalGuardBranches(t *testing.T) {
+	var nilConn *openAIWSConn
+	require.False(t, nilConn.tryAcquire())
+	require.ErrorIs(t, nilConn.acquire(context.Background()), errOpenAIWSConnClosed)
+	nilConn.release()
+	nilConn.close()
+	require.Equal(t, "", nilConn.handshakeHeader("x-test"))
+
+	connBusy := newOpenAIWSConn("busy_ctx", 1, &openAIWSFakeConn{}, nil)
+	require.True(t, connBusy.tryAcquire())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, connBusy.acquire(ctx), context.Canceled)
+	connBusy.release()
+
+	connClosed := newOpenAIWSConn("closed_guard", 1, &openAIWSFakeConn{}, nil)
+	connClosed.close()
+	require.ErrorIs(
+		t,
+		connClosed.writeJSONWithTimeout(context.Background(), map[string]any{"k": "v"}, time.Second),
+		errOpenAIWSConnClosed,
+	)
+	_, err := connClosed.readMessageWithContextTimeout(context.Background(), time.Second)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	require.ErrorIs(t, connClosed.pingWithTimeout(time.Second), errOpenAIWSConnClosed)
+
+	connNoWS := newOpenAIWSConn("no_ws", 1, nil, nil)
+	require.ErrorIs(t, connNoWS.writeJSON(map[string]any{"k": "v"}, context.Background()), errOpenAIWSConnClosed)
+	_, err = connNoWS.readMessage(context.Background())
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	require.ErrorIs(t, connNoWS.pingWithTimeout(time.Second), errOpenAIWSConnClosed)
+	require.Equal(t, "", connNoWS.handshakeHeader("x-test"))
+
+	connOK := newOpenAIWSConn("ok", 1, &openAIWSFakeConn{}, nil)
+	require.NoError(t, connOK.writeJSON(map[string]any{"k": "v"}, nil))
+	_, err = connOK.readMessageWithContextTimeout(nil, 0)
+	require.NoError(t, err)
+	require.NoError(t, connOK.pingWithTimeout(0))
+
+	connZero := newOpenAIWSConn("zero_ts", 1, &openAIWSFakeConn{}, nil)
+	connZero.createdAtNano.Store(0)
+	connZero.lastUsedNano.Store(0)
+	require.True(t, connZero.createdAt().IsZero())
+	require.True(t, connZero.lastUsedAt().IsZero())
+	require.Equal(t, time.Duration(0), connZero.idleDuration(time.Now()))
+	require.Equal(t, time.Duration(0), connZero.age(time.Now()))
+
+	require.Nil(t, cloneOpenAIWSAcquireRequestPtr(nil))
+	copied := cloneHeader(http.Header{
+		"X-Empty": []string{},
+		"X-Test":  []string{"v1"},
+	})
+	require.Contains(t, copied, "X-Empty")
+	require.Nil(t, copied["X-Empty"])
+	require.Equal(t, "v1", copied.Get("X-Test"))
+
+	closeOpenAIWSConns([]*openAIWSConn{nil, connOK})
+}
+
+func TestOpenAIWSConnLease_MarkBrokenEvictsConn(t *testing.T) {
+	pool := newOpenAIWSConnPool(&config.Config{})
+	accountID := int64(5001)
+	conn := newOpenAIWSConn("broken_me", accountID, &openAIWSFakeConn{}, nil)
+	ap := pool.getOrCreateAccountPool(accountID)
+	ap.mu.Lock()
+	ap.conns[conn.id] = conn
+	ap.mu.Unlock()
+
+	lease := &openAIWSConnLease{
+		pool:      pool,
+		accountID: accountID,
+		conn:      conn,
+	}
+	lease.MarkBroken()
+
+	ap.mu.Lock()
+	_, exists := ap.conns[conn.id]
+	ap.mu.Unlock()
+	require.False(t, exists)
+	require.False(t, conn.tryAcquire(), "被标记为 broken 的连接应被关闭")
+}
+
+func TestOpenAIWSConnPool_TargetConnCountAndPrewarmBranches(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	pool := newOpenAIWSConnPool(cfg)
+
+	require.Equal(t, 0, pool.targetConnCountLocked(nil, 1))
+	ap := &openAIWSAccountPool{conns: map[string]*openAIWSConn{}}
+	require.Equal(t, 0, pool.targetConnCountLocked(ap, 0))
+
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 3
+	require.Equal(t, 1, pool.targetConnCountLocked(ap, 1), "minIdle 应被 maxConns 截断")
+
+	// 覆盖 waiters>0 且 target 需要至少 len(conns)+1 的分支
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.PoolTargetUtilization = 0.9
+	busy := newOpenAIWSConn("busy_target", 2, &openAIWSFakeConn{}, nil)
+	require.True(t, busy.tryAcquire())
+	busy.waiters.Store(1)
+	ap.conns[busy.id] = busy
+	target := pool.targetConnCountLocked(ap, 4)
+	require.GreaterOrEqual(t, target, len(ap.conns)+1)
+
+	// prewarm: account pool 缺失时，拨号后的连接应被关闭并提前返回
+	req := openAIWSAcquireRequest{
+		Account: &Account{ID: 999, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		WSURL:   "wss://example.com/v1/responses",
+	}
+	pool.prewarmConns(999, req, 1)
+
+	// prewarm: 拨号失败分支（prewarmFails 累加）
+	accountID := int64(1000)
+	failPool := newOpenAIWSConnPool(cfg)
+	failPool.setClientDialerForTest(&openAIWSAlwaysFailDialer{})
+	apFail := failPool.getOrCreateAccountPool(accountID)
+	apFail.mu.Lock()
+	apFail.creating = 1
+	apFail.mu.Unlock()
+	req.Account.ID = accountID
+	failPool.prewarmConns(accountID, req, 1)
+	apFail.mu.Lock()
+	require.GreaterOrEqual(t, apFail.prewarmFails, 1)
+	apFail.mu.Unlock()
+}
+
+func TestOpenAIWSConnPool_Acquire_ErrorBranches(t *testing.T) {
+	var nilPool *openAIWSConnPool
+	_, err := nilPool.Acquire(context.Background(), openAIWSAcquireRequest{})
+	require.Error(t, err)
+
+	pool := newOpenAIWSConnPool(&config.Config{})
+	_, err = pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account: &Account{ID: 1},
+		WSURL:   "   ",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ws url is empty")
+
+	// target=nil 分支：池满且仅有 nil 连接
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.QueueLimitPerConn = 1
+	fullPool := newOpenAIWSConnPool(cfg)
+	account := &Account{ID: 2001, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	ap := fullPool.getOrCreateAccountPool(account.ID)
+	ap.mu.Lock()
+	ap.conns["nil"] = nil
+	ap.lastCleanupAt = time.Now()
+	ap.mu.Unlock()
+	_, err = fullPool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account: account,
+		WSURL:   "wss://example.com/v1/responses",
+	})
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+
+	// queue full 分支：waiters 达上限
+	account2 := &Account{ID: 2002, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	ap2 := fullPool.getOrCreateAccountPool(account2.ID)
+	conn := newOpenAIWSConn("queue_full", account2.ID, &openAIWSFakeConn{}, nil)
+	require.True(t, conn.tryAcquire())
+	conn.waiters.Store(1)
+	ap2.mu.Lock()
+	ap2.conns[conn.id] = conn
+	ap2.lastCleanupAt = time.Now()
+	ap2.mu.Unlock()
+	_, err = fullPool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account: account2,
+		WSURL:   "wss://example.com/v1/responses",
+	})
+	require.ErrorIs(t, err, errOpenAIWSConnQueueFull)
+}
+
 type openAIWSFakeDialer struct{}
 
 func (d *openAIWSFakeDialer) Dial(
@@ -658,6 +1160,46 @@ type openAIWSCountingDialer struct {
 type openAIWSAlwaysFailDialer struct {
 	mu        sync.Mutex
 	dialCount int
+}
+
+type openAIWSPingBlockingConn struct {
+	current       *atomic.Int32
+	maxConcurrent *atomic.Int32
+	release       <-chan struct{}
+}
+
+func (c *openAIWSPingBlockingConn) WriteJSON(context.Context, any) error {
+	return nil
+}
+
+func (c *openAIWSPingBlockingConn) ReadMessage(context.Context) ([]byte, error) {
+	return []byte(`{"type":"response.completed","response":{"id":"resp_blocking_ping"}}`), nil
+}
+
+func (c *openAIWSPingBlockingConn) Ping(ctx context.Context) error {
+	if c.current == nil || c.maxConcurrent == nil {
+		return nil
+	}
+
+	now := c.current.Add(1)
+	for {
+		prev := c.maxConcurrent.Load()
+		if now <= prev || c.maxConcurrent.CompareAndSwap(prev, now) {
+			break
+		}
+	}
+	defer c.current.Add(-1)
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.release:
+		return nil
+	}
+}
+
+func (c *openAIWSPingBlockingConn) Close() error {
+	return nil
 }
 
 func (d *openAIWSCountingDialer) Dial(
