@@ -1375,7 +1375,7 @@ func cloneOpenAIWSPayloadBytes(payload []byte) []byte {
 }
 
 func cloneOpenAIWSRawMessages(items []json.RawMessage) []json.RawMessage {
-	if len(items) == 0 {
+	if items == nil {
 		return nil
 	}
 	cloned := make([]json.RawMessage, 0, len(items))
@@ -1529,7 +1529,12 @@ func setOpenAIWSPayloadInputSequence(
 	if !fullInputExists {
 		return payload, nil
 	}
-	inputRaw, marshalErr := json.Marshal(fullInput)
+	// Preserve [] vs null semantics when input exists but is empty.
+	inputForMarshal := fullInput
+	if inputForMarshal == nil {
+		inputForMarshal = []json.RawMessage{}
+	}
+	inputRaw, marshalErr := json.Marshal(inputForMarshal)
 	if marshalErr != nil {
 		return nil, marshalErr
 	}
