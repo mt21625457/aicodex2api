@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -112,7 +113,7 @@ func TestReadRequestBodyWithPrealloc(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(payload))
 	req.ContentLength = int64(len(payload))
 
-	body, err := readRequestBodyWithPrealloc(req)
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(req)
 	require.NoError(t, err)
 	require.Equal(t, payload, string(body))
 }
@@ -122,7 +123,7 @@ func TestReadRequestBodyWithPrealloc_MaxBytesError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(strings.Repeat("x", 8)))
 	req.Body = http.MaxBytesReader(rec, req.Body, 4)
 
-	_, err := readRequestBodyWithPrealloc(req)
+	_, err := pkghttputil.ReadRequestBodyWithPrealloc(req)
 	require.Error(t, err)
 	var maxErr *http.MaxBytesError
 	require.ErrorAs(t, err, &maxErr)

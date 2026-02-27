@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS atlas_schema_revisions (
 // 任何稳定的 int64 值都可以，只要不与同一数据库中的其他锁冲突即可。
 const migrationsAdvisoryLockID int64 = 694208311321144027
 const migrationsLockRetryInterval = 500 * time.Millisecond
+const nonTransactionalMigrationSuffix = "_notx.sql"
 
 type migrationChecksumCompatibilityRule struct {
 	fileChecksum       string
@@ -185,8 +186,34 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 			return fmt.Errorf("check migration %s: %w", name, rowErr)
 		}
 
-		// 迁移未应用，在事务中执行。
-		// 使用事务确保迁移的原子性：要么完全成功，要么完全回滚。
+		nonTx, err := validateMigrationExecutionMode(name, content)
+		if err != nil {
+			return fmt.Errorf("validate migration %s: %w", name, err)
+		}
+
+		if nonTx {
+			// *_notx.sql：用于 CREATE/DROP INDEX CONCURRENTLY 场景，必须非事务执行。
+			// 逐条语句执行，避免将多条 CONCURRENTLY 语句放入同一个隐式事务块。
+			statements := splitSQLStatements(content)
+			for i, stmt := range statements {
+				trimmed := strings.TrimSpace(stmt)
+				if trimmed == "" {
+					continue
+				}
+				if stripSQLLineComment(trimmed) == "" {
+					continue
+				}
+				if _, err := db.ExecContext(ctx, trimmed); err != nil {
+					return fmt.Errorf("apply migration %s (non-tx statement %d): %w", name, i+1, err)
+				}
+			}
+			if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)", name, checksum); err != nil {
+				return fmt.Errorf("record migration %s (non-tx): %w", name, err)
+			}
+			continue
+		}
+
+		// 默认迁移在事务中执行，确保原子性：要么完全成功，要么完全回滚。
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", name, err)
@@ -298,6 +325,72 @@ func isMigrationChecksumCompatible(name, dbChecksum, fileChecksum string) bool {
 	}
 	_, ok = rule.acceptedDBChecksum[dbChecksum]
 	return ok
+}
+
+func validateMigrationExecutionMode(name, content string) (bool, error) {
+	normalizedName := strings.ToLower(strings.TrimSpace(name))
+	upperContent := strings.ToUpper(content)
+	nonTx := strings.HasSuffix(normalizedName, nonTransactionalMigrationSuffix)
+
+	if !nonTx {
+		if strings.Contains(upperContent, "CONCURRENTLY") {
+			return false, errors.New("CONCURRENTLY statements must be placed in *_notx.sql migrations")
+		}
+		return false, nil
+	}
+
+	if strings.Contains(upperContent, "BEGIN") || strings.Contains(upperContent, "COMMIT") || strings.Contains(upperContent, "ROLLBACK") {
+		return false, errors.New("*_notx.sql must not contain transaction control statements (BEGIN/COMMIT/ROLLBACK)")
+	}
+
+	statements := splitSQLStatements(content)
+	for _, stmt := range statements {
+		normalizedStmt := strings.ToUpper(stripSQLLineComment(strings.TrimSpace(stmt)))
+		if normalizedStmt == "" {
+			continue
+		}
+
+		if strings.Contains(normalizedStmt, "CONCURRENTLY") {
+			isCreateIndex := strings.Contains(normalizedStmt, "CREATE") && strings.Contains(normalizedStmt, "INDEX")
+			isDropIndex := strings.Contains(normalizedStmt, "DROP") && strings.Contains(normalizedStmt, "INDEX")
+			if !isCreateIndex && !isDropIndex {
+				return false, errors.New("*_notx.sql currently only supports CREATE/DROP INDEX CONCURRENTLY statements")
+			}
+			if isCreateIndex && !strings.Contains(normalizedStmt, "IF NOT EXISTS") {
+				return false, errors.New("CREATE INDEX CONCURRENTLY in *_notx.sql must include IF NOT EXISTS for idempotency")
+			}
+			if isDropIndex && !strings.Contains(normalizedStmt, "IF EXISTS") {
+				return false, errors.New("DROP INDEX CONCURRENTLY in *_notx.sql must include IF EXISTS for idempotency")
+			}
+			continue
+		}
+
+		return false, errors.New("*_notx.sql must not mix non-CONCURRENTLY SQL statements")
+	}
+
+	return true, nil
+}
+
+func splitSQLStatements(content string) []string {
+	parts := strings.Split(content, ";")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func stripSQLLineComment(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			lines[i] = line[:idx]
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // pgAdvisoryLock 获取 PostgreSQL Advisory Lock。

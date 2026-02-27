@@ -1229,9 +1229,22 @@ func (c *openAIWSCaptureConn) WriteJSON(ctx context.Context, value any) error {
 	if c.closed {
 		return errOpenAIWSConnClosed
 	}
-	if payload, ok := value.(map[string]any); ok {
+	switch payload := value.(type) {
+	case map[string]any:
 		c.lastWrite = cloneMapStringAny(payload)
 		c.writes = append(c.writes, cloneMapStringAny(payload))
+	case json.RawMessage:
+		var parsed map[string]any
+		if err := json.Unmarshal(payload, &parsed); err == nil {
+			c.lastWrite = cloneMapStringAny(parsed)
+			c.writes = append(c.writes, cloneMapStringAny(parsed))
+		}
+	case []byte:
+		var parsed map[string]any
+		if err := json.Unmarshal(payload, &parsed); err == nil {
+			c.lastWrite = cloneMapStringAny(parsed)
+			c.writes = append(c.writes, cloneMapStringAny(parsed))
+		}
 	}
 	return nil
 }

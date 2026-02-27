@@ -173,3 +173,23 @@ func TestEnqueueOpsErrorLog_EarlyReturnBranches(t *testing.T) {
 	enqueueOpsErrorLog(ops, entry)
 	require.Equal(t, int64(0), OpsErrorLogEnqueuedTotal())
 }
+
+func TestOpsCaptureWriterPool_ResetOnRelease(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	writer := acquireOpsCaptureWriter(c.Writer)
+	require.NotNil(t, writer)
+	_, err := writer.buf.WriteString("temp-error-body")
+	require.NoError(t, err)
+
+	releaseOpsCaptureWriter(writer)
+
+	reused := acquireOpsCaptureWriter(c.Writer)
+	defer releaseOpsCaptureWriter(reused)
+
+	require.Zero(t, reused.buf.Len(), "writer should be reset before reuse")
+}

@@ -105,6 +105,15 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.StickySessionTTLSeconds != 3600 {
 		t.Fatalf("Gateway.OpenAIWS.StickySessionTTLSeconds = %d, want 3600", cfg.Gateway.OpenAIWS.StickySessionTTLSeconds)
 	}
+	if !cfg.Gateway.OpenAIWS.SessionHashReadOldFallback {
+		t.Fatalf("Gateway.OpenAIWS.SessionHashReadOldFallback = false, want true")
+	}
+	if !cfg.Gateway.OpenAIWS.SessionHashDualWriteOld {
+		t.Fatalf("Gateway.OpenAIWS.SessionHashDualWriteOld = false, want true")
+	}
+	if !cfg.Gateway.OpenAIWS.MetadataBridgeEnabled {
+		t.Fatalf("Gateway.OpenAIWS.MetadataBridgeEnabled = false, want true")
+	}
 	if cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds != 3600 {
 		t.Fatalf("Gateway.OpenAIWS.StickyResponseIDTTLSeconds = %d, want 3600", cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds)
 	}
@@ -1313,15 +1322,15 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			},
 			wantErr: "gateway.openai_ws.min_idle_per_account must be <= max_idle_per_account",
 		},
-			{
-				name: "max_idle_per_account 不能大于 max_conns_per_account",
-				mutate: func(c *Config) {
-					c.Gateway.OpenAIWS.MaxConnsPerAccount = 2
-					c.Gateway.OpenAIWS.MinIdlePerAccount = 1
-					c.Gateway.OpenAIWS.MaxIdlePerAccount = 3
-				},
-				wantErr: "gateway.openai_ws.max_idle_per_account must be <= max_conns_per_account",
+		{
+			name: "max_idle_per_account 不能大于 max_conns_per_account",
+			mutate: func(c *Config) {
+				c.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+				c.Gateway.OpenAIWS.MinIdlePerAccount = 1
+				c.Gateway.OpenAIWS.MaxIdlePerAccount = 3
 			},
+			wantErr: "gateway.openai_ws.max_idle_per_account must be <= max_conns_per_account",
+		},
 		{
 			name:    "dial_timeout_seconds 必须为正数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.DialTimeoutSeconds = 0 },

@@ -1,12 +1,10 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -34,34 +33,6 @@ type OpenAIGatewayHandler struct {
 	errorPassthroughService *service.ErrorPassthroughService
 	concurrencyHelper       *ConcurrencyHelper
 	maxAccountSwitches      int
-}
-
-const (
-	openAIRequestBodyReadInitCap    = 512
-	openAIRequestBodyReadMaxInitCap = 1 << 20
-)
-
-func readRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
-	if req == nil || req.Body == nil {
-		return nil, nil
-	}
-	capHint := openAIRequestBodyReadInitCap
-	if req.ContentLength > 0 {
-		switch {
-		case req.ContentLength < int64(openAIRequestBodyReadInitCap):
-			capHint = openAIRequestBodyReadInitCap
-		case req.ContentLength > int64(openAIRequestBodyReadMaxInitCap):
-			capHint = openAIRequestBodyReadMaxInitCap
-		default:
-			capHint = int(req.ContentLength)
-		}
-	}
-
-	buf := bytes.NewBuffer(make([]byte, 0, capHint))
-	if _, err := io.Copy(buf, req.Body); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -126,7 +97,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// Read request body
-	body, err := readRequestBodyWithPrealloc(c.Request)
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))

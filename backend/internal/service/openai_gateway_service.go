@@ -221,6 +221,21 @@ type OpenAIWSRetryMetricsSnapshot struct {
 	NonRetryableFastFallbackTotal int64 `json:"non_retryable_fast_fallback_total"`
 }
 
+type OpenAICompatibilityFallbackMetricsSnapshot struct {
+	SessionHashLegacyReadFallbackTotal int64   `json:"session_hash_legacy_read_fallback_total"`
+	SessionHashLegacyReadFallbackHit   int64   `json:"session_hash_legacy_read_fallback_hit"`
+	SessionHashLegacyDualWriteTotal    int64   `json:"session_hash_legacy_dual_write_total"`
+	SessionHashLegacyReadHitRate       float64 `json:"session_hash_legacy_read_hit_rate"`
+
+	MetadataLegacyFallbackIsMaxTokensOneHaikuTotal int64 `json:"metadata_legacy_fallback_is_max_tokens_one_haiku_total"`
+	MetadataLegacyFallbackThinkingEnabledTotal     int64 `json:"metadata_legacy_fallback_thinking_enabled_total"`
+	MetadataLegacyFallbackPrefetchedStickyAccount  int64 `json:"metadata_legacy_fallback_prefetched_sticky_account_total"`
+	MetadataLegacyFallbackPrefetchedStickyGroup    int64 `json:"metadata_legacy_fallback_prefetched_sticky_group_total"`
+	MetadataLegacyFallbackSingleAccountRetryTotal  int64 `json:"metadata_legacy_fallback_single_account_retry_total"`
+	MetadataLegacyFallbackAccountSwitchCountTotal  int64 `json:"metadata_legacy_fallback_account_switch_count_total"`
+	MetadataLegacyFallbackTotal                    int64 `json:"metadata_legacy_fallback_total"`
+}
+
 type openAIWSRetryMetrics struct {
 	retryAttempts            atomic.Int64
 	retryBackoffMs           atomic.Int64
@@ -258,6 +273,7 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackUntil sync.Map // key: int64(accountID), value: time.Time
 	openaiWSRetryMetrics  openAIWSRetryMetrics
+	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -278,23 +294,24 @@ func NewOpenAIGatewayService(
 	openAITokenProvider *OpenAITokenProvider,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
-		accountRepo:         accountRepo,
-		usageLogRepo:        usageLogRepo,
-		userRepo:            userRepo,
-		userSubRepo:         userSubRepo,
-		cache:               cache,
-		cfg:                 cfg,
-		codexDetector:       NewOpenAICodexClientRestrictionDetector(cfg),
-		schedulerSnapshot:   schedulerSnapshot,
-		concurrencyService:  concurrencyService,
-		billingService:      billingService,
-		rateLimitService:    rateLimitService,
-		billingCacheService: billingCacheService,
-		httpUpstream:        httpUpstream,
-		deferredService:     deferredService,
-		openAITokenProvider: openAITokenProvider,
-		toolCorrector:       NewCodexToolCorrector(),
-		openaiWSResolver:    NewOpenAIWSProtocolResolver(cfg),
+		accountRepo:          accountRepo,
+		usageLogRepo:         usageLogRepo,
+		userRepo:             userRepo,
+		userSubRepo:          userSubRepo,
+		cache:                cache,
+		cfg:                  cfg,
+		codexDetector:        NewOpenAICodexClientRestrictionDetector(cfg),
+		schedulerSnapshot:    schedulerSnapshot,
+		concurrencyService:   concurrencyService,
+		billingService:       billingService,
+		rateLimitService:     rateLimitService,
+		billingCacheService:  billingCacheService,
+		httpUpstream:         httpUpstream,
+		deferredService:      deferredService,
+		openAITokenProvider:  openAITokenProvider,
+		toolCorrector:        NewCodexToolCorrector(),
+		openaiWSResolver:     NewOpenAIWSProtocolResolver(cfg),
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
@@ -629,6 +646,32 @@ func (s *OpenAIGatewayService) SnapshotOpenAIWSRetryMetrics() OpenAIWSRetryMetri
 	}
 }
 
+func SnapshotOpenAICompatibilityFallbackMetrics() OpenAICompatibilityFallbackMetricsSnapshot {
+	legacyReadFallbackTotal, legacyReadFallbackHit, legacyDualWriteTotal := openAIStickyCompatStats()
+	isMaxTokensOneHaiku, thinkingEnabled, prefetchedStickyAccount, prefetchedStickyGroup, singleAccountRetry, accountSwitchCount := RequestMetadataFallbackStats()
+
+	readHitRate := float64(0)
+	if legacyReadFallbackTotal > 0 {
+		readHitRate = float64(legacyReadFallbackHit) / float64(legacyReadFallbackTotal)
+	}
+	metadataFallbackTotal := isMaxTokensOneHaiku + thinkingEnabled + prefetchedStickyAccount + prefetchedStickyGroup + singleAccountRetry + accountSwitchCount
+
+	return OpenAICompatibilityFallbackMetricsSnapshot{
+		SessionHashLegacyReadFallbackTotal: legacyReadFallbackTotal,
+		SessionHashLegacyReadFallbackHit:   legacyReadFallbackHit,
+		SessionHashLegacyDualWriteTotal:    legacyDualWriteTotal,
+		SessionHashLegacyReadHitRate:       readHitRate,
+
+		MetadataLegacyFallbackIsMaxTokensOneHaikuTotal: isMaxTokensOneHaiku,
+		MetadataLegacyFallbackThinkingEnabledTotal:     thinkingEnabled,
+		MetadataLegacyFallbackPrefetchedStickyAccount:  prefetchedStickyAccount,
+		MetadataLegacyFallbackPrefetchedStickyGroup:    prefetchedStickyGroup,
+		MetadataLegacyFallbackSingleAccountRetryTotal:  singleAccountRetry,
+		MetadataLegacyFallbackAccountSwitchCountTotal:  accountSwitchCount,
+		MetadataLegacyFallbackTotal:                    metadataFallbackTotal,
+	}
+}
+
 func (s *OpenAIGatewayService) detectCodexClientRestriction(c *gin.Context, account *Account) CodexClientRestrictionDetectionResult {
 	return s.getCodexClientRestrictionDetector().Detect(c, account)
 }
@@ -855,8 +898,9 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 		return ""
 	}
 
-	hash := sha256.Sum256([]byte(sessionID))
-	return hex.EncodeToString(hash[:])
+	currentHash, legacyHash := deriveOpenAISessionHashes(sessionID)
+	attachOpenAILegacySessionHashToGin(c, legacyHash)
+	return currentHash
 }
 
 // BindStickySession sets session -> account binding with standard TTL.
@@ -868,7 +912,7 @@ func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *i
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
 		ttl = time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
 	}
-	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash, accountID, ttl)
+	return s.setStickySessionAccountID(ctx, groupID, sessionHash, accountID, ttl)
 }
 
 // SelectAccount selects an OpenAI account with sticky session support
@@ -884,11 +928,13 @@ func (s *OpenAIGatewayService) SelectAccountForModel(ctx context.Context, groupI
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 // SelectAccountForModelWithExclusions 选择支持指定模型的账号，同时排除指定的账号。
 func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
-	cacheKey := "openai:" + sessionHash
+	return s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, 0)
+}
 
+func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, stickyAccountID int64) (*Account, error) {
 	// 1. 尝试粘性会话命中
 	// Try sticky session hit
-	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, cacheKey, requestedModel, excludedIDs); account != nil {
+	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, requestedModel, excludedIDs, stickyAccountID); account != nil {
 		return account, nil
 	}
 
@@ -913,7 +959,7 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 	// 4. 设置粘性会话绑定
 	// Set sticky session binding
 	if sessionHash != "" {
-		_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, selected.ID, openaiStickySessionTTL)
+		_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, selected.ID, openaiStickySessionTTL)
 	}
 
 	return selected, nil
@@ -924,14 +970,18 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 //
 // tryStickySessionHit attempts to get account from sticky session.
 // Returns account if hit and usable; clears session and returns nil if account is unavailable.
-func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID *int64, sessionHash, cacheKey, requestedModel string, excludedIDs map[int64]struct{}) *Account {
+func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID *int64, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, stickyAccountID int64) *Account {
 	if sessionHash == "" {
 		return nil
 	}
 
-	accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
-	if err != nil || accountID <= 0 {
-		return nil
+	accountID := stickyAccountID
+	if accountID <= 0 {
+		var err error
+		accountID, err = s.getStickySessionAccountID(ctx, groupID, sessionHash)
+		if err != nil || accountID <= 0 {
+			return nil
+		}
 	}
 
 	if _, excluded := excludedIDs[accountID]; excluded {
@@ -946,7 +996,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	// 检查账号是否需要清理粘性会话
 	// Check if sticky session should be cleared
 	if shouldClearStickySession(account, requestedModel) {
-		_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
 
@@ -961,7 +1011,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
-	_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), cacheKey, openaiStickySessionTTL)
+	_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
 	return account
 }
 
@@ -1047,12 +1097,12 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	cfg := s.schedulingConfig()
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
-		if accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash); err == nil {
+		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil {
 			stickyAccountID = accountID
 		}
 	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
-		account, err := s.SelectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs)
+		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, stickyAccountID)
 		if err != nil {
 			return nil, err
 		}
@@ -1107,19 +1157,19 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 
 	// ============ Layer 1: Sticky session ============
 	if sessionHash != "" {
-		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash)
-		if err == nil && accountID > 0 && !isExcluded(accountID) {
+		accountID := stickyAccountID
+		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
 			if err == nil {
 				clearSticky := shouldClearStickySession(account, requestedModel)
 				if clearSticky {
-					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash)
+					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				}
 				if !clearSticky && account.IsSchedulable() && account.IsOpenAI() &&
 					(requestedModel == "" || account.IsModelSupported(requestedModel)) {
 					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 					if err == nil && result.Acquired {
-						_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), "openai:"+sessionHash, openaiStickySessionTTL)
+						_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
 						return &AccountSelectionResult{
 							Account:     account,
 							Acquired:    true,
@@ -1183,7 +1233,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
 			if err == nil && result.Acquired {
 				if sessionHash != "" {
-					_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash, acc.ID, openaiStickySessionTTL)
+					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, acc.ID, openaiStickySessionTTL)
 				}
 				return &AccountSelectionResult{
 					Account:     acc,
@@ -1233,7 +1283,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 				result, err := s.tryAcquireAccountSlot(ctx, item.account.ID, item.account.Concurrency)
 				if err == nil && result.Acquired {
 					if sessionHash != "" {
-						_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), "openai:"+sessionHash, item.account.ID, openaiStickySessionTTL)
+						_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, item.account.ID, openaiStickySessionTTL)
 					}
 					return &AccountSelectionResult{
 						Account:     item.account,
@@ -1430,12 +1480,61 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	// Track if body needs re-serialization
 	bodyModified := false
+	// 单字段补丁快速路径：只要整个变更集最终可归约为同一路径的 set/delete，就避免全量 Marshal。
+	patchDisabled := false
+	patchHasOp := false
+	patchDelete := false
+	patchPath := ""
+	var patchValue any
+	markPatchSet := func(path string, value any) {
+		if strings.TrimSpace(path) == "" {
+			patchDisabled = true
+			return
+		}
+		if patchDisabled {
+			return
+		}
+		if !patchHasOp {
+			patchHasOp = true
+			patchDelete = false
+			patchPath = path
+			patchValue = value
+			return
+		}
+		if patchDelete || patchPath != path {
+			patchDisabled = true
+			return
+		}
+		patchValue = value
+	}
+	markPatchDelete := func(path string) {
+		if strings.TrimSpace(path) == "" {
+			patchDisabled = true
+			return
+		}
+		if patchDisabled {
+			return
+		}
+		if !patchHasOp {
+			patchHasOp = true
+			patchDelete = true
+			patchPath = path
+			return
+		}
+		if !patchDelete || patchPath != path {
+			patchDisabled = true
+		}
+	}
+	disablePatch := func() {
+		patchDisabled = true
+	}
 
 	// 非透传模式下，保持历史行为：非 Codex CLI 请求在 instructions 为空时注入默认指令。
 	if !isCodexCLI && isInstructionsEmpty(reqBody) {
 		if instructions := strings.TrimSpace(GetOpenCodeInstructions()); instructions != "" {
 			reqBody["instructions"] = instructions
 			bodyModified = true
+			markPatchSet("instructions", instructions)
 		}
 	}
 
@@ -1445,6 +1544,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", reqModel, mappedModel, account.Name, isCodexCLI)
 		reqBody["model"] = mappedModel
 		bodyModified = true
+		markPatchSet("model", mappedModel)
 	}
 
 	// 针对所有 OpenAI 账号执行 Codex 模型名规范化，确保上游识别一致。
@@ -1456,6 +1556,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			reqBody["model"] = normalizedModel
 			mappedModel = normalizedModel
 			bodyModified = true
+			markPatchSet("model", normalizedModel)
 		}
 	}
 
@@ -1464,6 +1565,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if effort, ok := reasoning["effort"].(string); ok && effort == "minimal" {
 			reasoning["effort"] = "none"
 			bodyModified = true
+			markPatchSet("reasoning.effort", "none")
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized reasoning.effort: minimal -> none (account: %s)", account.Name)
 		}
 	}
@@ -1472,6 +1574,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI)
 		if codexResult.Modified {
 			bodyModified = true
+			disablePatch()
 		}
 		if codexResult.NormalizedModel != "" {
 			mappedModel = codexResult.NormalizedModel
@@ -1491,22 +1594,27 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				if account.Type == AccountTypeAPIKey {
 					delete(reqBody, "max_output_tokens")
 					bodyModified = true
+					markPatchDelete("max_output_tokens")
 				}
 			case PlatformAnthropic:
 				// For Anthropic (Claude), convert to max_tokens
 				delete(reqBody, "max_output_tokens")
+				markPatchDelete("max_output_tokens")
 				if _, hasMaxTokens := reqBody["max_tokens"]; !hasMaxTokens {
 					reqBody["max_tokens"] = maxOutputTokens
+					disablePatch()
 				}
 				bodyModified = true
 			case PlatformGemini:
 				// For Gemini, remove (will be handled by Gemini-specific transform)
 				delete(reqBody, "max_output_tokens")
 				bodyModified = true
+				markPatchDelete("max_output_tokens")
 			default:
 				// For unknown platforms, remove to be safe
 				delete(reqBody, "max_output_tokens")
 				bodyModified = true
+				markPatchDelete("max_output_tokens")
 			}
 		}
 
@@ -1515,6 +1623,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if account.Type == AccountTypeAPIKey || account.Platform != PlatformOpenAI {
 				delete(reqBody, "max_completion_tokens")
 				bodyModified = true
+				markPatchDelete("max_completion_tokens")
 			}
 		}
 
@@ -1524,6 +1633,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if _, has := reqBody[unsupportedField]; has {
 				delete(reqBody, unsupportedField)
 				bodyModified = true
+				markPatchDelete(unsupportedField)
 			}
 		}
 	}
@@ -1534,15 +1644,30 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if _, has := reqBody["previous_response_id"]; has {
 			delete(reqBody, "previous_response_id")
 			bodyModified = true
+			markPatchDelete("previous_response_id")
 		}
 	}
 
 	// Re-serialize body only if modified
 	if bodyModified {
-		var err error
-		body, err = json.Marshal(reqBody)
-		if err != nil {
-			return nil, fmt.Errorf("serialize request body: %w", err)
+		serializedByPatch := false
+		if !patchDisabled && patchHasOp {
+			var patchErr error
+			if patchDelete {
+				body, patchErr = sjson.DeleteBytes(body, patchPath)
+			} else {
+				body, patchErr = sjson.SetBytes(body, patchPath, patchValue)
+			}
+			if patchErr == nil {
+				serializedByPatch = true
+			}
+		}
+		if !serializedByPatch {
+			var marshalErr error
+			body, marshalErr = json.Marshal(reqBody)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("serialize request body: %w", marshalErr)
+			}
 		}
 	}
 
@@ -2111,7 +2236,7 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 		UpstreamResponseBody: upstreamDetail,
 	})
 
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.cfg)
+	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/json"
@@ -2178,7 +2303,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	account *Account,
 	startTime time.Time,
 ) (*openaiStreamingResultPassthrough, error) {
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.cfg)
+	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	// SSE headers
 	c.Header("Content-Type", "text/event-stream")
@@ -2305,7 +2430,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		usage = s.parseSSEUsageFromBody(string(body))
 	}
 
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.cfg)
+	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
@@ -2315,12 +2440,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	return usage, nil
 }
 
-func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, cfg *config.Config) {
+func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, filter *responseheaders.CompiledHeaderFilter) {
 	if dst == nil || src == nil {
 		return
 	}
-	if cfg != nil {
-		responseheaders.WriteFilteredHeaders(dst, src, cfg.Security.ResponseHeaders)
+	if filter != nil {
+		responseheaders.WriteFilteredHeaders(dst, src, filter)
 	} else {
 		// 兜底：尽量保留最基础的 content-type
 		if v := strings.TrimSpace(src.Get("Content-Type")); v != "" {
@@ -2599,8 +2724,8 @@ type openaiStreamingResult struct {
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
-	if s.cfg != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 
 	// Set SSE response headers
@@ -3022,7 +3147,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
 
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -3064,7 +3189,7 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 		body = []byte(bodyText)
 	}
 
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json; charset=utf-8"
 	if !ok {
@@ -3624,6 +3749,9 @@ func getOpenAIRequestBodyMap(c *gin.Context, body []byte) (map[string]any, error
 	var reqBody map[string]any
 	if err := json.Unmarshal(body, &reqBody); err != nil {
 		return nil, fmt.Errorf("parse request: %w", err)
+	}
+	if c != nil {
+		c.Set(OpenAIParsedRequestBodyKey, reqBody)
 	}
 	return reqBody, nil
 }
