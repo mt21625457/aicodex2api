@@ -175,13 +175,13 @@
       <!-- Account Type Selection (Sora) -->
       <div v-if="form.platform === 'sora'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2 grid grid-cols-1 gap-3" data-tour="account-form-type">
+        <div class="mt-2 grid grid-cols-2 gap-3" data-tour="account-form-type">
           <button
             type="button"
-            @click="accountCategory = 'oauth-based'"
+            @click="soraAccountType = 'oauth'; accountCategory = 'oauth-based'; addMethod = 'oauth'"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
-              accountCategory === 'oauth-based'
+              soraAccountType === 'oauth'
                 ? 'border-rose-500 bg-rose-50 dark:bg-rose-900/20'
                 : 'border-gray-200 hover:border-rose-300 dark:border-dark-600 dark:hover:border-rose-700'
             ]"
@@ -189,7 +189,7 @@
             <div
               :class="[
                 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                accountCategory === 'oauth-based'
+                soraAccountType === 'oauth'
                   ? 'bg-rose-500 text-white'
                   : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
               ]"
@@ -199,6 +199,31 @@
             <div>
               <span class="block text-sm font-medium text-gray-900 dark:text-white">OAuth</span>
               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.chatgptOauth') }}</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            @click="soraAccountType = 'apikey'; accountCategory = 'apikey'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              soraAccountType === 'apikey'
+                ? 'border-rose-500 bg-rose-50 dark:bg-rose-900/20'
+                : 'border-gray-200 hover:border-rose-300 dark:border-dark-600 dark:hover:border-rose-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                soraAccountType === 'apikey'
+                  ? 'bg-rose-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="link" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.types.soraApiKey') }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.soraApiKeyHint') }}</span>
             </div>
           </button>
         </div>
@@ -879,14 +904,14 @@
             type="text"
             class="input"
             :placeholder="
-              form.platform === 'openai'
+              form.platform === 'openai' || form.platform === 'sora'
                 ? 'https://api.openai.com'
                 : form.platform === 'gemini'
                   ? 'https://generativelanguage.googleapis.com'
                   : 'https://api.anthropic.com'
             "
           />
-          <p class="input-hint">{{ baseUrlHint }}</p>
+          <p class="input-hint">{{ form.platform === 'sora' ? t('admin.accounts.soraUpstreamBaseUrlHint') : baseUrlHint }}</p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
@@ -2343,6 +2368,7 @@ const codexCLIOnlyEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
 const antigravityAccountType = ref<'oauth' | 'upstream'>('oauth') // For antigravity: oauth or upstream
+const soraAccountType = ref<'oauth' | 'apikey'>('oauth') // For sora: oauth or apikey (upstream)
 const upstreamBaseUrl = ref('') // For upstream type: base URL
 const upstreamApiKey = ref('') // For upstream type: API key
 const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
@@ -2544,12 +2570,17 @@ watch(
   }
 )
 
-// Sync form.type based on accountCategory, addMethod, and antigravityAccountType
+// Sync form.type based on accountCategory, addMethod, and platform-specific type
 watch(
-  [accountCategory, addMethod, antigravityAccountType],
-  ([category, method, agType]) => {
+  [accountCategory, addMethod, antigravityAccountType, soraAccountType],
+  ([category, method, agType, soraType]) => {
     // Antigravity upstream 类型（实际创建为 apikey）
     if (form.platform === 'antigravity' && agType === 'upstream') {
+      form.type = 'apikey'
+      return
+    }
+    // Sora apikey 类型（上游透传）
+    if (form.platform === 'sora' && soraType === 'apikey') {
       form.type = 'apikey'
       return
     }
@@ -2595,9 +2626,11 @@ watch(
       interceptWarmupRequests.value = false
     }
     if (newPlatform === 'sora') {
+      // 默认 OAuth，但允许用户选择 API Key
       accountCategory.value = 'oauth-based'
       addMethod.value = 'oauth'
       form.type = 'oauth'
+      soraAccountType.value = 'oauth'
     }
     if (newPlatform !== 'openai') {
       openaiPassthroughEnabled.value = false
@@ -3169,9 +3202,22 @@ const handleSubmit = async () => {
     return
   }
 
+  // Sora apikey 账号 base_url 必填 + scheme 校验
+  if (form.platform === 'sora') {
+    const soraBaseUrl = apiKeyBaseUrl.value.trim()
+    if (!soraBaseUrl) {
+      appStore.showError(t('admin.accounts.soraBaseUrlRequired'))
+      return
+    }
+    if (!soraBaseUrl.startsWith('http://') && !soraBaseUrl.startsWith('https://')) {
+      appStore.showError(t('admin.accounts.soraBaseUrlInvalidScheme'))
+      return
+    }
+  }
+
   // Determine default base URL based on platform
   const defaultBaseUrl =
-    (form.platform === 'openai' || form.platform === 'sora')
+    form.platform === 'openai'
       ? 'https://api.openai.com'
       : form.platform === 'gemini'
         ? 'https://generativelanguage.googleapis.com'

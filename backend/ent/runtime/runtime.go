@@ -399,24 +399,28 @@ func init() {
 	groupDescDefaultValidityDays := groupFields[10].Descriptor()
 	// group.DefaultDefaultValidityDays holds the default value on creation for the default_validity_days field.
 	group.DefaultDefaultValidityDays = groupDescDefaultValidityDays.Default.(int)
+	// groupDescSoraStorageQuotaBytes is the schema descriptor for sora_storage_quota_bytes field.
+	groupDescSoraStorageQuotaBytes := groupFields[18].Descriptor()
+	// group.DefaultSoraStorageQuotaBytes holds the default value on creation for the sora_storage_quota_bytes field.
+	group.DefaultSoraStorageQuotaBytes = groupDescSoraStorageQuotaBytes.Default.(int64)
 	// groupDescClaudeCodeOnly is the schema descriptor for claude_code_only field.
-	groupDescClaudeCodeOnly := groupFields[18].Descriptor()
+	groupDescClaudeCodeOnly := groupFields[19].Descriptor()
 	// group.DefaultClaudeCodeOnly holds the default value on creation for the claude_code_only field.
 	group.DefaultClaudeCodeOnly = groupDescClaudeCodeOnly.Default.(bool)
 	// groupDescModelRoutingEnabled is the schema descriptor for model_routing_enabled field.
-	groupDescModelRoutingEnabled := groupFields[22].Descriptor()
+	groupDescModelRoutingEnabled := groupFields[23].Descriptor()
 	// group.DefaultModelRoutingEnabled holds the default value on creation for the model_routing_enabled field.
 	group.DefaultModelRoutingEnabled = groupDescModelRoutingEnabled.Default.(bool)
 	// groupDescMcpXMLInject is the schema descriptor for mcp_xml_inject field.
-	groupDescMcpXMLInject := groupFields[23].Descriptor()
+	groupDescMcpXMLInject := groupFields[24].Descriptor()
 	// group.DefaultMcpXMLInject holds the default value on creation for the mcp_xml_inject field.
 	group.DefaultMcpXMLInject = groupDescMcpXMLInject.Default.(bool)
 	// groupDescSupportedModelScopes is the schema descriptor for supported_model_scopes field.
-	groupDescSupportedModelScopes := groupFields[24].Descriptor()
+	groupDescSupportedModelScopes := groupFields[25].Descriptor()
 	// group.DefaultSupportedModelScopes holds the default value on creation for the supported_model_scopes field.
 	group.DefaultSupportedModelScopes = groupDescSupportedModelScopes.Default.([]string)
 	// groupDescSortOrder is the schema descriptor for sort_order field.
-	groupDescSortOrder := groupFields[25].Descriptor()
+	groupDescSortOrder := groupFields[26].Descriptor()
 	// group.DefaultSortOrder holds the default value on creation for the sort_order field.
 	group.DefaultSortOrder = groupDescSortOrder.Default.(int)
 	idempotencyrecordMixin := schema.IdempotencyRecord{}.Mixin()
@@ -954,6 +958,14 @@ func init() {
 	userDescTotpEnabled := userFields[9].Descriptor()
 	// user.DefaultTotpEnabled holds the default value on creation for the totp_enabled field.
 	user.DefaultTotpEnabled = userDescTotpEnabled.Default.(bool)
+	// userDescSoraStorageQuotaBytes is the schema descriptor for sora_storage_quota_bytes field.
+	userDescSoraStorageQuotaBytes := userFields[11].Descriptor()
+	// user.DefaultSoraStorageQuotaBytes holds the default value on creation for the sora_storage_quota_bytes field.
+	user.DefaultSoraStorageQuotaBytes = userDescSoraStorageQuotaBytes.Default.(int64)
+	// userDescSoraStorageUsedBytes is the schema descriptor for sora_storage_used_bytes field.
+	userDescSoraStorageUsedBytes := userFields[12].Descriptor()
+	// user.DefaultSoraStorageUsedBytes holds the default value on creation for the sora_storage_used_bytes field.
+	user.DefaultSoraStorageUsedBytes = userDescSoraStorageUsedBytes.Default.(int64)
 	userallowedgroupFields := schema.UserAllowedGroup{}.Fields()
 	_ = userallowedgroupFields
 	// userallowedgroupDescCreatedAt is the schema descriptor for created_at field.

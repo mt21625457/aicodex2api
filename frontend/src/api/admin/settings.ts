@@ -251,6 +251,64 @@ export async function updateStreamTimeoutSettings(
   return data
 }
 
+// ==================== Sora S3 Settings ====================
+
+export interface SoraS3Settings {
+  enabled: boolean
+  endpoint: string
+  region: string
+  bucket: string
+  access_key_id: string
+  secret_access_key_configured: boolean
+  prefix: string
+  force_path_style: boolean
+  cdn_url: string
+  default_storage_quota_bytes: number
+}
+
+export interface UpdateSoraS3SettingsRequest {
+  enabled: boolean
+  endpoint: string
+  region: string
+  bucket: string
+  access_key_id: string
+  secret_access_key?: string
+  prefix: string
+  force_path_style: boolean
+  cdn_url: string
+  default_storage_quota_bytes: number
+}
+
+export interface TestSoraS3ConnectionRequest {
+  enabled: boolean
+  endpoint: string
+  region: string
+  bucket: string
+  access_key_id: string
+  secret_access_key?: string
+  prefix: string
+  force_path_style: boolean
+  cdn_url: string
+  default_storage_quota_bytes?: number
+}
+
+export async function getSoraS3Settings(): Promise<SoraS3Settings> {
+  const { data } = await apiClient.get<SoraS3Settings>('/admin/settings/sora-s3')
+  return data
+}
+
+export async function updateSoraS3Settings(settings: UpdateSoraS3SettingsRequest): Promise<SoraS3Settings> {
+  const { data } = await apiClient.put<SoraS3Settings>('/admin/settings/sora-s3', settings)
+  return data
+}
+
+export async function testSoraS3Connection(
+  settings: TestSoraS3ConnectionRequest
+): Promise<{ message: string }> {
+  const { data } = await apiClient.post<{ message: string }>('/admin/settings/sora-s3/test', settings)
+  return data
+}
+
 export const settingsAPI = {
   getSettings,
   updateSettings,
@@ -260,7 +318,10 @@ export const settingsAPI = {
   regenerateAdminApiKey,
   deleteAdminApiKey,
   getStreamTimeoutSettings,
-  updateStreamTimeoutSettings
+  updateStreamTimeoutSettings,
+  getSoraS3Settings,
+  updateSoraS3Settings,
+  testSoraS3Connection
 }
 
 export default settingsAPI
