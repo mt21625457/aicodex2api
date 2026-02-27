@@ -1,25 +1,44 @@
 ## ADDED Requirements
 
 ### Requirement: Sora 客户端路由与菜单
-系统 SHALL 在前端新增 Sora 客户端页面，可通过侧边栏菜单访问。
+系统 SHALL 在前端新增 Sora 客户端页面，可通过侧边栏菜单访问。菜单项的显示须与现有侧边栏风格一致，并遵循条件显示、简单模式、双菜单同步等现有模式。
 
 #### Scenario: 路由注册
 - **WHEN** 前端路由初始化
 - **THEN** 系统 SHALL 注册 `/sora` 路由，加载 `SoraView.vue` 页面
-- **AND** 路由 SHALL 需要用户登录认证
+- **AND** 路由 meta SHALL 设置 `requiresAuth: true, requiresAdmin: false`
 
-#### Scenario: 侧边栏菜单项
+#### Scenario: 侧边栏菜单项（条件显示）
 - **WHEN** 用户登录后查看侧边栏
+- **AND** 公共设置 `sora_client_enabled` 为 true（后端根据是否存在活跃 Sora 账号自动推断）
 - **THEN** 侧边栏 SHALL 显示"Sora"菜单项
+- **AND** 菜单项 SHALL 使用 Heroicons 线性风格的 Sparkles 图标（与现有侧边栏图标统一为 stroke 风格，`h-5 w-5`）
 - **AND** 点击后 SHALL 跳转到 `/sora` 页面
 
-### Requirement: Sora 客户端导航栏
-系统 SHALL 在 Sora 客户端页面顶部显示导航栏，包含 Tab 切换和配额信息。
+#### Scenario: 菜单项在管理员未启用 Sora 时隐藏
+- **WHEN** 公共设置 `sora_client_enabled` 为 false（无活跃 Sora 账号）
+- **THEN** 侧边栏 SHALL 不显示"Sora"菜单项
+- **AND** 用户直接访问 `/sora` 时 SHALL 显示功能未启用提示页
 
-#### Scenario: 导航栏显示
+#### Scenario: 菜单位置与双菜单同步
+- **WHEN** Sora 菜单项显示
+- **THEN** 对于普通用户（`userNavItems`），Sora SHALL 位于"Dashboard"之后、"API 密钥"之前
+- **AND** 对于管理员"我的账户"区域（`personalNavItems`），Sora SHALL 位于"API 密钥"之后、"使用记录"之前
+- **AND** 两个菜单列表 SHALL 同步添加（确保管理员和普通用户均可访问）
+
+#### Scenario: 简单模式隐藏
+- **WHEN** 系统处于简单模式（`isSimpleMode = true`）
+- **THEN** Sora 菜单项 SHALL 隐藏（`hideInSimpleMode: true`）
+
+### Requirement: Sora 客户端页面内导航
+系统 SHALL 在 Sora 客户端页面顶部显示页面内导航栏，仅包含 Tab 切换和配额信息。Sora 页面嵌入在全局侧边栏布局内，不独立展示 Logo 或用户头像（这些已由全局侧边栏提供）。
+
+#### Scenario: 页面内导航栏显示
 - **WHEN** 用户进入 Sora 客户端页面
-- **THEN** 顶部 SHALL 显示导航栏，包含 Logo "Sora"、"生成"/"作品库" Tab 切换
-- **AND** 右侧 SHALL 显示配额进度条（如 "2.1GB / 5GB"）和用户头像
+- **THEN** 页面顶部 SHALL 显示页面内导航栏，包含"生成"/"作品库" Tab 切换
+- **AND** 右侧 SHALL 显示配额进度条（如 "2.1GB / 5GB"）
+- **AND** 导航栏 SHALL 不包含 Logo 和用户头像（避免与全局侧边栏重复）
+- **AND** Sora 页面 SHALL 保留在全局侧边栏布局内渲染（用户可通过侧边栏随时切换到其他页面）
 
 #### Scenario: Tab 切换
 - **WHEN** 用户点击"生成"或"作品库" Tab
