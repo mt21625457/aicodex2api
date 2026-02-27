@@ -39,15 +39,15 @@ func TestOpenAIWSProtocolResolver_Resolve(t *testing.T) {
 		require.Equal(t, "ws_v1_enabled", decision.Reason)
 	})
 
-	t.Run("透传优先强制HTTP", func(t *testing.T) {
+	t.Run("透传开关不影响WS协议判定", func(t *testing.T) {
 		account := *openAIOAuthEnabled
 		account.Extra = map[string]any{
 			"openai_oauth_responses_websockets_v2_enabled": true,
 			"openai_passthrough":                           true,
 		}
 		decision := NewOpenAIWSProtocolResolver(baseCfg).Resolve(&account)
-		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
-		require.Equal(t, "passthrough_priority", decision.Reason)
+		require.Equal(t, OpenAIUpstreamTransportResponsesWebsocketV2, decision.Transport)
+		require.Equal(t, "ws_v2_enabled", decision.Reason)
 	})
 
 	t.Run("账号级强制HTTP", func(t *testing.T) {
