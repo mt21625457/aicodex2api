@@ -148,29 +148,6 @@ onMounted(async () => {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 暗色模式 — 跟随应用 dark 类 */
-:global(.dark) .sora-root {
-  --sora-bg-primary: #020617;
-  --sora-bg-secondary: #0f172a;
-  --sora-bg-tertiary: #1e293b;
-  --sora-bg-elevated: #1e293b;
-  --sora-bg-hover: #334155;
-  --sora-bg-input: #0f172a;
-  --sora-text-primary: #f1f5f9;
-  --sora-text-secondary: #94a3b8;
-  --sora-text-tertiary: #64748b;
-  --sora-text-muted: #475569;
-  --sora-border-color: #334155;
-  --sora-border-subtle: #1e293b;
-  --sora-shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
-  --sora-shadow-md: 0 4px 12px rgba(0,0,0,0.4);
-  --sora-shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
-  --sora-shadow-glow: 0 0 20px rgba(20,184,166,0.3);
-  --sora-header-bg: rgba(2, 6, 23, 0.85);
-  --sora-placeholder-gradient: linear-gradient(135deg, #1e293b 0%, #0f172a 50%, #020617 100%);
-  --sora-modal-backdrop: rgba(0, 0, 0, 0.7);
-}
-
 /* ============================================================
    页面布局
    ============================================================ */
@@ -363,5 +340,30 @@ onMounted(async () => {
 
 .sora-root ::-webkit-scrollbar-thumb:hover {
   background: var(--sora-text-tertiary);
+}
+</style>
+
+<style>
+/* 暗色模式：必须明确命中 .sora-root，避免被 scoped 编译后的变量覆盖问题 */
+html.dark .sora-root {
+  --sora-bg-primary: #020617;
+  --sora-bg-secondary: #0f172a;
+  --sora-bg-tertiary: #1e293b;
+  --sora-bg-elevated: #1e293b;
+  --sora-bg-hover: #334155;
+  --sora-bg-input: #0f172a;
+  --sora-text-primary: #f1f5f9;
+  --sora-text-secondary: #94a3b8;
+  --sora-text-tertiary: #64748b;
+  --sora-text-muted: #475569;
+  --sora-border-color: #334155;
+  --sora-border-subtle: #1e293b;
+  --sora-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --sora-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --sora-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --sora-shadow-glow: 0 0 20px rgba(20, 184, 166, 0.3);
+  --sora-header-bg: rgba(2, 6, 23, 0.85);
+  --sora-placeholder-gradient: linear-gradient(135deg, #1e293b 0%, #0f172a 50%, #020617 100%);
+  --sora-modal-backdrop: rgba(0, 0, 0, 0.7);
 }
 </style>

@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -14,6 +18,12 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+)
+
+const (
+	// 上游模型缓存 TTL
+	modelCacheTTL       = 1 * time.Hour  // 上游获取成功
+	modelCacheFailedTTL = 2 * time.Minute // 上游获取失败（降级到本地）
 )
 
 // SoraClientHandler 处理 Sora 客户端 API 请求。
@@ -24,6 +34,12 @@ type SoraClientHandler struct {
 	soraGatewayService *service.SoraGatewayService
 	gatewayService     *service.GatewayService
 	mediaStorage       *service.SoraMediaStorage
+
+	// 上游模型缓存
+	modelCacheMu       sync.RWMutex
+	cachedFamilies     []service.SoraModelFamily
+	modelCacheTime     time.Time
+	modelCacheUpstream bool // 是否来自上游（决定 TTL）
 }
 
 // NewSoraClientHandler 创建 Sora 客户端 Handler。
@@ -702,9 +718,143 @@ func getUserIDFromContext(c *gin.Context) int64 {
 	return 0
 }
 
-// GetModels 获取可用 Sora 模型家族列表（从 soraModelConfigs 自动聚合）。
+// GetModels 获取可用 Sora 模型家族列表。
+// 优先从上游 Sora API 同步模型列表，失败时降级到本地配置。
 // GET /api/v1/sora/models
 func (h *SoraClientHandler) GetModels(c *gin.Context) {
-	families := service.BuildSoraModelFamilies()
+	families := h.getModelFamilies(c.Request.Context())
 	response.Success(c, families)
+}
+
+// getModelFamilies 获取模型家族列表（带缓存）。
+func (h *SoraClientHandler) getModelFamilies(ctx context.Context) []service.SoraModelFamily {
+	// 读锁检查缓存
+	h.modelCacheMu.RLock()
+	ttl := modelCacheTTL
+	if !h.modelCacheUpstream {
+		ttl = modelCacheFailedTTL
+	}
+	if h.cachedFamilies != nil && time.Since(h.modelCacheTime) < ttl {
+		families := h.cachedFamilies
+		h.modelCacheMu.RUnlock()
+		return families
+	}
+	h.modelCacheMu.RUnlock()
+
+	// 写锁更新缓存
+	h.modelCacheMu.Lock()
+	defer h.modelCacheMu.Unlock()
+
+	// double-check
+	ttl = modelCacheTTL
+	if !h.modelCacheUpstream {
+		ttl = modelCacheFailedTTL
+	}
+	if h.cachedFamilies != nil && time.Since(h.modelCacheTime) < ttl {
+		return h.cachedFamilies
+	}
+
+	// 尝试从上游获取
+	families, err := h.fetchUpstreamModels(ctx)
+	if err != nil {
+		logger.LegacyPrintf("handler.sora_client", "[SoraClient] 上游模型获取失败，使用本地配置: %v", err)
+		families = service.BuildSoraModelFamilies()
+		h.cachedFamilies = families
+		h.modelCacheTime = time.Now()
+		h.modelCacheUpstream = false
+		return families
+	}
+
+	logger.LegacyPrintf("handler.sora_client", "[SoraClient] 从上游同步到 %d 个模型家族", len(families))
+	h.cachedFamilies = families
+	h.modelCacheTime = time.Now()
+	h.modelCacheUpstream = true
+	return families
+}
+
+// fetchUpstreamModels 从上游 Sora API 获取模型列表。
+func (h *SoraClientHandler) fetchUpstreamModels(ctx context.Context) ([]service.SoraModelFamily, error) {
+	if h.gatewayService == nil {
+		return nil, fmt.Errorf("gatewayService 未初始化")
+	}
+
+	// 设置 ForcePlatform 用于 Sora 账号选择
+	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, service.PlatformSora)
+
+	// 选择一个 Sora 账号
+	account, err := h.gatewayService.SelectAccountForModel(ctx, nil, "", "sora2-landscape-10s")
+	if err != nil {
+		return nil, fmt.Errorf("选择 Sora 账号失败: %w", err)
+	}
+
+	// 仅支持 API Key 类型账号
+	if account.Type != service.AccountTypeAPIKey {
+		return nil, fmt.Errorf("当前账号类型 %s 不支持模型同步", account.Type)
+	}
+
+	apiKey := account.GetCredential("api_key")
+	if apiKey == "" {
+		return nil, fmt.Errorf("账号缺少 api_key")
+	}
+
+	baseURL := account.GetBaseURL()
+	if baseURL == "" {
+		return nil, fmt.Errorf("账号缺少 base_url")
+	}
+
+	// 构建上游模型列表请求
+	modelsURL := strings.TrimRight(baseURL, "/") + "/sora/v1/models"
+
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求上游失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("上游返回状态码 %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	// 解析 OpenAI 格式的模型列表
+	var modelsResp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &modelsResp); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	if len(modelsResp.Data) == 0 {
+		return nil, fmt.Errorf("上游返回空模型列表")
+	}
+
+	// 提取模型 ID
+	modelIDs := make([]string, 0, len(modelsResp.Data))
+	for _, m := range modelsResp.Data {
+		modelIDs = append(modelIDs, m.ID)
+	}
+
+	// 转换为模型家族
+	families := service.BuildSoraModelFamiliesFromIDs(modelIDs)
+	if len(families) == 0 {
+		return nil, fmt.Errorf("未能从上游模型列表中识别出有效的模型家族")
+	}
+
+	return families, nil
 }
