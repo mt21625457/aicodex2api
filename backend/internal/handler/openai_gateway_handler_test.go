@@ -1,15 +1,19 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -369,6 +373,34 @@ func TestOpenAIResponses_SetsClientTransportHTTP(t *testing.T) {
 	require.Equal(t, service.OpenAIClientTransportHTTP, service.GetOpenAIClientTransport(c))
 }
 
+func TestOpenAIResponses_RejectsMessageIDAsPreviousResponseID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(
+		`{"model":"gpt-5.1","stream":false,"previous_response_id":"msg_123456","input":[{"type":"input_text","text":"hello"}]}`,
+	))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	groupID := int64(2)
+	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
+		ID:      101,
+		GroupID: &groupID,
+		User:    &service.User{ID: 1},
+	})
+	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{
+		UserID:      1,
+		Concurrency: 1,
+	})
+
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	h.Responses(c)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Contains(t, w.Body.String(), "previous_response_id must be a response.id")
+}
+
 func TestOpenAIResponsesWebSocket_SetsClientTransportWSWhenUpgradeValid(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -397,6 +429,75 @@ func TestOpenAIResponsesWebSocket_InvalidUpgradeDoesNotSetTransport(t *testing.T
 
 	require.Equal(t, http.StatusUpgradeRequired, w.Code)
 	require.Equal(t, service.OpenAIClientTransportUnknown, service.GetOpenAIClientTransport(c))
+}
+
+func TestOpenAIResponsesWebSocket_RejectsMessageIDAsPreviousResponseID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"msg_abc123"}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, err = clientConn.Read(readCtx)
+	cancelRead()
+	require.Error(t, err)
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+	require.Contains(t, strings.ToLower(closeErr.Reason), "previous_response_id")
+}
+
+func TestOpenAIResponsesWebSocket_PreviousResponseIDKindLoggedBeforeAcquireFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+			return false, errors.New("user slot unavailable")
+		},
+	}
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, cache)
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"resp_prev_123"}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, err = clientConn.Read(readCtx)
+	cancelRead()
+	require.Error(t, err)
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusInternalError, closeErr.Code)
+	require.Contains(t, strings.ToLower(closeErr.Reason), "failed to acquire user concurrency slot")
 }
 
 func TestSetOpenAIClientTransportHTTP(t *testing.T) {
@@ -505,4 +606,42 @@ func TestOpenAIHandler_InstructionsInjection(t *testing.T) {
 	result, setErr := sjson.SetBytes(validBody, "instructions", "hello")
 	require.NoError(t, setErr)
 	require.True(t, gjson.ValidBytes(result))
+}
+
+func newOpenAIHandlerForPreviousResponseIDValidation(t *testing.T, cache *concurrencyCacheMock) *OpenAIGatewayHandler {
+	t.Helper()
+	if cache == nil {
+		cache = &concurrencyCacheMock{
+			acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+				return true, nil
+			},
+			acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+				return true, nil
+			},
+		}
+	}
+	return &OpenAIGatewayHandler{
+		gatewayService:      &service.OpenAIGatewayService{},
+		billingCacheService: &service.BillingCacheService{},
+		apiKeyService:       &service.APIKeyService{},
+		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+	}
+}
+
+func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject middleware.AuthSubject) *httptest.Server {
+	t.Helper()
+	groupID := int64(2)
+	apiKey := &service.APIKey{
+		ID:      101,
+		GroupID: &groupID,
+		User:    &service.User{ID: subject.UserID},
+	}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
+		c.Set(string(middleware.ContextKeyUser), subject)
+		c.Next()
+	})
+	router.GET("/openai/v1/responses", h.ResponsesWebSocket)
+	return httptest.NewServer(router)
 }

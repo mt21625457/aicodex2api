@@ -138,7 +138,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
 	if previousResponseID != "" {
-		reqLog = reqLog.With(zap.Bool("has_previous_response_id", true))
+		previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
+		reqLog = reqLog.With(
+			zap.Bool("has_previous_response_id", true),
+			zap.String("previous_response_id_kind", previousResponseIDKind),
+			zap.Int("previous_response_id_len", len(previousResponseID)),
+		)
+		if previousResponseIDKind == service.OpenAIPreviousResponseIDKindMessageID {
+			reqLog.Warn("openai.request_validation_failed",
+				zap.String("reason", "previous_response_id_looks_like_message_id"),
+			)
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id must be a response.id (resp_*), not a message id")
+			return
+		}
 	}
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
@@ -194,6 +206,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			sessionHash,
 			reqModel,
 			failedAccountIDs,
+			service.OpenAIUpstreamTransportAny,
 		)
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",
@@ -584,10 +597,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
+	previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
+	if previousResponseID != "" && previousResponseIDKind == service.OpenAIPreviousResponseIDKindMessageID {
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "previous_response_id must be a response.id (resp_*), not a message id")
+		return
+	}
 	reqLog = reqLog.With(
 		zap.Bool("ws_ingress", true),
 		zap.String("model", reqModel),
 		zap.Bool("has_previous_response_id", previousResponseID != ""),
+		zap.String("previous_response_id_kind", previousResponseIDKind),
 	)
 	setOpsRequestContext(c, reqModel, true, firstMessage)
 
@@ -633,6 +652,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		sessionHash,
 		reqModel,
 		nil,
+		service.OpenAIUpstreamTransportResponsesWebsocketV2,
 	)
 	if err != nil {
 		reqLog.Warn("openai.websocket_account_select_failed", zap.Error(err))

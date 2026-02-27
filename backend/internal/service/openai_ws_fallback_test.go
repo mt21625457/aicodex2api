@@ -22,8 +22,40 @@ func TestClassifyOpenAIWSAcquireError(t *testing.T) {
 		require.Equal(t, "conn_queue_full", classifyOpenAIWSAcquireError(errOpenAIWSConnQueueFull))
 	})
 
+	t.Run("preferred_conn_unavailable", func(t *testing.T) {
+		require.Equal(t, "preferred_conn_unavailable", classifyOpenAIWSAcquireError(errOpenAIWSPreferredConnUnavailable))
+	})
+
+	t.Run("acquire_timeout", func(t *testing.T) {
+		require.Equal(t, "acquire_timeout", classifyOpenAIWSAcquireError(context.DeadlineExceeded))
+	})
+
+	t.Run("auth_failed_401", func(t *testing.T) {
+		err := &openAIWSDialError{StatusCode: 401, Err: errors.New("unauthorized")}
+		require.Equal(t, "auth_failed", classifyOpenAIWSAcquireError(err))
+	})
+
+	t.Run("upstream_rate_limited", func(t *testing.T) {
+		err := &openAIWSDialError{StatusCode: 429, Err: errors.New("rate limited")}
+		require.Equal(t, "upstream_rate_limited", classifyOpenAIWSAcquireError(err))
+	})
+
+	t.Run("upstream_5xx", func(t *testing.T) {
+		err := &openAIWSDialError{StatusCode: 502, Err: errors.New("bad gateway")}
+		require.Equal(t, "upstream_5xx", classifyOpenAIWSAcquireError(err))
+	})
+
+	t.Run("dial_failed_other_status", func(t *testing.T) {
+		err := &openAIWSDialError{StatusCode: 418, Err: errors.New("teapot")}
+		require.Equal(t, "dial_failed", classifyOpenAIWSAcquireError(err))
+	})
+
 	t.Run("other", func(t *testing.T) {
 		require.Equal(t, "acquire_conn", classifyOpenAIWSAcquireError(errors.New("x")))
+	})
+
+	t.Run("nil", func(t *testing.T) {
+		require.Equal(t, "acquire_conn", classifyOpenAIWSAcquireError(nil))
 	})
 }
 

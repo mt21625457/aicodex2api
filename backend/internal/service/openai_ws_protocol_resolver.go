@@ -6,6 +6,7 @@ import "github.com/Wei-Shaw/sub2api/internal/config"
 type OpenAIUpstreamTransport string
 
 const (
+	OpenAIUpstreamTransportAny                  OpenAIUpstreamTransport = ""
 	OpenAIUpstreamTransportHTTPSSE              OpenAIUpstreamTransport = "http_sse"
 	OpenAIUpstreamTransportResponsesWebsocket   OpenAIUpstreamTransport = "responses_websockets"
 	OpenAIUpstreamTransportResponsesWebsocketV2 OpenAIUpstreamTransport = "responses_websockets_v2"
@@ -37,10 +38,6 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	}
 	if !account.IsOpenAI() {
 		return openAIWSHTTPDecision("platform_not_openai")
-	}
-	if account.IsOpenAIPassthroughEnabled() {
-		// 透传优先，必须保持原线路。
-		return openAIWSHTTPDecision("passthrough_priority")
 	}
 	if account.IsOpenAIWSForceHTTPEnabled() {
 		return openAIWSHTTPDecision("account_force_http")
