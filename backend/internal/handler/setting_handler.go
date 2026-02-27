@@ -33,18 +33,6 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		return
 	}
 
-	// 根据活跃 Sora 账号数推断 sora_client_enabled
-	soraClientEnabled := false
-	if h.accountRepo != nil {
-		accounts, _ := h.accountRepo.ListByPlatform(c.Request.Context(), service.PlatformSora)
-		for _, a := range accounts {
-			if a.Status == service.StatusActive {
-				soraClientEnabled = true
-				break
-			}
-		}
-	}
-
 	response.Success(c, dto.PublicSettings{
 		RegistrationEnabled:         settings.RegistrationEnabled,
 		EmailVerifyEnabled:          settings.EmailVerifyEnabled,
@@ -65,7 +53,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		PurchaseSubscriptionEnabled: settings.PurchaseSubscriptionEnabled,
 		PurchaseSubscriptionURL:     settings.PurchaseSubscriptionURL,
 		LinuxDoOAuthEnabled:         settings.LinuxDoOAuthEnabled,
-		SoraClientEnabled:           soraClientEnabled,
+		SoraClientEnabled:           settings.SoraClientEnabled,
 		Version:                     h.version,
 	})
 }
