@@ -205,8 +205,9 @@ async function loadActiveGenerations() {
       status: 'pending,generating,completed,failed,cancelled',
       page_size: 50
     })
-    activeGenerations.value = res.data
-    for (const gen of res.data) {
+    const generations = Array.isArray(res.data) ? res.data : []
+    activeGenerations.value = generations
+    for (const gen of generations) {
       if ((gen.status === 'pending' || gen.status === 'generating') && !pollTimers[gen.id]) {
         schedulePolling(gen.id)
       }

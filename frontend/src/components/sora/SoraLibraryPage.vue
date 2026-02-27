@@ -192,10 +192,11 @@ async function loadItems(pageNum: number) {
       page: pageNum,
       page_size: 20
     })
+    const rows = Array.isArray(res.data) ? res.data : []
     if (pageNum === 1) {
-      items.value = res.data
+      items.value = rows
     } else {
-      items.value.push(...res.data)
+      items.value.push(...rows)
     }
     hasMore.value = items.value.length < res.total
   } catch (e) {
