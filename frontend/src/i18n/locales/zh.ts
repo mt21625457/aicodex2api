@@ -1883,7 +1883,11 @@ export default {
         responsesWebsocketsV2Desc:
           '默认关闭。开启后可启用 responses_websockets_v2 协议能力（受网关全局开关与账号类型开关约束）。',
         wsMode: 'WS mode',
-        wsModeDesc: '仅对当前 OpenAI 账号类型生效。开启后该账号才允许使用 OpenAI WebSocket Mode 协议。',
+        wsModeDesc: '仅对当前 OpenAI 账号类型生效。',
+        wsModeOff: '关闭（off）',
+        wsModeShared: '共享（shared）',
+        wsModeDedicated: '独享（dedicated）',
+        wsModeConcurrencyHint: '启用 WS mode 后，该账号并发数将作为该账号 WS 连接池上限。',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           '仅对 OpenAI OAuth 生效。开启后该账号才允许使用 OpenAI WebSocket Mode 协议。',

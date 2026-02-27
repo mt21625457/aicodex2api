@@ -323,9 +323,11 @@ func (r *RefreshTokenRequest) ToFormData() string {
 	return params.Encode()
 }
 
-// ParseIDToken parses the ID Token JWT and extracts claims
-// Note: This does NOT verify the signature - it only decodes the payload
-// For production, you should verify the token signature using OpenAI's public keys
+// ParseIDToken parses the ID Token JWT and extracts claims.
+// 注意：当前仅解码 payload 并校验 exp，未验证 JWT 签名。
+// 生产环境如需用 ID Token 做授权决策，应通过 OpenAI 的 JWKS 端点验证签名：
+//
+//	https://auth.openai.com/.well-known/jwks.json
 func ParseIDToken(idToken string) (*IDTokenClaims, error) {
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
@@ -354,6 +356,13 @@ func ParseIDToken(idToken string) (*IDTokenClaims, error) {
 	var claims IDTokenClaims
 	if err := json.Unmarshal(decoded, &claims); err != nil {
 		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	// 校验 ID Token 是否已过期（允许 2 分钟时钟偏差，防止因服务器时钟略有差异误判刚颁发的令牌）
+	const clockSkewTolerance = 120 // 秒
+	now := time.Now().Unix()
+	if claims.Exp > 0 && now > claims.Exp+clockSkewTolerance {
+		return nil, fmt.Errorf("id_token has expired (exp: %d, now: %d, skew_tolerance: %ds)", claims.Exp, now, clockSkewTolerance)
 	}
 
 	return &claims, nil
