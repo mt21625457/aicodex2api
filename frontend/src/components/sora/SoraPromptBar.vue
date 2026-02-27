@@ -19,6 +19,27 @@
             </select>
             <span class="sora-model-select-arrow">▼</span>
           </div>
+          <!-- 凭证选择器 -->
+          <div class="sora-credential-select-wrapper">
+            <select v-model="selectedCredentialId" class="sora-model-select">
+              <option :value="0" disabled>{{ t('sora.selectCredential') }}</option>
+              <optgroup v-if="apiKeyOptions.length" :label="t('sora.apiKeys')">
+                <option v-for="k in apiKeyOptions" :key="'k'+k.id" :value="k.id">
+                  {{ k.name }}{{ k.group ? ' · ' + k.group.name : '' }}
+                </option>
+              </optgroup>
+              <optgroup v-if="subscriptionOptions.length" :label="t('sora.subscriptions')">
+                <option v-for="s in subscriptionOptions" :key="'s'+s.id" :value="-s.id">
+                  {{ s.group?.name || t('sora.subscription') }}
+                </option>
+              </optgroup>
+            </select>
+            <span class="sora-model-select-arrow">▼</span>
+          </div>
+          <!-- 无凭证提示 -->
+          <span v-if="soraCredentialEmpty" class="sora-no-storage-badge">
+            ⚠ {{ t('sora.noCredentialHint') }}
+          </span>
           <!-- 无存储提示 -->
           <span v-if="!hasStorage" class="sora-no-storage-badge">
             ⚠ {{ t('sora.noStorageConfigured') }}
@@ -125,6 +146,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import soraAPI, { type SoraModelFamily, type GenerateRequest } from '@/api/sora'
+import keysAPI from '@/api/keys'
+import { useSubscriptionStore } from '@/stores/subscriptions'
+import type { ApiKey, UserSubscription } from '@/types'
 
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024
 
@@ -160,6 +184,15 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const hasStorage = ref(true)
 
+// 凭证相关状态
+const apiKeyOptions = ref<ApiKey[]>([])
+const subscriptionOptions = ref<UserSubscription[]>([])
+const selectedCredentialId = ref<number>(0) // >0 = api_key.id, <0 = -subscription.id
+
+const soraCredentialEmpty = computed(() =>
+  apiKeyOptions.value.length === 0 && subscriptionOptions.value.length === 0
+)
+
 // 按类型分组
 const videoFamilies = computed(() => families.value.filter(f => f.type === 'video'))
 const imageFamilies = computed(() => families.value.filter(f => f.type === 'image'))
@@ -179,7 +212,9 @@ const availableAspects = computed(() => {
 const availableDurations = computed(() => currentFamily.value?.durations ?? [])
 
 const isMaxReached = computed(() => props.activeTaskCount >= props.maxConcurrentTasks)
-const canSubmit = computed(() => prompt.value.trim().length > 0 && selectedFamily.value)
+const canSubmit = computed(() =>
+  prompt.value.trim().length > 0 && selectedFamily.value && selectedCredentialId.value !== 0
+)
 
 /** 构建最终 model ID（family + orientation + duration） */
 function buildModelID(): string {
@@ -231,6 +266,30 @@ async function loadStorageStatus() {
   }
 }
 
+async function loadSoraCredentials() {
+  try {
+    // 加载 API Keys，筛选 sora 平台 + active 状态
+    const keysRes = await keysAPI.list(1, 100)
+    apiKeyOptions.value = (keysRes.items || []).filter(
+      (k: ApiKey) => k.status === 'active' && k.group?.platform === 'sora'
+    )
+    // 加载活跃订阅，筛选 sora 平台
+    const subStore = useSubscriptionStore()
+    const subs = await subStore.fetchActiveSubscriptions()
+    subscriptionOptions.value = subs.filter(
+      (s: UserSubscription) => s.status === 'active' && s.group?.platform === 'sora'
+    )
+    // 自动选择第一个
+    if (apiKeyOptions.value.length > 0) {
+      selectedCredentialId.value = apiKeyOptions.value[0].id
+    } else if (subscriptionOptions.value.length > 0) {
+      selectedCredentialId.value = -subscriptionOptions.value[0].id
+    }
+  } catch (e) {
+    console.error('Failed to load sora credentials:', e)
+  }
+}
+
 function autoResize() {
   const el = textareaRef.value
   if (!el) return
@@ -276,6 +335,9 @@ function submit() {
   if (imagePreview.value) {
     req.image_input = imagePreview.value
   }
+  if (selectedCredentialId.value > 0) {
+    req.api_key_id = selectedCredentialId.value
+  }
   emit('generate', req)
   prompt.value = ''
   imagePreview.value = null
@@ -297,6 +359,7 @@ defineExpose({ fillPrompt })
 onMounted(() => {
   loadModels()
   loadStorageStatus()
+  loadSoraCredentials()
 })
 </script>
 
@@ -379,6 +442,11 @@ onMounted(() => {
   pointer-events: none;
   font-size: 10px;
   color: var(--sora-text-tertiary, #666);
+}
+
+.sora-credential-select-wrapper {
+  position: relative;
+  max-width: 200px;
 }
 
 /* 无存储提示 */

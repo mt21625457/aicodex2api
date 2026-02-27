@@ -29,6 +29,7 @@ export interface GenerateRequest {
   prompt: string
   media_type?: string
   image_input?: string
+  api_key_id?: number
 }
 
 export interface GenerateResponse {

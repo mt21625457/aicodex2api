@@ -8,6 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +19,13 @@ import (
 )
 
 var openAISoraSessionAuthURL = "https://sora.chatgpt.com/api/auth/session"
+
+var soraSessionCookiePattern = regexp.MustCompile(`(?i)(?:^|[\n\r;])\s*(?:(?:set-cookie|cookie)\s*:\s*)?__Secure-(?:next-auth|authjs)\.session-token(?:\.(\d+))?=([^;\r\n]+)`)
+
+type soraSessionChunk struct {
+	index int
+	value string
+}
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
@@ -243,6 +253,7 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 
 // ExchangeSoraSessionToken exchanges Sora session_token to access_token.
 func (s *OpenAIOAuthService) ExchangeSoraSessionToken(ctx context.Context, sessionToken string, proxyID *int64) (*OpenAITokenInfo, error) {
+	sessionToken = normalizeSoraSessionTokenInput(sessionToken)
 	if strings.TrimSpace(sessionToken) == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "SORA_SESSION_TOKEN_REQUIRED", "session_token is required")
 	}
@@ -307,6 +318,134 @@ func (s *OpenAIOAuthService) ExchangeSoraSessionToken(ctx context.Context, sessi
 		ClientID:    openai.SoraClientID,
 		Email:       strings.TrimSpace(sessionResp.User.Email),
 	}, nil
+}
+
+func normalizeSoraSessionTokenInput(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	matches := soraSessionCookiePattern.FindAllStringSubmatch(trimmed, -1)
+	if len(matches) == 0 {
+		return sanitizeSessionToken(trimmed)
+	}
+
+	chunkMatches := make([]soraSessionChunk, 0, len(matches))
+	singleValues := make([]string, 0, len(matches))
+
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+
+		value := sanitizeSessionToken(match[2])
+		if value == "" {
+			continue
+		}
+
+		if strings.TrimSpace(match[1]) == "" {
+			singleValues = append(singleValues, value)
+			continue
+		}
+
+		idx, err := strconv.Atoi(strings.TrimSpace(match[1]))
+		if err != nil || idx < 0 {
+			continue
+		}
+		chunkMatches = append(chunkMatches, soraSessionChunk{
+			index: idx,
+			value: value,
+		})
+	}
+
+	if merged := mergeLatestSoraSessionChunks(chunkMatches); merged != "" {
+		return merged
+	}
+
+	if len(singleValues) > 0 {
+		return singleValues[len(singleValues)-1]
+	}
+
+	return ""
+}
+
+func mergeSoraSessionChunkSegment(chunks []soraSessionChunk, requiredMaxIndex int, requireComplete bool) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+
+	byIndex := make(map[int]string, len(chunks))
+	for _, chunk := range chunks {
+		byIndex[chunk.index] = chunk.value
+	}
+
+	if _, ok := byIndex[0]; !ok {
+		return ""
+	}
+	if requireComplete {
+		for idx := 0; idx <= requiredMaxIndex; idx++ {
+			if _, ok := byIndex[idx]; !ok {
+				return ""
+			}
+		}
+	}
+
+	orderedIndexes := make([]int, 0, len(byIndex))
+	for idx := range byIndex {
+		orderedIndexes = append(orderedIndexes, idx)
+	}
+	sort.Ints(orderedIndexes)
+
+	var builder strings.Builder
+	for _, idx := range orderedIndexes {
+		builder.WriteString(byIndex[idx])
+	}
+	return sanitizeSessionToken(builder.String())
+}
+
+func mergeLatestSoraSessionChunks(chunks []soraSessionChunk) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+
+	requiredMaxIndex := 0
+	for _, chunk := range chunks {
+		if chunk.index > requiredMaxIndex {
+			requiredMaxIndex = chunk.index
+		}
+	}
+
+	groupStarts := make([]int, 0, len(chunks))
+	for idx, chunk := range chunks {
+		if chunk.index == 0 {
+			groupStarts = append(groupStarts, idx)
+		}
+	}
+
+	if len(groupStarts) == 0 {
+		return mergeSoraSessionChunkSegment(chunks, requiredMaxIndex, false)
+	}
+
+	for i := len(groupStarts) - 1; i >= 0; i-- {
+		start := groupStarts[i]
+		end := len(chunks)
+		if i+1 < len(groupStarts) {
+			end = groupStarts[i+1]
+		}
+		if merged := mergeSoraSessionChunkSegment(chunks[start:end], requiredMaxIndex, true); merged != "" {
+			return merged
+		}
+	}
+
+	return mergeSoraSessionChunkSegment(chunks, requiredMaxIndex, false)
+}
+
+func sanitizeSessionToken(raw string) string {
+	token := strings.TrimSpace(raw)
+	token = strings.Trim(token, "\"'`")
+	token = strings.TrimSuffix(token, ";")
+	return strings.TrimSpace(token)
 }
 
 // RefreshAccountToken refreshes token for an OpenAI/Sora OAuth account
