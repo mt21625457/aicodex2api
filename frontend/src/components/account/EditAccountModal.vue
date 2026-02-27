@@ -736,12 +736,6 @@
             />
           </button>
         </div>
-        <p
-          v-if="openaiPassthroughEnabled"
-          class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
-        >
-          {{ t('admin.accounts.openai.responsesWebsocketsV2PassthroughHint') }}
-        </p>
       </div>
 
       <!-- Anthropic API Key 自动透传开关 -->

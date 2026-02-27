@@ -39,10 +39,6 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	if !account.IsOpenAI() {
 		return openAIWSHTTPDecision("platform_not_openai")
 	}
-	if account.IsOpenAIPassthroughEnabled() {
-		// 透传优先，必须保持原线路。
-		return openAIWSHTTPDecision("passthrough_priority")
-	}
 	if account.IsOpenAIWSForceHTTPEnabled() {
 		return openAIWSHTTPDecision("account_force_http")
 	}
