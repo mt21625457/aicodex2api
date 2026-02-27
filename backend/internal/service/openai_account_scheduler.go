@@ -24,6 +24,7 @@ type OpenAIAccountScheduleRequest struct {
 	StickyAccountID    int64
 	PreviousResponseID string
 	RequestedModel     string
+	RequiredTransport  OpenAIUpstreamTransport
 	ExcludedIDs        map[int64]struct{}
 }
 
@@ -242,6 +243,11 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			return nil, decision, err
 		}
 		if selection != nil && selection.Account != nil {
+			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) {
+				selection = nil
+			}
+		}
+		if selection != nil && selection.Account != nil {
 			decision.Layer = openAIAccountScheduleLayerPreviousResponse
 			decision.StickyPreviousHit = true
 			decision.SelectedAccountID = selection.Account.ID
@@ -316,6 +322,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, nil
 	}
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+		return nil, nil
+	}
+	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
 
@@ -461,6 +471,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
 			continue
 		}
+		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+			continue
+		}
 		filtered = append(filtered, account)
 		loadReq = append(loadReq, AccountWithConcurrency{
 			ID:             account.ID,
@@ -588,6 +601,17 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}, len(candidates), topK, loadSkew, nil
 }
 
+func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
+	// HTTP 入站可回退到 HTTP 线路，不需要在账号选择阶段做传输协议强过滤。
+	if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
+		return true
+	}
+	if s == nil || s.service == nil || account == nil {
+		return false
+	}
+	return s.service.getOpenAIWSProtocolResolver().Resolve(account).Transport == requiredTransport
+}
+
 func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
 	if s == nil || s.stats == nil {
 		return
@@ -654,6 +678,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	sessionHash string,
 	requestedModel string,
 	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
 	scheduler := s.getOpenAIAccountScheduler()
@@ -676,6 +701,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		StickyAccountID:    stickyAccountID,
 		PreviousResponseID: previousResponseID,
 		RequestedModel:     requestedModel,
+		RequiredTransport:  requiredTransport,
 		ExcludedIDs:        excludedIDs,
 	})
 }

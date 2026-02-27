@@ -964,6 +964,54 @@ func TestOpenAIWSConnLease_ReadWriteNilConnBranches(t *testing.T) {
 	require.ErrorIs(t, err, errOpenAIWSConnClosed)
 }
 
+func TestOpenAIWSConnLease_ReleasedLeaseGuards(t *testing.T) {
+	conn := newOpenAIWSConn("released_guard", 1, &openAIWSFakeConn{}, nil)
+	lease := &openAIWSConnLease{conn: conn}
+
+	require.NoError(t, lease.PingWithTimeout(50*time.Millisecond))
+
+	lease.Release()
+	lease.Release() // idempotent
+
+	require.ErrorIs(t, lease.WriteJSON(map[string]any{"k": "v"}, time.Second), errOpenAIWSConnClosed)
+	require.ErrorIs(t, lease.WriteJSONContext(context.Background(), map[string]any{"k": "v"}), errOpenAIWSConnClosed)
+	require.ErrorIs(t, lease.WriteJSONWithContextTimeout(context.Background(), map[string]any{"k": "v"}, time.Second), errOpenAIWSConnClosed)
+
+	_, err := lease.ReadMessage(10 * time.Millisecond)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	_, err = lease.ReadMessageContext(context.Background())
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	_, err = lease.ReadMessageWithContextTimeout(context.Background(), 10*time.Millisecond)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+
+	require.ErrorIs(t, lease.PingWithTimeout(50*time.Millisecond), errOpenAIWSConnClosed)
+}
+
+func TestOpenAIWSConnLease_MarkBrokenAfterRelease_NoEviction(t *testing.T) {
+	conn := newOpenAIWSConn("released_markbroken", 7, &openAIWSFakeConn{}, nil)
+	ap := &openAIWSAccountPool{
+		conns: map[string]*openAIWSConn{
+			conn.id: conn,
+		},
+	}
+	pool := &openAIWSConnPool{}
+	pool.accounts.Store(int64(7), ap)
+
+	lease := &openAIWSConnLease{
+		pool:      pool,
+		accountID: 7,
+		conn:      conn,
+	}
+
+	lease.Release()
+	lease.MarkBroken()
+
+	ap.mu.Lock()
+	_, exists := ap.conns[conn.id]
+	ap.mu.Unlock()
+	require.True(t, exists, "released lease should not evict active pool connection")
+}
+
 func TestOpenAIWSConn_AdditionalGuardBranches(t *testing.T) {
 	var nilConn *openAIWSConn
 	require.False(t, nilConn.tryAcquire())

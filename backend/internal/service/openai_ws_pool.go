@@ -78,6 +78,16 @@ type openAIWSConnLease struct {
 	released  atomic.Bool
 }
 
+func (l *openAIWSConnLease) activeConn() (*openAIWSConn, error) {
+	if l == nil || l.conn == nil {
+		return nil, errOpenAIWSConnClosed
+	}
+	if l.released.Load() {
+		return nil, errOpenAIWSConnClosed
+	}
+	return l.conn, nil
+}
+
 func (l *openAIWSConnLease) ConnID() string {
 	if l == nil || l.conn == nil {
 		return ""
@@ -128,56 +138,63 @@ func (l *openAIWSConnLease) MarkPrewarmed() {
 }
 
 func (l *openAIWSConnLease) WriteJSON(value any, timeout time.Duration) error {
-	if l == nil || l.conn == nil {
-		return errOpenAIWSConnClosed
+	conn, err := l.activeConn()
+	if err != nil {
+		return err
 	}
-	return l.conn.writeJSONWithTimeout(context.Background(), value, timeout)
+	return conn.writeJSONWithTimeout(context.Background(), value, timeout)
 }
 
 func (l *openAIWSConnLease) WriteJSONWithContextTimeout(ctx context.Context, value any, timeout time.Duration) error {
-	if l == nil || l.conn == nil {
-		return errOpenAIWSConnClosed
+	conn, err := l.activeConn()
+	if err != nil {
+		return err
 	}
-	return l.conn.writeJSONWithTimeout(ctx, value, timeout)
+	return conn.writeJSONWithTimeout(ctx, value, timeout)
 }
 
 func (l *openAIWSConnLease) WriteJSONContext(ctx context.Context, value any) error {
-	if l == nil || l.conn == nil {
-		return errOpenAIWSConnClosed
+	conn, err := l.activeConn()
+	if err != nil {
+		return err
 	}
-	return l.conn.writeJSON(value, ctx)
+	return conn.writeJSON(value, ctx)
 }
 
 func (l *openAIWSConnLease) ReadMessage(timeout time.Duration) ([]byte, error) {
-	if l == nil || l.conn == nil {
-		return nil, errOpenAIWSConnClosed
+	conn, err := l.activeConn()
+	if err != nil {
+		return nil, err
 	}
-	return l.conn.readMessageWithTimeout(timeout)
+	return conn.readMessageWithTimeout(timeout)
 }
 
 func (l *openAIWSConnLease) ReadMessageContext(ctx context.Context) ([]byte, error) {
-	if l == nil || l.conn == nil {
-		return nil, errOpenAIWSConnClosed
+	conn, err := l.activeConn()
+	if err != nil {
+		return nil, err
 	}
-	return l.conn.readMessage(ctx)
+	return conn.readMessage(ctx)
 }
 
 func (l *openAIWSConnLease) ReadMessageWithContextTimeout(ctx context.Context, timeout time.Duration) ([]byte, error) {
-	if l == nil || l.conn == nil {
-		return nil, errOpenAIWSConnClosed
+	conn, err := l.activeConn()
+	if err != nil {
+		return nil, err
 	}
-	return l.conn.readMessageWithContextTimeout(ctx, timeout)
+	return conn.readMessageWithContextTimeout(ctx, timeout)
 }
 
 func (l *openAIWSConnLease) PingWithTimeout(timeout time.Duration) error {
-	if l == nil || l.conn == nil {
-		return errOpenAIWSConnClosed
+	conn, err := l.activeConn()
+	if err != nil {
+		return err
 	}
-	return l.conn.pingWithTimeout(timeout)
+	return conn.pingWithTimeout(timeout)
 }
 
 func (l *openAIWSConnLease) MarkBroken() {
-	if l == nil || l.pool == nil || l.conn == nil {
+	if l == nil || l.pool == nil || l.conn == nil || l.released.Load() {
 		return
 	}
 	l.pool.evictConn(l.accountID, l.conn.id)

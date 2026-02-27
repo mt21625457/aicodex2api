@@ -6,6 +6,7 @@ import "github.com/Wei-Shaw/sub2api/internal/config"
 type OpenAIUpstreamTransport string
 
 const (
+	OpenAIUpstreamTransportAny                  OpenAIUpstreamTransport = ""
 	OpenAIUpstreamTransportHTTPSSE              OpenAIUpstreamTransport = "http_sse"
 	OpenAIUpstreamTransportResponsesWebsocket   OpenAIUpstreamTransport = "responses_websockets"
 	OpenAIUpstreamTransportResponsesWebsocketV2 OpenAIUpstreamTransport = "responses_websockets_v2"
