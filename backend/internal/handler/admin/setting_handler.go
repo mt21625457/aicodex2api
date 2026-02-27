@@ -20,15 +20,17 @@ type SettingHandler struct {
 	emailService     *service.EmailService
 	turnstileService *service.TurnstileService
 	opsService       *service.OpsService
+	soraS3Storage    *service.SoraS3Storage
 }
 
 // NewSettingHandler 创建系统设置处理器
-func NewSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService) *SettingHandler {
+func NewSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, soraS3Storage *service.SoraS3Storage) *SettingHandler {
 	return &SettingHandler{
 		settingService:   settingService,
 		emailService:     emailService,
 		turnstileService: turnstileService,
 		opsService:       opsService,
+		soraS3Storage:    soraS3Storage,
 	}
 }
 
@@ -748,6 +750,159 @@ func (h *SettingHandler) GetStreamTimeoutSettings(c *gin.Context) {
 		ThresholdCount:         settings.ThresholdCount,
 		ThresholdWindowMinutes: settings.ThresholdWindowMinutes,
 	})
+}
+
+// GetSoraS3Settings 获取 Sora S3 存储配置
+// GET /api/v1/admin/settings/sora-s3
+func (h *SettingHandler) GetSoraS3Settings(c *gin.Context) {
+	settings, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.SoraS3Settings{
+		Enabled:                  settings.Enabled,
+		Endpoint:                 settings.Endpoint,
+		Region:                   settings.Region,
+		Bucket:                   settings.Bucket,
+		AccessKeyID:              settings.AccessKeyID,
+		SecretAccessKeyConfigured: settings.SecretAccessKeyConfigured,
+		Prefix:                   settings.Prefix,
+		ForcePathStyle:           settings.ForcePathStyle,
+		CDNURL:                   settings.CDNURL,
+		DefaultStorageQuotaBytes: settings.DefaultStorageQuotaBytes,
+	})
+}
+
+// UpdateSoraS3SettingsRequest 更新 Sora S3 配置请求
+type UpdateSoraS3SettingsRequest struct {
+	Enabled                  bool   `json:"enabled"`
+	Endpoint                 string `json:"endpoint"`
+	Region                   string `json:"region"`
+	Bucket                   string `json:"bucket"`
+	AccessKeyID              string `json:"access_key_id"`
+	SecretAccessKey          string `json:"secret_access_key"`
+	Prefix                   string `json:"prefix"`
+	ForcePathStyle           bool   `json:"force_path_style"`
+	CDNURL                   string `json:"cdn_url"`
+	DefaultStorageQuotaBytes int64  `json:"default_storage_quota_bytes"`
+}
+
+// UpdateSoraS3Settings 更新 Sora S3 存储配置
+// PUT /api/v1/admin/settings/sora-s3
+func (h *SettingHandler) UpdateSoraS3Settings(c *gin.Context) {
+	var req UpdateSoraS3SettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	// 启用时验证必填字段
+	if req.Enabled {
+		if req.Endpoint == "" {
+			response.BadRequest(c, "S3 Endpoint is required when enabled")
+			return
+		}
+		if req.Bucket == "" {
+			response.BadRequest(c, "S3 Bucket is required when enabled")
+			return
+		}
+		// 如果未提供 secret，检查是否已有保存的值
+		if req.SecretAccessKey == "" {
+			existing, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+			if err != nil || !existing.SecretAccessKeyConfigured {
+				response.BadRequest(c, "S3 Secret Access Key is required when enabled")
+				return
+			}
+		}
+	}
+
+	// 配额不能为负数
+	if req.DefaultStorageQuotaBytes < 0 {
+		req.DefaultStorageQuotaBytes = 0
+	}
+
+		settings := &service.SoraS3Settings{
+		Enabled:                  req.Enabled,
+		Endpoint:                 req.Endpoint,
+		Region:                   req.Region,
+		Bucket:                   req.Bucket,
+		AccessKeyID:              req.AccessKeyID,
+		SecretAccessKey:          req.SecretAccessKey,
+		Prefix:                   req.Prefix,
+		ForcePathStyle:           req.ForcePathStyle,
+		CDNURL:                   req.CDNURL,
+		DefaultStorageQuotaBytes: req.DefaultStorageQuotaBytes,
+	}
+
+	if err := h.settingService.SetSoraS3Settings(c.Request.Context(), settings); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	// 重新获取设置返回（脱敏）
+	updatedSettings, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.SoraS3Settings{
+		Enabled:                  updatedSettings.Enabled,
+		Endpoint:                 updatedSettings.Endpoint,
+		Region:                   updatedSettings.Region,
+		Bucket:                   updatedSettings.Bucket,
+		AccessKeyID:              updatedSettings.AccessKeyID,
+		SecretAccessKeyConfigured: updatedSettings.SecretAccessKeyConfigured,
+		Prefix:                   updatedSettings.Prefix,
+		ForcePathStyle:           updatedSettings.ForcePathStyle,
+		CDNURL:                   updatedSettings.CDNURL,
+		DefaultStorageQuotaBytes: updatedSettings.DefaultStorageQuotaBytes,
+	})
+}
+
+// TestSoraS3Connection 测试 Sora S3 连接（HeadBucket）
+// POST /api/v1/admin/settings/sora-s3/test
+func (h *SettingHandler) TestSoraS3Connection(c *gin.Context) {
+	if h.soraS3Storage == nil {
+		response.Error(c, 500, "S3 存储服务未初始化")
+		return
+	}
+
+	var req UpdateSoraS3SettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !req.Enabled {
+		response.BadRequest(c, "S3 未启用，无法测试连接")
+		return
+	}
+	// secret 留空时复用已保存值，支持“只改 endpoint/bucket 后直接测试”
+	if req.SecretAccessKey == "" {
+		existing, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+		if err == nil {
+			req.SecretAccessKey = existing.SecretAccessKey
+		}
+	}
+
+	testCfg := &service.SoraS3Settings{
+		Enabled:         true,
+		Endpoint:        req.Endpoint,
+		Region:          req.Region,
+		Bucket:          req.Bucket,
+		AccessKeyID:     req.AccessKeyID,
+		SecretAccessKey: req.SecretAccessKey,
+		Prefix:          req.Prefix,
+		ForcePathStyle:  req.ForcePathStyle,
+		CDNURL:          req.CDNURL,
+	}
+	if err := h.soraS3Storage.TestConnectionWithSettings(c.Request.Context(), testCfg); err != nil {
+		response.Error(c, 400, "S3 连接测试失败: "+err.Error())
+		return
+	}
+	response.Success(c, gin.H{"message": "S3 连接成功"})
 }
 
 // UpdateStreamTimeoutSettingsRequest 更新流超时配置请求

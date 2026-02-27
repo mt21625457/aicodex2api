@@ -31,10 +31,11 @@ type SettingRepository interface {
 
 // SettingService 系统设置服务
 type SettingService struct {
-	settingRepo SettingRepository
-	cfg         *config.Config
-	onUpdate    func() // Callback when settings are updated (for cache invalidation)
-	version     string // Application version
+	settingRepo    SettingRepository
+	cfg            *config.Config
+	onUpdate       func() // Callback when settings are updated (for cache invalidation)
+	onS3Update     func() // Callback when Sora S3 settings are updated
+	version        string // Application version
 }
 
 // NewSettingService 创建系统设置服务实例
@@ -122,6 +123,11 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 // This is used for cache invalidation (e.g., HTML cache in frontend server)
 func (s *SettingService) SetOnUpdateCallback(callback func()) {
 	s.onUpdate = callback
+}
+
+// SetOnS3UpdateCallback 设置 Sora S3 配置变更时的回调函数（用于刷新 S3 客户端缓存）。
+func (s *SettingService) SetOnS3UpdateCallback(callback func()) {
+	s.onS3Update = callback
 }
 
 // SetVersion sets the application version for injection into public settings
@@ -853,4 +859,79 @@ func (s *SettingService) SetStreamTimeoutSettings(ctx context.Context, settings 
 	}
 
 	return s.settingRepo.Set(ctx, SettingKeyStreamTimeoutSettings, string(data))
+}
+
+// GetSoraS3Settings 获取 Sora S3 存储配置
+func (s *SettingService) GetSoraS3Settings(ctx context.Context) (*SoraS3Settings, error) {
+	keys := []string{
+		SettingKeySoraS3Enabled,
+		SettingKeySoraS3Endpoint,
+		SettingKeySoraS3Region,
+		SettingKeySoraS3Bucket,
+		SettingKeySoraS3AccessKeyID,
+		SettingKeySoraS3SecretAccessKey,
+		SettingKeySoraS3Prefix,
+		SettingKeySoraS3ForcePathStyle,
+		SettingKeySoraS3CDNURL,
+		SettingKeySoraDefaultStorageQuotaBytes,
+	}
+
+	values, err := s.settingRepo.GetMultiple(ctx, keys)
+	if err != nil {
+		return nil, fmt.Errorf("get sora s3 settings: %w", err)
+	}
+
+	result := &SoraS3Settings{
+		Enabled:                  values[SettingKeySoraS3Enabled] == "true",
+		Endpoint:                 values[SettingKeySoraS3Endpoint],
+		Region:                   values[SettingKeySoraS3Region],
+		Bucket:                   values[SettingKeySoraS3Bucket],
+		AccessKeyID:              values[SettingKeySoraS3AccessKeyID],
+		SecretAccessKey:           values[SettingKeySoraS3SecretAccessKey],
+		SecretAccessKeyConfigured: values[SettingKeySoraS3SecretAccessKey] != "",
+		Prefix:                   values[SettingKeySoraS3Prefix],
+		ForcePathStyle:           values[SettingKeySoraS3ForcePathStyle] == "true",
+		CDNURL:                   values[SettingKeySoraS3CDNURL],
+	}
+
+	if v, err := strconv.ParseInt(values[SettingKeySoraDefaultStorageQuotaBytes], 10, 64); err == nil {
+		result.DefaultStorageQuotaBytes = v
+	}
+
+	return result, nil
+}
+
+// SetSoraS3Settings 更新 Sora S3 存储配置
+func (s *SettingService) SetSoraS3Settings(ctx context.Context, settings *SoraS3Settings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+
+	updates := map[string]string{
+		SettingKeySoraS3Enabled:        strconv.FormatBool(settings.Enabled),
+		SettingKeySoraS3Endpoint:       strings.TrimSpace(settings.Endpoint),
+		SettingKeySoraS3Region:         strings.TrimSpace(settings.Region),
+		SettingKeySoraS3Bucket:         strings.TrimSpace(settings.Bucket),
+		SettingKeySoraS3AccessKeyID:    strings.TrimSpace(settings.AccessKeyID),
+		SettingKeySoraS3Prefix:         strings.TrimSpace(settings.Prefix),
+		SettingKeySoraS3ForcePathStyle: strconv.FormatBool(settings.ForcePathStyle),
+		SettingKeySoraS3CDNURL:         strings.TrimSpace(settings.CDNURL),
+		SettingKeySoraDefaultStorageQuotaBytes: strconv.FormatInt(settings.DefaultStorageQuotaBytes, 10),
+	}
+
+	// 敏感字段：非空才更新（空字符串保留现有值）
+	if settings.SecretAccessKey != "" {
+		updates[SettingKeySoraS3SecretAccessKey] = settings.SecretAccessKey
+	}
+
+	err := s.settingRepo.SetMultiple(ctx, updates)
+	if err == nil {
+		if s.onUpdate != nil {
+			s.onUpdate()
+		}
+		if s.onS3Update != nil {
+			s.onS3Update()
+		}
+	}
+	return err
 }

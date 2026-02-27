@@ -35,7 +35,7 @@
             type="text"
             class="input"
             :placeholder="
-              account.platform === 'openai'
+              account.platform === 'openai' || account.platform === 'sora'
                 ? 'https://api.openai.com'
                 : account.platform === 'gemini'
                   ? 'https://generativelanguage.googleapis.com'
@@ -53,7 +53,7 @@
             type="password"
             class="input font-mono"
             :placeholder="
-              account.platform === 'openai'
+              account.platform === 'openai' || account.platform === 'sora'
                 ? 'sk-proj-...'
                 : account.platform === 'gemini'
                   ? 'AIza...'
@@ -1322,7 +1322,7 @@ const tempUnschedPresets = computed(() => [
 
 // Computed: default base URL based on platform
 const defaultBaseUrl = computed(() => {
-  if (props.account?.platform === 'openai') return 'https://api.openai.com'
+  if (props.account?.platform === 'openai' || props.account?.platform === 'sora') return 'https://api.openai.com'
   if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
   return 'https://api.anthropic.com'
 })
@@ -1464,7 +1464,7 @@ watch(
       if (newAccount.type === 'apikey' && newAccount.credentials) {
         const credentials = newAccount.credentials as Record<string, unknown>
         const platformDefaultUrl =
-          newAccount.platform === 'openai'
+          newAccount.platform === 'openai' || newAccount.platform === 'sora'
             ? 'https://api.openai.com'
             : newAccount.platform === 'gemini'
               ? 'https://generativelanguage.googleapis.com'
@@ -1510,7 +1510,7 @@ watch(
         editBaseUrl.value = (credentials.base_url as string) || ''
       } else {
         const platformDefaultUrl =
-          newAccount.platform === 'openai'
+          newAccount.platform === 'openai' || newAccount.platform === 'sora'
             ? 'https://api.openai.com'
             : newAccount.platform === 'gemini'
               ? 'https://generativelanguage.googleapis.com'

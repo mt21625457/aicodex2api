@@ -26,7 +26,9 @@ type AdminUser struct {
 	Notes string `json:"notes"`
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]rateMultiplier
-	GroupRates map[int64]float64 `json:"group_rates,omitempty"`
+	GroupRates            map[int64]float64 `json:"group_rates,omitempty"`
+	SoraStorageQuotaBytes int64             `json:"sora_storage_quota_bytes"`
+	SoraStorageUsedBytes  int64             `json:"sora_storage_used_bytes"`
 }
 
 type APIKey struct {
@@ -79,6 +81,9 @@ type Group struct {
 	FallbackGroupID *int64 `json:"fallback_group_id"`
 	// 无效请求兜底分组
 	FallbackGroupIDOnInvalidRequest *int64 `json:"fallback_group_id_on_invalid_request"`
+
+	// Sora 存储配额
+	SoraStorageQuotaBytes int64 `json:"sora_storage_quota_bytes"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

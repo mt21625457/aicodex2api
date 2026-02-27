@@ -374,6 +374,10 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)
+		// Sora S3 存储配置
+		adminSettings.GET("/sora-s3", h.Admin.Setting.GetSoraS3Settings)
+		adminSettings.PUT("/sora-s3", h.Admin.Setting.UpdateSoraS3Settings)
+		adminSettings.POST("/sora-s3/test", h.Admin.Setting.TestSoraS3Connection)
 	}
 }
 

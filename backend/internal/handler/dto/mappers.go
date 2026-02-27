@@ -59,9 +59,11 @@ func UserFromServiceAdmin(u *service.User) *AdminUser {
 		return nil
 	}
 	return &AdminUser{
-		User:       *base,
-		Notes:      u.Notes,
-		GroupRates: u.GroupRates,
+		User:                  *base,
+		Notes:                 u.Notes,
+		GroupRates:            u.GroupRates,
+		SoraStorageQuotaBytes: u.SoraStorageQuotaBytes,
+		SoraStorageUsedBytes:  u.SoraStorageUsedBytes,
 	}
 }
 
@@ -152,6 +154,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		ClaudeCodeOnly:                  g.ClaudeCodeOnly,
 		FallbackGroupID:                 g.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: g.FallbackGroupIDOnInvalidRequest,
+		SoraStorageQuotaBytes:           g.SoraStorageQuotaBytes,
 		CreatedAt:                       g.CreatedAt,
 		UpdatedAt:                       g.UpdatedAt,
 	}

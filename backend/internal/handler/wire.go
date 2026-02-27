@@ -60,8 +60,8 @@ func ProvideSystemHandler(updateService *service.UpdateService, lockService *ser
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
-func ProvideSettingHandler(settingService *service.SettingService, buildInfo BuildInfo) *SettingHandler {
-	return NewSettingHandler(settingService, buildInfo.Version)
+func ProvideSettingHandler(settingService *service.SettingService, accountRepo service.AccountRepository, buildInfo BuildInfo) *SettingHandler {
+	return NewSettingHandler(settingService, accountRepo, buildInfo.Version)
 }
 
 // ProvideHandlers creates the Handlers struct
@@ -77,6 +77,7 @@ func ProvideHandlers(
 	gatewayHandler *GatewayHandler,
 	openaiGatewayHandler *OpenAIGatewayHandler,
 	soraGatewayHandler *SoraGatewayHandler,
+	soraClientHandler *SoraClientHandler,
 	settingHandler *SettingHandler,
 	totpHandler *TotpHandler,
 	_ *service.IdempotencyCoordinator,
@@ -94,6 +95,7 @@ func ProvideHandlers(
 		Gateway:       gatewayHandler,
 		OpenAIGateway: openaiGatewayHandler,
 		SoraGateway:   soraGatewayHandler,
+		SoraClient:    soraClientHandler,
 		Setting:       settingHandler,
 		Totp:          totpHandler,
 	}

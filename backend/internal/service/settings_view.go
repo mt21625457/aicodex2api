@@ -86,6 +86,21 @@ type PublicSettings struct {
 	Version             string
 }
 
+// SoraS3Settings Sora S3 存储配置
+type SoraS3Settings struct {
+	Enabled                  bool   `json:"enabled"`
+	Endpoint                 string `json:"endpoint"`
+	Region                   string `json:"region"`
+	Bucket                   string `json:"bucket"`
+	AccessKeyID              string `json:"access_key_id"`
+	SecretAccessKey           string `json:"secret_access_key"`            // 仅内部使用，不直接返回前端
+	SecretAccessKeyConfigured bool   `json:"secret_access_key_configured"` // 前端展示用
+	Prefix                   string `json:"prefix"`
+	ForcePathStyle           bool   `json:"force_path_style"`
+	CDNURL                   string `json:"cdn_url"`
+	DefaultStorageQuotaBytes int64  `json:"default_storage_quota_bytes"`
+}
+
 // StreamTimeoutSettings 流超时处理配置（仅控制超时后的处理方式，超时判定由网关配置控制）
 type StreamTimeoutSettings struct {
 	// Enabled 是否启用流超时处理

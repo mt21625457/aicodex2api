@@ -83,13 +83,14 @@ type AdminService interface {
 
 // CreateUserInput represents input for creating a new user via admin operations.
 type CreateUserInput struct {
-	Email         string
-	Password      string
-	Username      string
-	Notes         string
-	Balance       float64
-	Concurrency   int
-	AllowedGroups []int64
+	Email                 string
+	Password              string
+	Username              string
+	Notes                 string
+	Balance               float64
+	Concurrency           int
+	AllowedGroups         []int64
+	SoraStorageQuotaBytes int64
 }
 
 type UpdateUserInput struct {
@@ -103,7 +104,8 @@ type UpdateUserInput struct {
 	AllowedGroups *[]int64 // 使用指针区分"未提供"和"设置为空数组"
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
-	GroupRates map[int64]*float64
+	GroupRates            map[int64]*float64
+	SoraStorageQuotaBytes *int64
 }
 
 type CreateGroupInput struct {
@@ -135,6 +137,8 @@ type CreateGroupInput struct {
 	MCPXMLInject        *bool
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes []string
+	// Sora 存储配额
+	SoraStorageQuotaBytes int64
 	// 从指定分组复制账号（创建分组后在同一事务内绑定）
 	CopyAccountsFromGroupIDs []int64
 }
@@ -169,6 +173,8 @@ type UpdateGroupInput struct {
 	MCPXMLInject        *bool
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes *[]string
+	// Sora 存储配额
+	SoraStorageQuotaBytes *int64
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
 	CopyAccountsFromGroupIDs []int64
 }
@@ -506,14 +512,15 @@ func (s *adminServiceImpl) GetUser(ctx context.Context, id int64) (*User, error)
 
 func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInput) (*User, error) {
 	user := &User{
-		Email:         input.Email,
-		Username:      input.Username,
-		Notes:         input.Notes,
-		Role:          RoleUser, // Always create as regular user, never admin
-		Balance:       input.Balance,
-		Concurrency:   input.Concurrency,
-		Status:        StatusActive,
-		AllowedGroups: input.AllowedGroups,
+		Email:                 input.Email,
+		Username:              input.Username,
+		Notes:                 input.Notes,
+		Role:                  RoleUser, // Always create as regular user, never admin
+		Balance:               input.Balance,
+		Concurrency:           input.Concurrency,
+		Status:                StatusActive,
+		AllowedGroups:         input.AllowedGroups,
+		SoraStorageQuotaBytes: input.SoraStorageQuotaBytes,
 	}
 	if err := user.SetPassword(input.Password); err != nil {
 		return nil, err
@@ -565,6 +572,10 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 
 	if input.AllowedGroups != nil {
 		user.AllowedGroups = *input.AllowedGroups
+	}
+
+	if input.SoraStorageQuotaBytes != nil {
+		user.SoraStorageQuotaBytes = *input.SoraStorageQuotaBytes
 	}
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
@@ -853,6 +864,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		ModelRouting:                    input.ModelRouting,
 		MCPXMLInject:                    mcpXMLInject,
 		SupportedModelScopes:            input.SupportedModelScopes,
+		SoraStorageQuotaBytes:           input.SoraStorageQuotaBytes,
 	}
 	if err := s.groupRepo.Create(ctx, group); err != nil {
 		return nil, err
@@ -1014,6 +1026,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.SoraVideoPricePerRequestHD != nil {
 		group.SoraVideoPricePerRequestHD = normalizePrice(input.SoraVideoPricePerRequestHD)
+	}
+	if input.SoraStorageQuotaBytes != nil {
+		group.SoraStorageQuotaBytes = *input.SoraStorageQuotaBytes
 	}
 
 	// Claude Code 客户端限制
@@ -1221,6 +1236,18 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
+	// Sora apikey 账号的 base_url 必填校验
+	if input.Platform == PlatformSora && input.Type == AccountTypeAPIKey {
+		baseURL, _ := input.Credentials["base_url"].(string)
+		baseURL = strings.TrimSpace(baseURL)
+		if baseURL == "" {
+			return nil, errors.New("sora apikey 账号必须设置 base_url")
+		}
+		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+			return nil, errors.New("base_url 必须以 http:// 或 https:// 开头")
+		}
+	}
+
 	account := &Account{
 		Name:        input.Name,
 		Notes:       normalizeAccountNotes(input.Notes),
@@ -1332,6 +1359,18 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	if input.AutoPauseOnExpired != nil {
 		account.AutoPauseOnExpired = *input.AutoPauseOnExpired
+	}
+
+	// Sora apikey 账号的 base_url 必填校验
+	if account.Platform == PlatformSora && account.Type == AccountTypeAPIKey {
+		baseURL, _ := account.Credentials["base_url"].(string)
+		baseURL = strings.TrimSpace(baseURL)
+		if baseURL == "" {
+			return nil, errors.New("sora apikey 账号必须设置 base_url")
+		}
+		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+			return nil, errors.New("base_url 必须以 http:// 或 https:// 开头")
+		}
 	}
 
 	// 先验证分组是否存在（在任何写操作之前）

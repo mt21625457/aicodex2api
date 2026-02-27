@@ -11,13 +11,15 @@ import (
 // SettingHandler 公开设置处理器（无需认证）
 type SettingHandler struct {
 	settingService *service.SettingService
+	accountRepo    service.AccountRepository
 	version        string
 }
 
 // NewSettingHandler 创建公开设置处理器
-func NewSettingHandler(settingService *service.SettingService, version string) *SettingHandler {
+func NewSettingHandler(settingService *service.SettingService, accountRepo service.AccountRepository, version string) *SettingHandler {
 	return &SettingHandler{
 		settingService: settingService,
+		accountRepo:    accountRepo,
 		version:        version,
 	}
 }
@@ -29,6 +31,18 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+
+	// 根据活跃 Sora 账号数推断 sora_client_enabled
+	soraClientEnabled := false
+	if h.accountRepo != nil {
+		accounts, _ := h.accountRepo.ListByPlatform(c.Request.Context(), service.PlatformSora)
+		for _, a := range accounts {
+			if a.Status == service.StatusActive {
+				soraClientEnabled = true
+				break
+			}
+		}
 	}
 
 	response.Success(c, dto.PublicSettings{
@@ -51,6 +65,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		PurchaseSubscriptionEnabled: settings.PurchaseSubscriptionEnabled,
 		PurchaseSubscriptionURL:     settings.PurchaseSubscriptionURL,
 		LinuxDoOAuthEnabled:         settings.LinuxDoOAuthEnabled,
+		SoraClientEnabled:           soraClientEnabled,
 		Version:                     h.version,
 	})
 }

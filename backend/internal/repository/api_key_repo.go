@@ -454,11 +454,13 @@ func userEntityToService(u *dbent.User) *service.User {
 		Balance:             u.Balance,
 		Concurrency:         u.Concurrency,
 		Status:              u.Status,
-		TotpSecretEncrypted: u.TotpSecretEncrypted,
-		TotpEnabled:         u.TotpEnabled,
-		TotpEnabledAt:       u.TotpEnabledAt,
-		CreatedAt:           u.CreatedAt,
-		UpdatedAt:           u.UpdatedAt,
+		SoraStorageQuotaBytes: u.SoraStorageQuotaBytes,
+		SoraStorageUsedBytes:  u.SoraStorageUsedBytes,
+		TotpSecretEncrypted:   u.TotpSecretEncrypted,
+		TotpEnabled:           u.TotpEnabled,
+		TotpEnabledAt:         u.TotpEnabledAt,
+		CreatedAt:             u.CreatedAt,
+		UpdatedAt:             u.UpdatedAt,
 	}
 }
 
@@ -486,6 +488,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		SoraImagePrice540:               g.SoraImagePrice540,
 		SoraVideoPricePerRequest:        g.SoraVideoPricePerRequest,
 		SoraVideoPricePerRequestHD:      g.SoraVideoPricePerRequestHd,
+		SoraStorageQuotaBytes:           g.SoraStorageQuotaBytes,
 		DefaultValidityDays:             g.DefaultValidityDays,
 		ClaudeCodeOnly:                  g.ClaudeCodeOnly,
 		FallbackGroupID:                 g.FallbackGroupID,
