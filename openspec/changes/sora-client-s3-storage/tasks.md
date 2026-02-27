@@ -75,10 +75,12 @@
 ## 9. Sora 客户端前端 - 基础框架（sora-client-ui）
 
 - [ ] 9.1 新增 `views/user/SoraView.vue`：Sora 客户端主页面容器（暗色主题）
-- [ ] 9.2 新增 `components/sora/SoraNavBar.vue`：顶部导航栏（Tab 切换 + 配额条 + 用户头像）
-- [ ] 9.3 前端路由注册：`router/index.ts` 新增 `/sora` 路由（需登录认证）
-- [ ] 9.4 侧边栏菜单：`AppSidebar.vue` 新增 Sora 菜单项
+- [ ] 9.2 新增 `components/sora/SoraNavBar.vue`：页面内导航栏（仅 Tab 切换 + 配额条，不含 Logo/头像）
+- [ ] 9.3 前端路由注册：`router/index.ts` 新增 `/sora` 路由（`requiresAuth: true, requiresAdmin: false`）
+- [ ] 9.4 侧边栏菜单：`AppSidebar.vue` 新增 Sora 菜单项（Sparkles 线性图标，`hideInSimpleMode: true`），同时添加到 `userNavItems`（Dashboard 之后）和 `personalNavItems`（API 密钥之后），条件显示 `sora_client_enabled`
 - [ ] 9.5 API 模块：新增 `api/sora.ts`，封装所有 Sora 客户端 API 调用
+- [ ] 9.6 后端公共设置 API：新增 `sora_client_enabled` 字段到公共设置响应（根据活跃 Sora 账号数 > 0 推断）
+- [ ] 9.7 功能未启用提示页：用户直接访问 `/sora` 但 `sora_client_enabled = false` 时显示提示
 
 ## 10. Sora 客户端前端 - 生成页
 
@@ -142,3 +144,7 @@
 - [ ] 14.13 验证多任务并发：同时 3 个任务正常运行，第 4 个被拒绝
 - [ ] 14.14 验证预签名 URL 动态刷新：作品库每次打开获取新 URL，不出现碎图
 - [ ] 14.15 验证浏览器通知：任务完成/失败时桌面通知 + 标签页 title 闪烁
+- [ ] 14.16 验证 Sora 菜单条件显示：无 Sora 账号时侧边栏不显示 Sora 入口；添加 Sora 账号后自动出现
+- [ ] 14.17 验证双菜单同步：普通用户和管理员"我的账户"均能看到 Sora 菜单项
+- [ ] 14.18 验证简单模式：开启 simpleMode 后 Sora 菜单项隐藏
+- [ ] 14.19 验证 Sora 页面嵌入布局：Sora 页面在全局侧边栏内渲染，侧边栏可正常切换其他页面

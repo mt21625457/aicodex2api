@@ -189,6 +189,8 @@ if (newPlatform === 'sora') {
 ### 六、Sora 客户端界面（参考官方客户端）
 
 - 在前端新增 Sora 客户端页面（`/sora`），面向普通用户
+- **嵌入全局布局**：Sora 页面保留在全局侧边栏布局内渲染（不独立接管全屏），页面内仅保留 Tab 切换 + 配额进度条，去掉独立 Logo 和头像（由侧边栏提供）
+- **条件显示**：侧边栏 Sora 菜单项仅在管理员配置了活跃 Sora 账号时显示（`sora_client_enabled`）
 - **生成页面**：输入提示词、选择模型（视频/图片/分辨率/时长）、上传参考图、发起生成
 - **作品库页面**：网格展示历史生成作品（缩略图/视频预览），支持下载、删除
 - **生成进度**：实时显示当前生成任务的进度状态（排队中/生成中/完成/失败）
@@ -236,6 +238,7 @@ if (newPlatform === 'sora') {
 - 在 `users` 表新增 `sora_storage_quota_bytes`、`sora_storage_used_bytes` 字段（配额上限、已用空间）
 - 系统设置新增 Sora S3 配置键值（`sora_s3_endpoint`、`sora_s3_bucket`、`sora_s3_region` 等）
 - 系统设置新增 `sora_default_storage_quota_bytes` 键值
+- 公共设置 API 新增 `sora_client_enabled` 字段（后端根据活跃 Sora 账号数推断，供前端条件显示 Sora 菜单项）
 - 分组表新增 `sora_storage_quota_bytes` 字段（可选覆盖）
 
 ### 后端代码变更
