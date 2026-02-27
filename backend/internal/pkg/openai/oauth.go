@@ -36,10 +36,18 @@ const (
 	SessionTTL = 30 * time.Minute
 )
 
+const (
+	// OAuthPlatformOpenAI uses OpenAI Codex-compatible OAuth client.
+	OAuthPlatformOpenAI = "openai"
+	// OAuthPlatformSora uses Sora OAuth client.
+	OAuthPlatformSora = "sora"
+)
+
 // OAuthSession stores OAuth flow state for OpenAI
 type OAuthSession struct {
 	State        string    `json:"state"`
 	CodeVerifier string    `json:"code_verifier"`
+	ClientID     string    `json:"client_id,omitempty"`
 	ProxyURL     string    `json:"proxy_url,omitempty"`
 	RedirectURI  string    `json:"redirect_uri"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -174,13 +182,20 @@ func base64URLEncode(data []byte) string {
 
 // BuildAuthorizationURL builds the OpenAI OAuth authorization URL
 func BuildAuthorizationURL(state, codeChallenge, redirectURI string) string {
+	return BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, OAuthPlatformOpenAI)
+}
+
+// BuildAuthorizationURLForPlatform builds authorization URL by platform.
+func BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, platform string) string {
 	if redirectURI == "" {
 		redirectURI = DefaultRedirectURI
 	}
 
+	clientID, codexFlow := OAuthClientConfigByPlatform(platform)
+
 	params := url.Values{}
 	params.Set("response_type", "code")
-	params.Set("client_id", ClientID)
+	params.Set("client_id", clientID)
 	params.Set("redirect_uri", redirectURI)
 	params.Set("scope", DefaultScopes)
 	params.Set("state", state)
@@ -188,9 +203,21 @@ func BuildAuthorizationURL(state, codeChallenge, redirectURI string) string {
 	params.Set("code_challenge_method", "S256")
 	// OpenAI specific parameters
 	params.Set("id_token_add_organizations", "true")
-	params.Set("codex_cli_simplified_flow", "true")
+	if codexFlow {
+		params.Set("codex_cli_simplified_flow", "true")
+	}
 
 	return fmt.Sprintf("%s?%s", AuthorizeURL, params.Encode())
+}
+
+// OAuthClientConfigByPlatform returns oauth client_id and whether codex simplified flow should be enabled.
+func OAuthClientConfigByPlatform(platform string) (clientID string, codexFlow bool) {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case OAuthPlatformSora:
+		return SoraClientID, false
+	default:
+		return ClientID, true
+	}
 }
 
 // TokenRequest represents the token exchange request body

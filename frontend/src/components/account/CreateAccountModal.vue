@@ -3465,6 +3465,7 @@ const handleOpenAIExchange = async (authCode: string) => {
       const soraCredentials = {
         access_token: credentials.access_token,
         refresh_token: credentials.refresh_token,
+        client_id: credentials.client_id,
         expires_at: credentials.expires_at
       }
 
@@ -3569,6 +3570,7 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
           const soraCredentials = {
             access_token: credentials.access_token,
             refresh_token: credentials.refresh_token,
+            client_id: credentials.client_id,
             expires_at: credentials.expires_at
           }
           const soraName = shouldCreateOpenAI ? `${accountName} (Sora)` : accountName

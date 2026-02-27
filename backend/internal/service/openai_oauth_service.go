@@ -39,7 +39,7 @@ type OpenAIAuthURLResult struct {
 }
 
 // GenerateAuthURL generates an OpenAI OAuth authorization URL
-func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, redirectURI string) (*OpenAIAuthURLResult, error) {
+func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, redirectURI, platform string) (*OpenAIAuthURLResult, error) {
 	// Generate PKCE values
 	state, err := openai.GenerateState()
 	if err != nil {
@@ -75,11 +75,14 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 	if redirectURI == "" {
 		redirectURI = openai.DefaultRedirectURI
 	}
+	normalizedPlatform := normalizeOpenAIOAuthPlatform(platform)
+	clientID, _ := openai.OAuthClientConfigByPlatform(normalizedPlatform)
 
 	// Store session
 	session := &openai.OAuthSession{
 		State:        state,
 		CodeVerifier: codeVerifier,
+		ClientID:     clientID,
 		RedirectURI:  redirectURI,
 		ProxyURL:     proxyURL,
 		CreatedAt:    time.Now(),
@@ -87,7 +90,7 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 	s.sessionStore.Set(sessionID, session)
 
 	// Build authorization URL
-	authURL := openai.BuildAuthorizationURL(state, codeChallenge, redirectURI)
+	authURL := openai.BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, normalizedPlatform)
 
 	return &OpenAIAuthURLResult{
 		AuthURL:   authURL,
@@ -111,6 +114,7 @@ type OpenAITokenInfo struct {
 	IDToken          string `json:"id_token,omitempty"`
 	ExpiresIn        int64  `json:"expires_in"`
 	ExpiresAt        int64  `json:"expires_at"`
+	ClientID         string `json:"client_id,omitempty"`
 	Email            string `json:"email,omitempty"`
 	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
 	ChatGPTUserID    string `json:"chatgpt_user_id,omitempty"`
@@ -148,9 +152,13 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	if input.RedirectURI != "" {
 		redirectURI = input.RedirectURI
 	}
+	clientID := strings.TrimSpace(session.ClientID)
+	if clientID == "" {
+		clientID = openai.ClientID
+	}
 
 	// Exchange code for token
-	tokenResp, err := s.oauthClient.ExchangeCode(ctx, input.Code, session.CodeVerifier, redirectURI, proxyURL)
+	tokenResp, err := s.oauthClient.ExchangeCode(ctx, input.Code, session.CodeVerifier, redirectURI, proxyURL, clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +181,7 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		IDToken:      tokenResp.IDToken,
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ClientID:     clientID,
 	}
 
 	if userInfo != nil {
@@ -212,6 +221,9 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 		IDToken:      tokenResp.IDToken,
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+	}
+	if trimmed := strings.TrimSpace(clientID); trimmed != "" {
+		tokenInfo.ClientID = trimmed
 	}
 
 	if userInfo != nil {
@@ -287,6 +299,7 @@ func (s *OpenAIOAuthService) ExchangeSoraSessionToken(ctx context.Context, sessi
 		AccessToken: strings.TrimSpace(sessionResp.AccessToken),
 		ExpiresIn:   expiresIn,
 		ExpiresAt:   expiresAt,
+		ClientID:    openai.SoraClientID,
 		Email:       strings.TrimSpace(sessionResp.User.Email),
 	}, nil
 }
@@ -342,6 +355,9 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	if tokenInfo.OrganizationID != "" {
 		creds["organization_id"] = tokenInfo.OrganizationID
 	}
+	if strings.TrimSpace(tokenInfo.ClientID) != "" {
+		creds["client_id"] = strings.TrimSpace(tokenInfo.ClientID)
+	}
 
 	return creds
 }
@@ -375,5 +391,14 @@ func newOpenAIOAuthHTTPClient(proxyURL string) *http.Client {
 	return &http.Client{
 		Timeout:   120 * time.Second,
 		Transport: transport,
+	}
+}
+
+func normalizeOpenAIOAuthPlatform(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case PlatformSora:
+		return openai.OAuthPlatformSora
+	default:
+		return openai.OAuthPlatformOpenAI
 	}
 }
