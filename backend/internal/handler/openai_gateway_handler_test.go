@@ -354,6 +354,71 @@ func TestOpenAIResponses_MissingDependencies_ReturnsServiceUnavailable(t *testin
 	assert.Equal(t, "Service temporarily unavailable", errorObj["message"])
 }
 
+func TestOpenAIResponses_SetsClientTransportHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h := &OpenAIGatewayHandler{}
+	h.Responses(c)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Equal(t, service.OpenAIClientTransportHTTP, service.GetOpenAIClientTransport(c))
+}
+
+func TestOpenAIResponsesWebSocket_SetsClientTransportWSWhenUpgradeValid(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+	c.Request.Header.Set("Upgrade", "websocket")
+	c.Request.Header.Set("Connection", "Upgrade")
+
+	h := &OpenAIGatewayHandler{}
+	h.ResponsesWebSocket(c)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Equal(t, service.OpenAIClientTransportWS, service.GetOpenAIClientTransport(c))
+}
+
+func TestOpenAIResponsesWebSocket_InvalidUpgradeDoesNotSetTransport(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+
+	h := &OpenAIGatewayHandler{}
+	h.ResponsesWebSocket(c)
+
+	require.Equal(t, http.StatusUpgradeRequired, w.Code)
+	require.Equal(t, service.OpenAIClientTransportUnknown, service.GetOpenAIClientTransport(c))
+}
+
+func TestSetOpenAIClientTransportHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	setOpenAIClientTransportHTTP(c)
+	require.Equal(t, service.OpenAIClientTransportHTTP, service.GetOpenAIClientTransport(c))
+}
+
+func TestSetOpenAIClientTransportWS(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	setOpenAIClientTransportWS(c)
+	require.Equal(t, service.OpenAIClientTransportWS, service.GetOpenAIClientTransport(c))
+}
+
 // TestOpenAIHandler_GjsonExtraction 验证 gjson 从请求体中提取 model/stream 的正确性
 func TestOpenAIHandler_GjsonExtraction(t *testing.T) {
 	tests := []struct {

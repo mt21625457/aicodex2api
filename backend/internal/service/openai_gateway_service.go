@@ -1426,6 +1426,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
+	clientTransport := GetOpenAIClientTransport(c)
+	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
+	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport)
 	if c != nil {
 		c.Set("openai_ws_transport_decision", string(wsDecision.Transport))
 		c.Set("openai_ws_transport_reason", wsDecision.Reason)
