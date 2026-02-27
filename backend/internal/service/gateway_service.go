@@ -127,13 +127,26 @@ func WithForceCacheBilling(ctx context.Context) context.Context {
 }
 
 func (s *GatewayService) debugModelRoutingEnabled() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("SUB2API_DEBUG_MODEL_ROUTING")))
-	return v == "1" || v == "true" || v == "yes" || v == "on"
+	if s == nil {
+		return false
+	}
+	return s.debugModelRouting.Load()
 }
 
 func (s *GatewayService) debugClaudeMimicEnabled() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("SUB2API_DEBUG_CLAUDE_MIMIC")))
-	return v == "1" || v == "true" || v == "yes" || v == "on"
+	if s == nil {
+		return false
+	}
+	return s.debugClaudeMimic.Load()
+}
+
+func parseDebugEnvBool(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func shortSessionHash(sessionHash string) string {
@@ -374,37 +387,16 @@ func modelsListCacheKey(groupID *int64, platform string) string {
 }
 
 func prefetchedStickyGroupIDFromContext(ctx context.Context) (int64, bool) {
-	if ctx == nil {
-		return 0, false
-	}
-	v := ctx.Value(ctxkey.PrefetchedStickyGroupID)
-	switch t := v.(type) {
-	case int64:
-		return t, true
-	case int:
-		return int64(t), true
-	}
-	return 0, false
+	return PrefetchedStickyGroupIDFromContext(ctx)
 }
 
 func prefetchedStickyAccountIDFromContext(ctx context.Context, groupID *int64) int64 {
-	if ctx == nil {
-		return 0
-	}
 	prefetchedGroupID, ok := prefetchedStickyGroupIDFromContext(ctx)
 	if !ok || prefetchedGroupID != derefGroupID(groupID) {
 		return 0
 	}
-	v := ctx.Value(ctxkey.PrefetchedStickyAccountID)
-	switch t := v.(type) {
-	case int64:
-		if t > 0 {
-			return t
-		}
-	case int:
-		if t > 0 {
-			return int64(t)
-		}
+	if accountID, ok := PrefetchedStickyAccountIDFromContext(ctx); ok && accountID > 0 {
+		return accountID
 	}
 	return 0
 }
@@ -509,29 +501,32 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 
 // GatewayService handles API gateway operations
 type GatewayService struct {
-	accountRepo         AccountRepository
-	groupRepo           GroupRepository
-	usageLogRepo        UsageLogRepository
-	userRepo            UserRepository
-	userSubRepo         UserSubscriptionRepository
-	userGroupRateRepo   UserGroupRateRepository
-	cache               GatewayCache
-	digestStore         *DigestSessionStore
-	cfg                 *config.Config
-	schedulerSnapshot   *SchedulerSnapshotService
-	billingService      *BillingService
-	rateLimitService    *RateLimitService
-	billingCacheService *BillingCacheService
-	identityService     *IdentityService
-	httpUpstream        HTTPUpstream
-	deferredService     *DeferredService
-	concurrencyService  *ConcurrencyService
-	claudeTokenProvider *ClaudeTokenProvider
-	sessionLimitCache   SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
-	userGroupRateCache  *gocache.Cache
-	userGroupRateSF     singleflight.Group
-	modelsListCache     *gocache.Cache
-	modelsListCacheTTL  time.Duration
+	accountRepo          AccountRepository
+	groupRepo            GroupRepository
+	usageLogRepo         UsageLogRepository
+	userRepo             UserRepository
+	userSubRepo          UserSubscriptionRepository
+	userGroupRateRepo    UserGroupRateRepository
+	cache                GatewayCache
+	digestStore          *DigestSessionStore
+	cfg                  *config.Config
+	schedulerSnapshot    *SchedulerSnapshotService
+	billingService       *BillingService
+	rateLimitService     *RateLimitService
+	billingCacheService  *BillingCacheService
+	identityService      *IdentityService
+	httpUpstream         HTTPUpstream
+	deferredService      *DeferredService
+	concurrencyService   *ConcurrencyService
+	claudeTokenProvider  *ClaudeTokenProvider
+	sessionLimitCache    SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+	userGroupRateCache   *gocache.Cache
+	userGroupRateSF      singleflight.Group
+	modelsListCache      *gocache.Cache
+	modelsListCacheTTL   time.Duration
+	responseHeaderFilter *responseheaders.CompiledHeaderFilter
+	debugModelRouting    atomic.Bool
+	debugClaudeMimic     atomic.Bool
 }
 
 // NewGatewayService creates a new GatewayService
@@ -559,30 +554,34 @@ func NewGatewayService(
 	userGroupRateTTL := resolveUserGroupRateCacheTTL(cfg)
 	modelsListTTL := resolveModelsListCacheTTL(cfg)
 
-	return &GatewayService{
-		accountRepo:         accountRepo,
-		groupRepo:           groupRepo,
-		usageLogRepo:        usageLogRepo,
-		userRepo:            userRepo,
-		userSubRepo:         userSubRepo,
-		userGroupRateRepo:   userGroupRateRepo,
-		cache:               cache,
-		digestStore:         digestStore,
-		cfg:                 cfg,
-		schedulerSnapshot:   schedulerSnapshot,
-		concurrencyService:  concurrencyService,
-		billingService:      billingService,
-		rateLimitService:    rateLimitService,
-		billingCacheService: billingCacheService,
-		identityService:     identityService,
-		httpUpstream:        httpUpstream,
-		deferredService:     deferredService,
-		claudeTokenProvider: claudeTokenProvider,
-		sessionLimitCache:   sessionLimitCache,
-		userGroupRateCache:  gocache.New(userGroupRateTTL, time.Minute),
-		modelsListCache:     gocache.New(modelsListTTL, time.Minute),
-		modelsListCacheTTL:  modelsListTTL,
+	svc := &GatewayService{
+		accountRepo:          accountRepo,
+		groupRepo:            groupRepo,
+		usageLogRepo:         usageLogRepo,
+		userRepo:             userRepo,
+		userSubRepo:          userSubRepo,
+		userGroupRateRepo:    userGroupRateRepo,
+		cache:                cache,
+		digestStore:          digestStore,
+		cfg:                  cfg,
+		schedulerSnapshot:    schedulerSnapshot,
+		concurrencyService:   concurrencyService,
+		billingService:       billingService,
+		rateLimitService:     rateLimitService,
+		billingCacheService:  billingCacheService,
+		identityService:      identityService,
+		httpUpstream:         httpUpstream,
+		deferredService:      deferredService,
+		claudeTokenProvider:  claudeTokenProvider,
+		sessionLimitCache:    sessionLimitCache,
+		userGroupRateCache:   gocache.New(userGroupRateTTL, time.Minute),
+		modelsListCache:      gocache.New(modelsListTTL, time.Minute),
+		modelsListCacheTTL:   modelsListTTL,
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
 	}
+	svc.debugModelRouting.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_MODEL_ROUTING")))
+	svc.debugClaudeMimic.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_CLAUDE_MIMIC")))
+	return svc
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
@@ -2801,7 +2800,7 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 			return false
 		}
 		// 应用 thinking 后缀后检查最终模型是否在账号映射中
-		if enabled, ok := ctx.Value(ctxkey.ThinkingEnabled).(bool); ok {
+		if enabled, ok := ThinkingEnabledFromContext(ctx); ok {
 			finalModel := applyThinkingModelSuffix(mapped, enabled)
 			if finalModel == mapped {
 				return true // thinking 后缀未改变模型名，映射已通过
@@ -4012,7 +4011,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 	}
 
-	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.cfg)
+	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
@@ -4308,7 +4307,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 
 	usage := parseClaudeUsageFromResponseBody(body)
 
-	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.cfg)
+	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"
@@ -4317,12 +4316,12 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	return usage, nil
 }
 
-func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, cfg *config.Config) {
+func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, filter *responseheaders.CompiledHeaderFilter) {
 	if dst == nil || src == nil {
 		return
 	}
-	if cfg != nil {
-		responseheaders.WriteFilteredHeaders(dst, src, cfg.Security.ResponseHeaders)
+	if filter != nil {
+		responseheaders.WriteFilteredHeaders(dst, src, filter)
 		return
 	}
 	if v := strings.TrimSpace(src.Get("Content-Type")); v != "" {
@@ -5029,8 +5028,8 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
-	if s.cfg != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 
 	// 设置SSE响应头
@@ -5620,7 +5619,7 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
 
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -6388,7 +6387,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		return fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
 
-	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.cfg)
+	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"

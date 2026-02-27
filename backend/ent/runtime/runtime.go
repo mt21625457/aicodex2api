@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
 	"github.com/Wei-Shaw/sub2api/ent/promocode"
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
@@ -209,7 +210,7 @@ func init() {
 	// account.DefaultSchedulable holds the default value on creation for the schedulable field.
 	account.DefaultSchedulable = accountDescSchedulable.Default.(bool)
 	// accountDescSessionWindowStatus is the schema descriptor for session_window_status field.
-	accountDescSessionWindowStatus := accountFields[21].Descriptor()
+	accountDescSessionWindowStatus := accountFields[23].Descriptor()
 	// account.SessionWindowStatusValidator is a validator for the "session_window_status" field. It is called by the builders before save.
 	account.SessionWindowStatusValidator = accountDescSessionWindowStatus.Validators[0].(func(string) error)
 	accountgroupFields := schema.AccountGroup{}.Fields()
@@ -418,6 +419,41 @@ func init() {
 	groupDescSortOrder := groupFields[25].Descriptor()
 	// group.DefaultSortOrder holds the default value on creation for the sort_order field.
 	group.DefaultSortOrder = groupDescSortOrder.Default.(int)
+	idempotencyrecordMixin := schema.IdempotencyRecord{}.Mixin()
+	idempotencyrecordMixinFields0 := idempotencyrecordMixin[0].Fields()
+	_ = idempotencyrecordMixinFields0
+	idempotencyrecordFields := schema.IdempotencyRecord{}.Fields()
+	_ = idempotencyrecordFields
+	// idempotencyrecordDescCreatedAt is the schema descriptor for created_at field.
+	idempotencyrecordDescCreatedAt := idempotencyrecordMixinFields0[0].Descriptor()
+	// idempotencyrecord.DefaultCreatedAt holds the default value on creation for the created_at field.
+	idempotencyrecord.DefaultCreatedAt = idempotencyrecordDescCreatedAt.Default.(func() time.Time)
+	// idempotencyrecordDescUpdatedAt is the schema descriptor for updated_at field.
+	idempotencyrecordDescUpdatedAt := idempotencyrecordMixinFields0[1].Descriptor()
+	// idempotencyrecord.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	idempotencyrecord.DefaultUpdatedAt = idempotencyrecordDescUpdatedAt.Default.(func() time.Time)
+	// idempotencyrecord.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	idempotencyrecord.UpdateDefaultUpdatedAt = idempotencyrecordDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// idempotencyrecordDescScope is the schema descriptor for scope field.
+	idempotencyrecordDescScope := idempotencyrecordFields[0].Descriptor()
+	// idempotencyrecord.ScopeValidator is a validator for the "scope" field. It is called by the builders before save.
+	idempotencyrecord.ScopeValidator = idempotencyrecordDescScope.Validators[0].(func(string) error)
+	// idempotencyrecordDescIdempotencyKeyHash is the schema descriptor for idempotency_key_hash field.
+	idempotencyrecordDescIdempotencyKeyHash := idempotencyrecordFields[1].Descriptor()
+	// idempotencyrecord.IdempotencyKeyHashValidator is a validator for the "idempotency_key_hash" field. It is called by the builders before save.
+	idempotencyrecord.IdempotencyKeyHashValidator = idempotencyrecordDescIdempotencyKeyHash.Validators[0].(func(string) error)
+	// idempotencyrecordDescRequestFingerprint is the schema descriptor for request_fingerprint field.
+	idempotencyrecordDescRequestFingerprint := idempotencyrecordFields[2].Descriptor()
+	// idempotencyrecord.RequestFingerprintValidator is a validator for the "request_fingerprint" field. It is called by the builders before save.
+	idempotencyrecord.RequestFingerprintValidator = idempotencyrecordDescRequestFingerprint.Validators[0].(func(string) error)
+	// idempotencyrecordDescStatus is the schema descriptor for status field.
+	idempotencyrecordDescStatus := idempotencyrecordFields[3].Descriptor()
+	// idempotencyrecord.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	idempotencyrecord.StatusValidator = idempotencyrecordDescStatus.Validators[0].(func(string) error)
+	// idempotencyrecordDescErrorReason is the schema descriptor for error_reason field.
+	idempotencyrecordDescErrorReason := idempotencyrecordFields[6].Descriptor()
+	// idempotencyrecord.ErrorReasonValidator is a validator for the "error_reason" field. It is called by the builders before save.
+	idempotencyrecord.ErrorReasonValidator = idempotencyrecordDescErrorReason.Validators[0].(func(string) error)
 	promocodeFields := schema.PromoCode{}.Fields()
 	_ = promocodeFields
 	// promocodeDescCode is the schema descriptor for code field.

@@ -518,6 +518,12 @@ type GatewayOpenAIWSConfig struct {
 	LBTopK int `mapstructure:"lb_top_k"`
 	// StickySessionTTLSeconds: session_hash -> account_id 粘连 TTL
 	StickySessionTTLSeconds int `mapstructure:"sticky_session_ttl_seconds"`
+	// SessionHashReadOldFallback: 会话哈希迁移期是否允许“新 key 未命中时回退读旧 SHA-256 key”
+	SessionHashReadOldFallback bool `mapstructure:"session_hash_read_old_fallback"`
+	// SessionHashDualWriteOld: 会话哈希迁移期是否双写旧 SHA-256 key（短 TTL）
+	SessionHashDualWriteOld bool `mapstructure:"session_hash_dual_write_old"`
+	// MetadataBridgeEnabled: RequestMetadata 迁移期是否保留旧 ctxkey.* 兼容桥接
+	MetadataBridgeEnabled bool `mapstructure:"metadata_bridge_enabled"`
 	// StickyResponseIDTTLSeconds: response_id -> account_id 粘连 TTL
 	StickyResponseIDTTLSeconds int `mapstructure:"sticky_response_id_ttl_seconds"`
 	// StickyPreviousResponseTTLSeconds: 兼容旧键（当新键未设置时回退）
@@ -1281,6 +1287,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.payload_log_sample_rate", 0.2)
 	viper.SetDefault("gateway.openai_ws.lb_top_k", 3)
 	viper.SetDefault("gateway.openai_ws.sticky_session_ttl_seconds", 3600)
+	viper.SetDefault("gateway.openai_ws.session_hash_read_old_fallback", true)
+	viper.SetDefault("gateway.openai_ws.session_hash_dual_write_old", true)
+	viper.SetDefault("gateway.openai_ws.metadata_bridge_enabled", true)
 	viper.SetDefault("gateway.openai_ws.sticky_response_id_ttl_seconds", 3600)
 	viper.SetDefault("gateway.openai_ws.sticky_previous_response_ttl_seconds", 3600)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.priority", 1.0)

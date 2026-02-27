@@ -108,6 +108,8 @@ var (
 		{Name: "rate_limited_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "rate_limit_reset_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "overload_until", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "temp_unschedulable_until", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "temp_unschedulable_reason", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "session_window_start", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "session_window_end", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "session_window_status", Type: field.TypeString, Nullable: true, Size: 20},
@@ -121,7 +123,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "accounts_proxies_proxy",
-				Columns:    []*schema.Column{AccountsColumns[25]},
+				Columns:    []*schema.Column{AccountsColumns[27]},
 				RefColumns: []*schema.Column{ProxiesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -145,7 +147,7 @@ var (
 			{
 				Name:    "account_proxy_id",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[25]},
+				Columns: []*schema.Column{AccountsColumns[27]},
 			},
 			{
 				Name:    "account_priority",
@@ -176,6 +178,16 @@ var (
 				Name:    "account_overload_until",
 				Unique:  false,
 				Columns: []*schema.Column{AccountsColumns[21]},
+			},
+			{
+				Name:    "account_platform_priority",
+				Unique:  false,
+				Columns: []*schema.Column{AccountsColumns[6], AccountsColumns[11]},
+			},
+			{
+				Name:    "account_priority_status",
+				Unique:  false,
+				Columns: []*schema.Column{AccountsColumns[11], AccountsColumns[13]},
 			},
 			{
 				Name:    "account_deleted_at",
@@ -420,6 +432,44 @@ var (
 				Name:    "group_sort_order",
 				Unique:  false,
 				Columns: []*schema.Column{GroupsColumns[29]},
+			},
+		},
+	}
+	// IdempotencyRecordsColumns holds the columns for the "idempotency_records" table.
+	IdempotencyRecordsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "scope", Type: field.TypeString, Size: 128},
+		{Name: "idempotency_key_hash", Type: field.TypeString, Size: 64},
+		{Name: "request_fingerprint", Type: field.TypeString, Size: 64},
+		{Name: "status", Type: field.TypeString, Size: 32},
+		{Name: "response_status", Type: field.TypeInt, Nullable: true},
+		{Name: "response_body", Type: field.TypeString, Nullable: true},
+		{Name: "error_reason", Type: field.TypeString, Nullable: true, Size: 128},
+		{Name: "locked_until", Type: field.TypeTime, Nullable: true},
+		{Name: "expires_at", Type: field.TypeTime},
+	}
+	// IdempotencyRecordsTable holds the schema information for the "idempotency_records" table.
+	IdempotencyRecordsTable = &schema.Table{
+		Name:       "idempotency_records",
+		Columns:    IdempotencyRecordsColumns,
+		PrimaryKey: []*schema.Column{IdempotencyRecordsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "idempotencyrecord_scope_idempotency_key_hash",
+				Unique:  true,
+				Columns: []*schema.Column{IdempotencyRecordsColumns[3], IdempotencyRecordsColumns[4]},
+			},
+			{
+				Name:    "idempotencyrecord_expires_at",
+				Unique:  false,
+				Columns: []*schema.Column{IdempotencyRecordsColumns[11]},
+			},
+			{
+				Name:    "idempotencyrecord_status_locked_until",
+				Unique:  false,
+				Columns: []*schema.Column{IdempotencyRecordsColumns[6], IdempotencyRecordsColumns[10]},
 			},
 		},
 	}
@@ -771,6 +821,11 @@ var (
 				Unique:  false,
 				Columns: []*schema.Column{UsageLogsColumns[28], UsageLogsColumns[27]},
 			},
+			{
+				Name:    "usagelog_group_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{UsageLogsColumns[30], UsageLogsColumns[27]},
+			},
 		},
 	}
 	// UsersColumns holds the columns for the "users" table.
@@ -996,6 +1051,11 @@ var (
 				Columns: []*schema.Column{UserSubscriptionsColumns[5]},
 			},
 			{
+				Name:    "usersubscription_user_id_status_expires_at",
+				Unique:  false,
+				Columns: []*schema.Column{UserSubscriptionsColumns[16], UserSubscriptionsColumns[6], UserSubscriptionsColumns[5]},
+			},
+			{
 				Name:    "usersubscription_assigned_by",
 				Unique:  false,
 				Columns: []*schema.Column{UserSubscriptionsColumns[17]},
@@ -1021,6 +1081,7 @@ var (
 		AnnouncementReadsTable,
 		ErrorPassthroughRulesTable,
 		GroupsTable,
+		IdempotencyRecordsTable,
 		PromoCodesTable,
 		PromoCodeUsagesTable,
 		ProxiesTable,
@@ -1065,6 +1126,9 @@ func init() {
 	}
 	GroupsTable.Annotation = &entsql.Annotation{
 		Table: "groups",
+	}
+	IdempotencyRecordsTable.Annotation = &entsql.Annotation{
+		Table: "idempotency_records",
 	}
 	PromoCodesTable.Annotation = &entsql.Annotation{
 		Table: "promo_codes",

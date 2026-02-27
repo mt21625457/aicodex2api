@@ -21,6 +21,7 @@ const (
 type OpenAIAccountScheduleRequest struct {
 	GroupID            *int64
 	SessionHash        string
+	StickyAccountID    int64
 	PreviousResponseID string
 	RequestedModel     string
 	ExcludedIDs        map[int64]struct{}
@@ -288,9 +289,15 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, nil
 	}
 
-	cacheKey := "openai:" + sessionHash
-	accountID, err := s.service.cache.GetSessionAccountID(ctx, derefGroupID(req.GroupID), cacheKey)
-	if err != nil || accountID <= 0 {
+	accountID := req.StickyAccountID
+	if accountID <= 0 {
+		var err error
+		accountID, err = s.service.getStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		if err != nil || accountID <= 0 {
+			return nil, nil
+		}
+	}
+	if accountID <= 0 {
 		return nil, nil
 	}
 	if req.ExcludedIDs != nil {
@@ -301,11 +308,11 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 
 	account, err := s.service.getSchedulableAccount(ctx, accountID)
 	if err != nil || account == nil {
-		_ = s.service.cache.DeleteSessionAccountID(ctx, derefGroupID(req.GroupID), cacheKey)
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
 	if shouldClearStickySession(account, req.RequestedModel) || !account.IsOpenAI() {
-		_ = s.service.cache.DeleteSessionAccountID(ctx, derefGroupID(req.GroupID), cacheKey)
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
@@ -314,12 +321,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result.Acquired {
-		_ = s.service.cache.RefreshSessionTTL(
-			ctx,
-			derefGroupID(req.GroupID),
-			cacheKey,
-			s.service.openAIWSSessionStickyTTL(),
-		)
+		_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIWSSessionStickyTTL())
 		return &AccountSelectionResult{
 			Account:     account,
 			Acquired:    true,
@@ -660,9 +662,18 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		decision.Layer = openAIAccountScheduleLayerLoadBalance
 		return selection, decision, err
 	}
+
+	var stickyAccountID int64
+	if sessionHash != "" && s.cache != nil {
+		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil && accountID > 0 {
+			stickyAccountID = accountID
+		}
+	}
+
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
 		GroupID:            groupID,
 		SessionHash:        sessionHash,
+		StickyAccountID:    stickyAccountID,
 		PreviousResponseID: previousResponseID,
 		RequestedModel:     requestedModel,
 		ExcludedIDs:        excludedIDs,

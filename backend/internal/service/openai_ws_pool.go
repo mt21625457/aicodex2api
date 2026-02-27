@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -531,6 +532,7 @@ type openAIWSConnPool struct {
 	metrics openAIWSPoolMetrics
 
 	workerStopCh chan struct{}
+	workerWg     sync.WaitGroup
 	closeOnce    sync.Once
 }
 
@@ -584,7 +586,10 @@ func (p *openAIWSConnPool) Close() {
 		return
 	}
 	p.closeOnce.Do(func() {
-		close(p.workerStopCh)
+		if p.workerStopCh != nil {
+			close(p.workerStopCh)
+		}
+		p.workerWg.Wait()
 		// 遍历所有账户池，关闭全部空闲连接。
 		p.accounts.Range(func(key, value any) bool {
 			ap, ok := value.(*openAIWSAccountPool)
@@ -607,8 +612,15 @@ func (p *openAIWSConnPool) startBackgroundWorkers() {
 	if p == nil || p.workerStopCh == nil {
 		return
 	}
-	go p.runBackgroundPingWorker()
-	go p.runBackgroundCleanupWorker()
+	p.workerWg.Add(2)
+	go func() {
+		defer p.workerWg.Done()
+		p.runBackgroundPingWorker()
+	}()
+	go func() {
+		defer p.workerWg.Done()
+		p.runBackgroundCleanupWorker()
+	}()
 }
 
 type openAIWSIdlePingCandidate struct {
@@ -637,14 +649,21 @@ func (p *openAIWSConnPool) runBackgroundPingSweep() {
 		return
 	}
 	candidates := p.snapshotIdleConnsForPing()
+	var g errgroup.Group
+	g.SetLimit(10)
 	for _, item := range candidates {
+		item := item
 		if item.conn == nil || item.conn.isLeased() || item.conn.waiters.Load() > 0 {
 			continue
 		}
-		if err := item.conn.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
-			p.evictConn(item.accountID, item.conn.id)
-		}
+		g.Go(func() error {
+			if err := item.conn.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+				p.evictConn(item.accountID, item.conn.id)
+			}
+			return nil
+		})
 	}
+	_ = g.Wait()
 }
 
 func (p *openAIWSConnPool) snapshotIdleConnsForPing() []openAIWSIdlePingCandidate {

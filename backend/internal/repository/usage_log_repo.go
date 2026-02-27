@@ -498,25 +498,46 @@ func (r *usageLogRepository) fillDashboardUsageStatsAggregated(ctx context.Conte
 }
 
 func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Context, stats *DashboardStats, startUTC, endUTC, todayUTC, now time.Time) error {
-	totalStatsQuery := `
+	todayEnd := todayUTC.Add(24 * time.Hour)
+	combinedStatsQuery := `
+		WITH scoped AS (
+			SELECT
+				created_at,
+				input_tokens,
+				output_tokens,
+				cache_creation_tokens,
+				cache_read_tokens,
+				total_cost,
+				actual_cost,
+				COALESCE(duration_ms, 0) AS duration_ms
+			FROM usage_logs
+			WHERE created_at >= LEAST($1::timestamptz, $3::timestamptz)
+				AND created_at < GREATEST($2::timestamptz, $4::timestamptz)
+		)
 		SELECT
-			COUNT(*) as total_requests,
-			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
-			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
-			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
-			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
-			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
-			COALESCE(SUM(COALESCE(duration_ms, 0)), 0) as total_duration_ms
-		FROM usage_logs
-		WHERE created_at >= $1 AND created_at < $2
+			COUNT(*) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz) AS total_requests,
+			COALESCE(SUM(input_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_input_tokens,
+			COALESCE(SUM(output_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_output_tokens,
+			COALESCE(SUM(cache_creation_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cache_creation_tokens,
+			COALESCE(SUM(cache_read_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cache_read_tokens,
+			COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cost,
+			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_actual_cost,
+			COALESCE(SUM(duration_ms) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_duration_ms,
+			COUNT(*) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz) AS today_requests,
+			COALESCE(SUM(input_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_input_tokens,
+			COALESCE(SUM(output_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_output_tokens,
+			COALESCE(SUM(cache_creation_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cache_creation_tokens,
+			COALESCE(SUM(cache_read_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cache_read_tokens,
+			COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cost,
+			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_actual_cost
+		FROM scoped
 	`
 	var totalDurationMs int64
 	if err := scanSingleRow(
 		ctx,
 		r.sql,
-		totalStatsQuery,
-		[]any{startUTC, endUTC},
+		combinedStatsQuery,
+		[]any{startUTC, endUTC, todayUTC, todayEnd},
 		&stats.TotalRequests,
 		&stats.TotalInputTokens,
 		&stats.TotalOutputTokens,
@@ -525,32 +546,6 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 		&stats.TotalCost,
 		&stats.TotalActualCost,
 		&totalDurationMs,
-	); err != nil {
-		return err
-	}
-	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens
-	if stats.TotalRequests > 0 {
-		stats.AverageDurationMs = float64(totalDurationMs) / float64(stats.TotalRequests)
-	}
-
-	todayEnd := todayUTC.Add(24 * time.Hour)
-	todayStatsQuery := `
-		SELECT
-			COUNT(*) as today_requests,
-			COALESCE(SUM(input_tokens), 0) as today_input_tokens,
-			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
-			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,
-			COALESCE(SUM(cache_read_tokens), 0) as today_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as today_cost,
-			COALESCE(SUM(actual_cost), 0) as today_actual_cost
-		FROM usage_logs
-		WHERE created_at >= $1 AND created_at < $2
-	`
-	if err := scanSingleRow(
-		ctx,
-		r.sql,
-		todayStatsQuery,
-		[]any{todayUTC, todayEnd},
 		&stats.TodayRequests,
 		&stats.TodayInputTokens,
 		&stats.TodayOutputTokens,
@@ -561,25 +556,28 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 	); err != nil {
 		return err
 	}
-	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
-
-	activeUsersQuery := `
-		SELECT COUNT(DISTINCT user_id) as active_users
-		FROM usage_logs
-		WHERE created_at >= $1 AND created_at < $2
-	`
-	if err := scanSingleRow(ctx, r.sql, activeUsersQuery, []any{todayUTC, todayEnd}, &stats.ActiveUsers); err != nil {
-		return err
+	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens
+	if stats.TotalRequests > 0 {
+		stats.AverageDurationMs = float64(totalDurationMs) / float64(stats.TotalRequests)
 	}
+
+	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
 
 	hourStart := now.UTC().Truncate(time.Hour)
 	hourEnd := hourStart.Add(time.Hour)
-	hourlyActiveQuery := `
-		SELECT COUNT(DISTINCT user_id) as active_users
-		FROM usage_logs
-		WHERE created_at >= $1 AND created_at < $2
+	activeUsersQuery := `
+		WITH scoped AS (
+			SELECT user_id, created_at
+			FROM usage_logs
+			WHERE created_at >= LEAST($1::timestamptz, $3::timestamptz)
+				AND created_at < GREATEST($2::timestamptz, $4::timestamptz)
+		)
+		SELECT
+			COUNT(DISTINCT CASE WHEN created_at >= $1::timestamptz AND created_at < $2::timestamptz THEN user_id END) AS active_users,
+			COUNT(DISTINCT CASE WHEN created_at >= $3::timestamptz AND created_at < $4::timestamptz THEN user_id END) AS hourly_active_users
+		FROM scoped
 	`
-	if err := scanSingleRow(ctx, r.sql, hourlyActiveQuery, []any{hourStart, hourEnd}, &stats.HourlyActiveUsers); err != nil {
+	if err := scanSingleRow(ctx, r.sql, activeUsersQuery, []any{todayUTC, todayEnd, hourStart, hourEnd}, &stats.ActiveUsers, &stats.HourlyActiveUsers); err != nil {
 		return err
 	}
 

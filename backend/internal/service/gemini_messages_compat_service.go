@@ -53,6 +53,7 @@ type GeminiMessagesCompatService struct {
 	httpUpstream              HTTPUpstream
 	antigravityGatewayService *AntigravityGatewayService
 	cfg                       *config.Config
+	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
 }
 
 func NewGeminiMessagesCompatService(
@@ -76,6 +77,7 @@ func NewGeminiMessagesCompatService(
 		httpUpstream:              httpUpstream,
 		antigravityGatewayService: antigravityGatewayService,
 		cfg:                       cfg,
+		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
 	}
 }
 
@@ -2429,7 +2431,7 @@ func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Co
 		}
 	}
 
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
@@ -2454,8 +2456,8 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 		logger.LegacyPrintf("service.gemini_messages_compat", "[GeminiAPI] ====================================================")
 	}
 
-	if s.cfg != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.cfg.Security.ResponseHeaders)
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 
 	c.Status(resp.StatusCode)
@@ -2596,7 +2598,7 @@ func (s *GeminiMessagesCompatService) ForwardAIStudioGET(ctx context.Context, ac
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	wwwAuthenticate := resp.Header.Get("Www-Authenticate")
-	filteredHeaders := responseheaders.FilterHeaders(resp.Header, s.cfg.Security.ResponseHeaders)
+	filteredHeaders := responseheaders.FilterHeaders(resp.Header, s.responseHeaderFilter)
 	if wwwAuthenticate != "" {
 		filteredHeaders.Set("Www-Authenticate", wwwAuthenticate)
 	}

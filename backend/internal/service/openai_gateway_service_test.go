@@ -4,9 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -168,7 +168,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	}
 }
 
-func TestOpenAIGatewayService_GenerateSessionHash_UsesSHA256(t *testing.T) {
+func TestOpenAIGatewayService_GenerateSessionHash_UsesXXHash64(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -178,9 +178,24 @@ func TestOpenAIGatewayService_GenerateSessionHash_UsesSHA256(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 
 	got := svc.GenerateSessionHash(c, nil)
-	sum := sha256.Sum256([]byte("sess-fixed-value"))
-	want := hex.EncodeToString(sum[:])
+	want := fmt.Sprintf("%016x", xxhash.Sum64String("sess-fixed-value"))
 	require.Equal(t, want, got)
+}
+
+func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	c.Request.Header.Set("session_id", "sess-legacy-check")
+	svc := &OpenAIGatewayService{}
+
+	sessionHash := svc.GenerateSessionHash(c, nil)
+	require.NotEmpty(t, sessionHash)
+	require.NotNil(t, c.Request)
+	require.NotNil(t, c.Request.Context())
+	require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
 }
 
 func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
