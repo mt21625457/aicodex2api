@@ -22,6 +22,7 @@ import userAttributesAPI from './userAttributes'
 import opsAPI from './ops'
 import errorPassthroughAPI from './errorPassthrough'
 import dataManagementAPI from './dataManagement'
+import apiKeysAPI from './apiKeys'
 
 /**
  * Unified admin API object for convenient access
@@ -45,7 +46,8 @@ export const adminAPI = {
   userAttributes: userAttributesAPI,
   ops: opsAPI,
   errorPassthrough: errorPassthroughAPI,
-  dataManagement: dataManagementAPI
+  dataManagement: dataManagementAPI,
+  apiKeys: apiKeysAPI
 }
 
 export {
@@ -67,7 +69,8 @@ export {
   userAttributesAPI,
   opsAPI,
   errorPassthroughAPI,
-  dataManagementAPI
+  dataManagementAPI,
+  apiKeysAPI
 }
 
 export default adminAPI
