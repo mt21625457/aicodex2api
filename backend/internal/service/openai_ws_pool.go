@@ -781,6 +781,9 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 
 	accountID := req.Account.ID
 	effectiveMaxConns := p.effectiveMaxConnsByAccount(req.Account)
+	if effectiveMaxConns <= 0 {
+		return nil, errOpenAIWSConnQueueFull
+	}
 	var evicted []*openAIWSConn
 	ap := p.getOrCreateAccountPool(accountID)
 	ap.mu.Lock()
@@ -1511,6 +1514,13 @@ func (p *openAIWSConnPool) dynamicMaxConnsEnabled() bool {
 	return false
 }
 
+func (p *openAIWSConnPool) modeRouterV2Enabled() bool {
+	if p != nil && p.cfg != nil {
+		return p.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
+	}
+	return false
+}
+
 func (p *openAIWSConnPool) maxConnsFactorByAccount(account *Account) float64 {
 	if p == nil || p.cfg == nil || account == nil {
 		return 1.0
@@ -1532,6 +1542,15 @@ func (p *openAIWSConnPool) effectiveMaxConnsByAccount(account *Account) int {
 	hardCap := p.maxConnsHardCap()
 	if hardCap <= 0 {
 		return 0
+	}
+	if p.modeRouterV2Enabled() {
+		if account == nil {
+			return hardCap
+		}
+		if account.Concurrency <= 0 {
+			return 0
+		}
+		return account.Concurrency
 	}
 	if account == nil || !p.dynamicMaxConnsEnabled() {
 		return hardCap
