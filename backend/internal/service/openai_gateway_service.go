@@ -1685,7 +1685,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	// 命中 WS 时仅走 WebSocket Mode；不再自动回退 HTTP。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
-		_, hasPreviousResponseID := reqBody["previous_response_id"]
+		wsReqBody := reqBody
+		if len(reqBody) > 0 {
+			wsReqBody = make(map[string]any, len(reqBody))
+			for k, v := range reqBody {
+				wsReqBody[k] = v
+			}
+		}
+		_, hasPreviousResponseID := wsReqBody["previous_response_id"]
 		logOpenAIWSModeDebug(
 			"forward_start account_id=%d account_type=%s model=%s stream=%v has_previous_response_id=%v",
 			account.ID,
@@ -1699,6 +1706,39 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		var wsResult *OpenAIForwardResult
 		var wsErr error
 		wsLastFailureReason := ""
+		wsPrevResponseRecoveryTried := false
+		recoverPrevResponseNotFound := func(attempt int) bool {
+			if wsPrevResponseRecoveryTried {
+				return false
+			}
+			previousResponseID := openAIWSPayloadString(wsReqBody, "previous_response_id")
+			if previousResponseID == "" {
+				logOpenAIWSModeInfo(
+					"reconnect_prev_response_recovery_skip account_id=%d attempt=%d reason=missing_previous_response_id previous_response_id_present=false",
+					account.ID,
+					attempt,
+				)
+				return false
+			}
+			if HasFunctionCallOutput(wsReqBody) {
+				logOpenAIWSModeInfo(
+					"reconnect_prev_response_recovery_skip account_id=%d attempt=%d reason=has_function_call_output previous_response_id_present=true",
+					account.ID,
+					attempt,
+				)
+				return false
+			}
+			delete(wsReqBody, "previous_response_id")
+			wsPrevResponseRecoveryTried = true
+			logOpenAIWSModeInfo(
+				"reconnect_prev_response_recovery account_id=%d attempt=%d action=drop_previous_response_id retry=1 previous_response_id=%s previous_response_id_kind=%s",
+				account.ID,
+				attempt,
+				truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
+				normalizeOpenAIWSLogValue(ClassifyOpenAIPreviousResponseIDKind(previousResponseID)),
+			)
+			return true
+		}
 		retryBudget := s.openAIWSRetryTotalBudget()
 		retryStartedAt := time.Now()
 	wsRetryLoop:
@@ -1708,7 +1748,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				ctx,
 				c,
 				account,
-				reqBody,
+				wsReqBody,
 				token,
 				wsDecision,
 				isCodexCLI,
@@ -1729,6 +1769,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			reason, retryable := classifyOpenAIWSReconnectReason(wsErr)
 			if reason != "" {
 				wsLastFailureReason = reason
+			}
+			// previous_response_not_found 说明续链锚点不可用：
+			// 对非 function_call_output 场景，允许一次“去掉 previous_response_id 后重放”。
+			if reason == "previous_response_not_found" && recoverPrevResponseNotFound(attempt) {
+				continue
 			}
 			if retryable && attempt < maxAttempts {
 				backoff := s.openAIWSRetryBackoff(attempt)

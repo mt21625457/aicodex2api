@@ -465,6 +465,8 @@ type GatewayOpenAIWSConfig struct {
 	ForceHTTP bool `mapstructure:"force_http"`
 	// AllowStoreRecovery: 允许在 WSv2 下按策略恢复 store=true（默认 false）
 	AllowStoreRecovery bool `mapstructure:"allow_store_recovery"`
+	// IngressPreviousResponseRecoveryEnabled: ingress 模式收到 previous_response_not_found 时，是否允许自动去掉 previous_response_id 重试一次（默认 true）
+	IngressPreviousResponseRecoveryEnabled bool `mapstructure:"ingress_previous_response_recovery_enabled"`
 	// StoreDisabledConnMode: store=false 且无可复用会话连接时的建连策略（strict/adaptive/off）
 	// - strict: 强制新建连接（隔离优先）
 	// - adaptive: 仅在高风险失败后强制新建连接（性能与隔离折中）
@@ -1260,6 +1262,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.apikey_enabled", true)
 	viper.SetDefault("gateway.openai_ws.force_http", false)
 	viper.SetDefault("gateway.openai_ws.allow_store_recovery", false)
+	viper.SetDefault("gateway.openai_ws.ingress_previous_response_recovery_enabled", true)
 	viper.SetDefault("gateway.openai_ws.store_disabled_conn_mode", "strict")
 	viper.SetDefault("gateway.openai_ws.store_disabled_force_new_conn", true)
 	viper.SetDefault("gateway.openai_ws.prewarm_generate_enabled", false)
