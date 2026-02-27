@@ -556,13 +556,40 @@ func TestBuildOpenAIWSReplayInputSequence(t *testing.T) {
 func TestSetOpenAIWSPayloadInputSequence(t *testing.T) {
 	t.Parallel()
 
-	original := []byte(`{"type":"response.create","previous_response_id":"resp_1"}`)
-	items := []json.RawMessage{
-		json.RawMessage(`{"type":"input_text","text":"hello"}`),
-		json.RawMessage(`{"type":"input_text","text":"world"}`),
-	}
-	updated, err := setOpenAIWSPayloadInputSequence(original, items, true)
-	require.NoError(t, err)
-	require.Equal(t, "hello", gjson.GetBytes(updated, "input.0.text").String())
-	require.Equal(t, "world", gjson.GetBytes(updated, "input.1.text").String())
+	t.Run("set_items", func(t *testing.T) {
+		original := []byte(`{"type":"response.create","previous_response_id":"resp_1"}`)
+		items := []json.RawMessage{
+			json.RawMessage(`{"type":"input_text","text":"hello"}`),
+			json.RawMessage(`{"type":"input_text","text":"world"}`),
+		}
+		updated, err := setOpenAIWSPayloadInputSequence(original, items, true)
+		require.NoError(t, err)
+		require.Equal(t, "hello", gjson.GetBytes(updated, "input.0.text").String())
+		require.Equal(t, "world", gjson.GetBytes(updated, "input.1.text").String())
+	})
+
+	t.Run("preserve_empty_array_not_null", func(t *testing.T) {
+		original := []byte(`{"type":"response.create","previous_response_id":"resp_1"}`)
+		updated, err := setOpenAIWSPayloadInputSequence(original, nil, true)
+		require.NoError(t, err)
+		require.True(t, gjson.GetBytes(updated, "input").IsArray())
+		require.Len(t, gjson.GetBytes(updated, "input").Array(), 0)
+		require.False(t, gjson.GetBytes(updated, "input").Type == gjson.Null)
+	})
+}
+
+func TestCloneOpenAIWSRawMessages(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil_slice", func(t *testing.T) {
+		cloned := cloneOpenAIWSRawMessages(nil)
+		require.Nil(t, cloned)
+	})
+
+	t.Run("empty_slice", func(t *testing.T) {
+		items := make([]json.RawMessage, 0)
+		cloned := cloneOpenAIWSRawMessages(items)
+		require.NotNil(t, cloned)
+		require.Len(t, cloned, 0)
+	})
 }
