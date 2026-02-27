@@ -255,6 +255,12 @@ gateway:
     # 调度与粘连参数
     lb_top_k: 3
     sticky_session_ttl_seconds: 3600
+    # 会话哈希迁移兼容开关：新 key 未命中时回退读取旧 SHA-256 key
+    session_hash_read_old_fallback: true
+    # 会话哈希迁移兼容开关：写入时双写旧 SHA-256 key（短 TTL）
+    session_hash_dual_write_old: true
+    # context 元数据迁移兼容开关：保留旧 ctxkey.* 读取/注入桥接
+    metadata_bridge_enabled: true
     sticky_response_id_ttl_seconds: 3600
     # 兼容旧键：当 sticky_response_id_ttl_seconds 缺失时回退该值
     sticky_previous_response_ttl_seconds: 3600

@@ -120,7 +120,7 @@ AGENTS.md
 .claude
 scripts
 .code-review-state
-openspec/
+#openspec/
 code-reviews/
 AGENTS.md
 backend/cmd/server/server
