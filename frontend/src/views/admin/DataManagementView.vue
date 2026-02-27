@@ -53,10 +53,6 @@
         </div>
       </div>
 
-      <div v-if="!health.enabled" class="card border border-amber-300 bg-amber-50 p-5 text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
-        {{ t('admin.dataManagement.actions.disabledHint') }}
-      </div>
-
       <div class="card p-6">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -150,6 +146,93 @@
         <div class="mt-4 text-xs text-gray-500 dark:text-gray-400">
           {{ t('admin.dataManagement.s3Profiles.editHint') }}
         </div>
+      </div>
+
+      <!-- Sora S3 Storage Settings -->
+      <div class="card p-6">
+        <div class="mb-4">
+          <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+            {{ t('admin.settings.soraS3.title') }}
+          </h3>
+          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            {{ t('admin.settings.soraS3.description') }}
+          </p>
+        </div>
+
+        <div v-if="soraS3Loading" class="flex items-center gap-2 text-gray-500">
+          <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+          {{ t('common.loading') }}
+        </div>
+        <template v-else>
+          <!-- 启用开关 -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="font-medium text-gray-900 dark:text-white">{{ t('admin.settings.soraS3.enabled') }}</label>
+              <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.settings.soraS3.enabledHint') }}</p>
+            </div>
+            <label class="relative inline-flex cursor-pointer items-center">
+              <input v-model="soraS3Form.enabled" type="checkbox" class="peer sr-only" />
+              <div class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white dark:bg-dark-700 dark:peer-checked:bg-primary-500"></div>
+            </label>
+          </div>
+          <template v-if="soraS3Form.enabled">
+            <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.endpoint') }}</label>
+                <input v-model="soraS3Form.endpoint" type="text" class="input" placeholder="https://s3.amazonaws.com" />
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.region') }}</label>
+                <input v-model="soraS3Form.region" type="text" class="input" placeholder="us-east-1" />
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.bucket') }}</label>
+                <input v-model="soraS3Form.bucket" type="text" class="input" placeholder="my-sora-bucket" />
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.prefix') }}</label>
+                <input v-model="soraS3Form.prefix" type="text" class="input" placeholder="sora/" />
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.accessKeyId') }}</label>
+                <input v-model="soraS3Form.access_key_id" type="text" class="input" />
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.secretAccessKey') }}</label>
+                <input v-model="soraS3Form.secret_access_key" type="password" class="input" :placeholder="soraS3Form.secret_access_key_configured ? t('admin.settings.soraS3.secretConfigured') : ''" />
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.cdnUrl') }}</label>
+                <input v-model="soraS3Form.cdn_url" type="text" class="input" placeholder="https://cdn.example.com" />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.soraS3.cdnUrlHint') }}</p>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.defaultQuota') }}</label>
+                <div class="flex items-center gap-2">
+                  <input v-model.number="soraS3Form.default_storage_quota_gb" type="number" min="0" step="0.1" class="input" placeholder="10" />
+                  <span class="shrink-0 text-sm text-gray-500">GB</span>
+                </div>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.soraS3.defaultQuotaHint') }}</p>
+              </div>
+            </div>
+            <div class="mt-4 flex items-center gap-2">
+              <label class="relative inline-flex cursor-pointer items-center">
+                <input v-model="soraS3Form.force_path_style" type="checkbox" class="peer sr-only" />
+                <div class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white dark:bg-dark-700 dark:peer-checked:bg-primary-500"></div>
+              </label>
+              <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.settings.soraS3.forcePathStyle') }}</span>
+            </div>
+          </template>
+          <!-- 操作按钮 -->
+          <div class="mt-4 flex justify-end gap-3 border-t border-gray-100 pt-4 dark:border-dark-700">
+            <button v-if="soraS3Form.enabled" type="button" @click="testSoraS3" :disabled="soraS3Testing" class="btn btn-secondary btn-sm">
+              {{ soraS3Testing ? t('admin.settings.soraS3.testing') : t('admin.settings.soraS3.testConnection') }}
+            </button>
+            <button type="button" @click="saveSoraS3Settings" :disabled="soraS3Saving" class="btn btn-primary btn-sm">
+              {{ soraS3Saving ? t('admin.settings.saving') : t('admin.settings.saveSettings') }}
+            </button>
+          </div>
+        </template>
       </div>
 
     </div>
@@ -252,12 +335,16 @@ import {
   type BackupAgentHealth,
   type DataManagementS3Profile
 } from '@/api/admin/dataManagement'
+import { adminAPI } from '@/api'
 import { useAppStore } from '@/stores'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 
 const loading = ref(false)
+const soraS3Loading = ref(true)
+const soraS3Saving = ref(false)
+const soraS3Testing = ref(false)
 const testingS3 = ref(false)
 const loadingProfiles = ref(false)
 const savingProfile = ref(false)
@@ -290,6 +377,21 @@ type S3ProfileForm = {
   use_ssl: boolean
   set_active: boolean
 }
+
+const soraS3Form = ref({
+  enabled: false,
+  endpoint: '',
+  region: '',
+  bucket: '',
+  access_key_id: '',
+  secret_access_key: '',
+  secret_access_key_configured: false,
+  prefix: 'sora/',
+  force_path_style: false,
+  cdn_url: '',
+  default_storage_quota_gb: 10,
+  default_storage_quota_bytes: 0
+})
 
 const profileForm = ref<S3ProfileForm>(newDefaultS3ProfileForm())
 
@@ -577,7 +679,78 @@ function newDefaultS3ProfileForm(profile?: DataManagementS3Profile): S3ProfileFo
   }
 }
 
+// Sora S3 方法
+async function loadSoraS3Settings() {
+  soraS3Loading.value = true
+  try {
+    const settings = await adminAPI.settings.getSoraS3Settings()
+    soraS3Form.value = {
+      ...soraS3Form.value,
+      ...settings,
+      secret_access_key: '',
+      default_storage_quota_gb: Number((settings.default_storage_quota_bytes / (1024 * 1024 * 1024)).toFixed(2))
+    }
+  } catch {
+    // Sora S3 可能未配置，忽略错误
+  } finally {
+    soraS3Loading.value = false
+  }
+}
+
+async function saveSoraS3Settings() {
+  soraS3Saving.value = true
+  try {
+    const updated = await adminAPI.settings.updateSoraS3Settings({
+      enabled: soraS3Form.value.enabled,
+      endpoint: soraS3Form.value.endpoint,
+      region: soraS3Form.value.region,
+      bucket: soraS3Form.value.bucket,
+      access_key_id: soraS3Form.value.access_key_id,
+      secret_access_key: soraS3Form.value.secret_access_key || undefined,
+      prefix: soraS3Form.value.prefix,
+      force_path_style: soraS3Form.value.force_path_style,
+      cdn_url: soraS3Form.value.cdn_url,
+      default_storage_quota_bytes: Math.round((soraS3Form.value.default_storage_quota_gb || 0) * 1024 * 1024 * 1024)
+    })
+    soraS3Form.value = {
+      ...soraS3Form.value,
+      ...updated,
+      secret_access_key: '',
+      default_storage_quota_gb: Number((updated.default_storage_quota_bytes / (1024 * 1024 * 1024)).toFixed(2))
+    }
+    appStore.showSuccess(t('admin.settings.soraS3.saved'))
+  } catch (error: any) {
+    appStore.showError(t('admin.settings.soraS3.saveFailed') + ': ' + (error.message || t('errors.networkError')))
+  } finally {
+    soraS3Saving.value = false
+  }
+}
+
+async function testSoraS3() {
+  soraS3Testing.value = true
+  try {
+    const result = await adminAPI.settings.testSoraS3Connection({
+      enabled: soraS3Form.value.enabled,
+      endpoint: soraS3Form.value.endpoint,
+      region: soraS3Form.value.region,
+      bucket: soraS3Form.value.bucket,
+      access_key_id: soraS3Form.value.access_key_id,
+      secret_access_key: soraS3Form.value.secret_access_key || undefined,
+      prefix: soraS3Form.value.prefix,
+      force_path_style: soraS3Form.value.force_path_style,
+      cdn_url: soraS3Form.value.cdn_url,
+      default_storage_quota_bytes: Math.round((soraS3Form.value.default_storage_quota_gb || 0) * 1024 * 1024 * 1024)
+    })
+    appStore.showSuccess(result.message || t('admin.settings.soraS3.testSuccess'))
+  } catch (error: any) {
+    appStore.showError(t('admin.settings.soraS3.testFailed') + ': ' + (error.response?.data?.message || error.message || t('errors.networkError')))
+  } finally {
+    soraS3Testing.value = false
+  }
+}
+
 onMounted(async () => {
+  loadSoraS3Settings()
   await loadAgentHealth()
   if (health.value.enabled) {
     await loadS3Profiles()
