@@ -371,8 +371,16 @@ func (w *opsCaptureWriter) WriteString(s string) (int, error) {
 // - Streaming errors after the response has started (SSE) may still need explicit logging.
 func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		w := acquireOpsCaptureWriter(c.Writer)
-		defer releaseOpsCaptureWriter(w)
+		originalWriter := c.Writer
+		w := acquireOpsCaptureWriter(originalWriter)
+		defer func() {
+			// Restore the original writer before returning so outer middlewares
+			// don't observe a pooled wrapper that has been released.
+			if c.Writer == w {
+				c.Writer = originalWriter
+			}
+			releaseOpsCaptureWriter(w)
+		}()
 		c.Writer = w
 		c.Next()
 
