@@ -17,6 +17,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -46,9 +47,9 @@ type stubSoraGenRepo struct {
 	updateFailAfterN int32
 
 	// 条件性 GetByID 状态覆盖：前 getByIDOverrideAfterN 次正常返回，之后返回 overrideStatus
-	getByIDCallCount       int32
-	getByIDOverrideAfterN  int32 // 0 = 不覆盖
-	getByIDOverrideStatus  string
+	getByIDCallCount      int32
+	getByIDOverrideAfterN int32 // 0 = 不覆盖
+	getByIDOverrideStatus string
 }
 
 func newStubSoraGenRepo() *stubSoraGenRepo {
@@ -293,6 +294,13 @@ func TestGetUserIDFromContext_Int64(t *testing.T) {
 	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Set("user_id", int64(42))
 	require.Equal(t, int64(42), getUserIDFromContext(c))
+}
+
+func TestGetUserIDFromContext_AuthSubject(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 777})
+	require.Equal(t, int64(777), getUserIDFromContext(c))
 }
 
 func TestGetUserIDFromContext_Float64(t *testing.T) {
@@ -713,7 +721,7 @@ func TestGetModels(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	resp := parseResponse(t, rec)
 	data := resp["data"].([]any)
-	require.Len(t, data, 9)
+	require.Len(t, data, 4)
 	// 验证类型分布
 	videoCount, imageCount := 0, 0
 	for _, item := range data {
@@ -724,8 +732,8 @@ func TestGetModels(t *testing.T) {
 			imageCount++
 		}
 	}
-	require.Equal(t, 6, videoCount)
-	require.Equal(t, 3, imageCount)
+	require.Equal(t, 3, videoCount)
+	require.Equal(t, 1, imageCount)
 }
 
 // ==================== Handler: GetStorageStatus ====================
@@ -911,10 +919,12 @@ func (r *stubUserRepoForHandler) List(context.Context, pagination.PaginationPara
 func (r *stubUserRepoForHandler) ListWithFilters(context.Context, pagination.PaginationParams, service.UserListFilters) ([]service.User, *pagination.PaginationResult, error) {
 	return nil, nil, nil
 }
-func (r *stubUserRepoForHandler) UpdateBalance(context.Context, int64, float64) error   { return nil }
-func (r *stubUserRepoForHandler) DeductBalance(context.Context, int64, float64) error   { return nil }
-func (r *stubUserRepoForHandler) UpdateConcurrency(context.Context, int64, int) error   { return nil }
-func (r *stubUserRepoForHandler) ExistsByEmail(context.Context, string) (bool, error)   { return false, nil }
+func (r *stubUserRepoForHandler) UpdateBalance(context.Context, int64, float64) error { return nil }
+func (r *stubUserRepoForHandler) DeductBalance(context.Context, int64, float64) error { return nil }
+func (r *stubUserRepoForHandler) UpdateConcurrency(context.Context, int64, int) error { return nil }
+func (r *stubUserRepoForHandler) ExistsByEmail(context.Context, string) (bool, error) {
+	return false, nil
+}
 func (r *stubUserRepoForHandler) RemoveGroupFromAllowedGroups(context.Context, int64) (int64, error) {
 	return 0, nil
 }
@@ -925,8 +935,443 @@ func (r *stubUserRepoForHandler) DisableTotp(context.Context, int64) error      
 // ==================== NewSoraClientHandler ====================
 
 func TestNewSoraClientHandler(t *testing.T) {
-	h := NewSoraClientHandler(nil, nil, nil, nil, nil, nil)
+	h := NewSoraClientHandler(nil, nil, nil, nil, nil, nil, nil)
 	require.NotNil(t, h)
+}
+
+func TestNewSoraClientHandler_WithAPIKeyService(t *testing.T) {
+	h := NewSoraClientHandler(nil, nil, nil, nil, nil, nil, nil)
+	require.NotNil(t, h)
+	require.Nil(t, h.apiKeyService)
+}
+
+// ==================== Stub: APIKeyRepository (用于 API Key 校验测试) ====================
+
+var _ service.APIKeyRepository = (*stubAPIKeyRepoForHandler)(nil)
+
+type stubAPIKeyRepoForHandler struct {
+	keys   map[int64]*service.APIKey
+	getErr error
+}
+
+func newStubAPIKeyRepoForHandler() *stubAPIKeyRepoForHandler {
+	return &stubAPIKeyRepoForHandler{keys: make(map[int64]*service.APIKey)}
+}
+
+func (r *stubAPIKeyRepoForHandler) GetByID(_ context.Context, id int64) (*service.APIKey, error) {
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	if k, ok := r.keys[id]; ok {
+		return k, nil
+	}
+	return nil, fmt.Errorf("api key not found: %d", id)
+}
+func (r *stubAPIKeyRepoForHandler) Create(context.Context, *service.APIKey) error { return nil }
+func (r *stubAPIKeyRepoForHandler) GetKeyAndOwnerID(_ context.Context, _ int64) (string, int64, error) {
+	return "", 0, nil
+}
+func (r *stubAPIKeyRepoForHandler) GetByKey(context.Context, string) (*service.APIKey, error) {
+	return nil, nil
+}
+func (r *stubAPIKeyRepoForHandler) GetByKeyForAuth(context.Context, string) (*service.APIKey, error) {
+	return nil, nil
+}
+func (r *stubAPIKeyRepoForHandler) Update(context.Context, *service.APIKey) error { return nil }
+func (r *stubAPIKeyRepoForHandler) Delete(context.Context, int64) error           { return nil }
+func (r *stubAPIKeyRepoForHandler) ListByUserID(_ context.Context, _ int64, _ pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
+	return nil, nil, nil
+}
+func (r *stubAPIKeyRepoForHandler) VerifyOwnership(context.Context, int64, []int64) ([]int64, error) {
+	return nil, nil
+}
+func (r *stubAPIKeyRepoForHandler) CountByUserID(context.Context, int64) (int64, error) {
+	return 0, nil
+}
+func (r *stubAPIKeyRepoForHandler) ExistsByKey(context.Context, string) (bool, error) {
+	return false, nil
+}
+func (r *stubAPIKeyRepoForHandler) ListByGroupID(_ context.Context, _ int64, _ pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
+	return nil, nil, nil
+}
+func (r *stubAPIKeyRepoForHandler) SearchAPIKeys(context.Context, int64, string, int) ([]service.APIKey, error) {
+	return nil, nil
+}
+func (r *stubAPIKeyRepoForHandler) ClearGroupIDByGroupID(context.Context, int64) (int64, error) {
+	return 0, nil
+}
+func (r *stubAPIKeyRepoForHandler) CountByGroupID(context.Context, int64) (int64, error) {
+	return 0, nil
+}
+func (r *stubAPIKeyRepoForHandler) ListKeysByUserID(context.Context, int64) ([]string, error) {
+	return nil, nil
+}
+func (r *stubAPIKeyRepoForHandler) ListKeysByGroupID(context.Context, int64) ([]string, error) {
+	return nil, nil
+}
+func (r *stubAPIKeyRepoForHandler) IncrementQuotaUsed(_ context.Context, _ int64, _ float64) (float64, error) {
+	return 0, nil
+}
+func (r *stubAPIKeyRepoForHandler) UpdateLastUsed(context.Context, int64, time.Time) error {
+	return nil
+}
+
+// newTestAPIKeyService 创建测试用的 APIKeyService
+func newTestAPIKeyService(repo *stubAPIKeyRepoForHandler) *service.APIKeyService {
+	return service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, &config.Config{})
+}
+
+// ==================== Generate: API Key 校验（前端传递 api_key_id）====================
+
+func TestGenerate_WithAPIKeyID_Success(t *testing.T) {
+	// 前端传递 api_key_id，校验通过 → 成功生成，记录关联 api_key_id
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	groupID := int64(5)
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyRepo.keys[42] = &service.APIKey{
+		ID:      42,
+		UserID:  1,
+		Status:  service.StatusAPIKeyActive,
+		GroupID: &groupID,
+	}
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":42}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	resp := parseResponse(t, rec)
+	data := resp["data"].(map[string]any)
+	require.NotZero(t, data["generation_id"])
+
+	// 验证 api_key_id 已关联到生成记录
+	gen := repo.gens[1]
+	require.NotNil(t, gen.APIKeyID)
+	require.Equal(t, int64(42), *gen.APIKeyID)
+}
+
+func TestGenerate_WithAPIKeyID_NotFound(t *testing.T) {
+	// 前端传递不存在的 api_key_id → 400
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":999}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	resp := parseResponse(t, rec)
+	require.Contains(t, fmt.Sprint(resp["message"]), "不存在")
+}
+
+func TestGenerate_WithAPIKeyID_WrongUser(t *testing.T) {
+	// 前端传递别人的 api_key_id → 403
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyRepo.keys[42] = &service.APIKey{
+		ID:     42,
+		UserID: 999, // 属于 user 999
+		Status: service.StatusAPIKeyActive,
+	}
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":42}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	resp := parseResponse(t, rec)
+	require.Contains(t, fmt.Sprint(resp["message"]), "不属于")
+}
+
+func TestGenerate_WithAPIKeyID_Disabled(t *testing.T) {
+	// 前端传递已禁用的 api_key_id → 403
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyRepo.keys[42] = &service.APIKey{
+		ID:     42,
+		UserID: 1,
+		Status: service.StatusAPIKeyDisabled,
+	}
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":42}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	resp := parseResponse(t, rec)
+	require.Contains(t, fmt.Sprint(resp["message"]), "不可用")
+}
+
+func TestGenerate_WithAPIKeyID_QuotaExhausted(t *testing.T) {
+	// 前端传递配额耗尽的 api_key_id → 403
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyRepo.keys[42] = &service.APIKey{
+		ID:     42,
+		UserID: 1,
+		Status: service.StatusAPIKeyQuotaExhausted,
+	}
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":42}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestGenerate_WithAPIKeyID_Expired(t *testing.T) {
+	// 前端传递已过期的 api_key_id → 403
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyRepo.keys[42] = &service.APIKey{
+		ID:     42,
+		UserID: 1,
+		Status: service.StatusAPIKeyExpired,
+	}
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":42}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestGenerate_WithAPIKeyID_NilAPIKeyService(t *testing.T) {
+	// apiKeyService 为 nil 时忽略 api_key_id → 正常生成但不记录 api_key_id
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	h := &SoraClientHandler{genService: genService} // apiKeyService = nil
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":42}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	// apiKeyService 为 nil → 跳过校验 → api_key_id 不记录
+	require.Nil(t, repo.gens[1].APIKeyID)
+}
+
+func TestGenerate_WithAPIKeyID_NilGroupID(t *testing.T) {
+	// api_key 有效但 GroupID 为 nil → 成功，groupID 为 nil
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyRepo.keys[42] = &service.APIKey{
+		ID:      42,
+		UserID:  1,
+		Status:  service.StatusAPIKeyActive,
+		GroupID: nil, // 无分组
+	}
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":42}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, repo.gens[1].APIKeyID)
+	require.Equal(t, int64(42), *repo.gens[1].APIKeyID)
+}
+
+func TestGenerate_NoAPIKeyID_NoContext_NilResult(t *testing.T) {
+	// 既无 api_key_id 字段也无 context 中的 api_key_id → api_key_id 为 nil
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test"}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Nil(t, repo.gens[1].APIKeyID)
+}
+
+func TestGenerate_WithAPIKeyIDInBody_OverridesContext(t *testing.T) {
+	// 同时有 body api_key_id 和 context api_key_id → 优先使用 body 的
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	groupID := int64(10)
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyRepo.keys[42] = &service.APIKey{
+		ID:      42,
+		UserID:  1,
+		Status:  service.StatusAPIKeyActive,
+		GroupID: &groupID,
+	}
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":42}`, 1)
+	c.Set("api_key_id", int64(99)) // context 中有另一个 api_key_id
+	h.Generate(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	// 应使用 body 中的 api_key_id=42，而不是 context 中的 99
+	require.NotNil(t, repo.gens[1].APIKeyID)
+	require.Equal(t, int64(42), *repo.gens[1].APIKeyID)
+}
+
+func TestGenerate_WithContextAPIKeyID_FallbackPath(t *testing.T) {
+	// 无 body api_key_id，但 context 有 → 使用 context 中的（兼容网关路由）
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test"}`, 1)
+	c.Set("api_key_id", int64(99))
+	h.Generate(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	// 应使用 context 中的 api_key_id=99
+	require.NotNil(t, repo.gens[1].APIKeyID)
+	require.Equal(t, int64(99), *repo.gens[1].APIKeyID)
+}
+
+func TestGenerate_APIKeyID_Zero_IgnoredInJSON(t *testing.T) {
+	// JSON 中 api_key_id=0 被视为 omitempty → 仍然为指针值 0，需要传 nil 检查
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	apiKeyRepo := newStubAPIKeyRepoForHandler()
+	apiKeyService := newTestAPIKeyService(apiKeyRepo)
+
+	h := &SoraClientHandler{genService: genService, apiKeyService: apiKeyService}
+	// JSON 中传了 api_key_id: 0 → 解析后 *int64(0)，会触发校验
+	// api_key_id=0 不存在 → 400
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate",
+		`{"model":"sora2-landscape-10s","prompt":"test","api_key_id":0}`, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// ==================== processGeneration: groupID 传递与 ForcePlatform ====================
+
+func TestProcessGeneration_WithGroupID_NoForcePlatform(t *testing.T) {
+	// groupID 不为 nil → 不设置 ForcePlatform
+	// gatewayService 为 nil → MarkFailed → 检查错误消息不包含 ForcePlatform 相关
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{ID: 1, UserID: 1, Status: "pending"}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService}
+
+	gid := int64(5)
+	h.processGeneration(1, 1, &gid, "sora2-landscape-10s", "test", "video", "")
+	require.Equal(t, "failed", repo.gens[1].Status)
+	require.Contains(t, repo.gens[1].ErrorMessage, "gatewayService")
+}
+
+func TestProcessGeneration_NilGroupID_SetsForcePlatform(t *testing.T) {
+	// groupID 为 nil → 设置 ForcePlatform → gatewayService 为 nil → MarkFailed
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{ID: 1, UserID: 1, Status: "pending"}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService}
+
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	require.Equal(t, "failed", repo.gens[1].Status)
+	require.Contains(t, repo.gens[1].ErrorMessage, "gatewayService")
+}
+
+func TestProcessGeneration_MarkGeneratingStateConflict(t *testing.T) {
+	// 任务状态已变化（如已取消）→ MarkGenerating 返回 ErrSoraGenerationStateConflict → 跳过
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{ID: 1, UserID: 1, Status: "cancelled"}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService}
+
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	// 状态为 cancelled 时 MarkGenerating 不符合状态转换规则 → 应保持 cancelled
+	require.Equal(t, "cancelled", repo.gens[1].Status)
+}
+
+// ==================== GenerateRequest JSON 解析 ====================
+
+func TestGenerateRequest_WithAPIKeyID_JSONParsing(t *testing.T) {
+	// 验证 api_key_id 在 JSON 中正确解析为 *int64
+	var req GenerateRequest
+	err := json.Unmarshal([]byte(`{"model":"sora2","prompt":"test","api_key_id":42}`), &req)
+	require.NoError(t, err)
+	require.NotNil(t, req.APIKeyID)
+	require.Equal(t, int64(42), *req.APIKeyID)
+}
+
+func TestGenerateRequest_WithoutAPIKeyID_JSONParsing(t *testing.T) {
+	// 不传 api_key_id → 解析后为 nil
+	var req GenerateRequest
+	err := json.Unmarshal([]byte(`{"model":"sora2","prompt":"test"}`), &req)
+	require.NoError(t, err)
+	require.Nil(t, req.APIKeyID)
+}
+
+func TestGenerateRequest_NullAPIKeyID_JSONParsing(t *testing.T) {
+	// api_key_id: null → 解析后为 nil
+	var req GenerateRequest
+	err := json.Unmarshal([]byte(`{"model":"sora2","prompt":"test","api_key_id":null}`), &req)
+	require.NoError(t, err)
+	require.Nil(t, req.APIKeyID)
+}
+
+func TestGenerateRequest_FullFields_JSONParsing(t *testing.T) {
+	// 全字段解析
+	var req GenerateRequest
+	err := json.Unmarshal([]byte(`{
+		"model":"sora2-landscape-10s",
+		"prompt":"test prompt",
+		"media_type":"video",
+		"image_input":"data:image/png;base64,abc",
+		"api_key_id":100
+	}`), &req)
+	require.NoError(t, err)
+	require.Equal(t, "sora2-landscape-10s", req.Model)
+	require.Equal(t, "test prompt", req.Prompt)
+	require.Equal(t, "video", req.MediaType)
+	require.Equal(t, "data:image/png;base64,abc", req.ImageInput)
+	require.NotNil(t, req.APIKeyID)
+	require.Equal(t, int64(100), *req.APIKeyID)
+}
+
+func TestGenerateRequest_JSONSerialize_OmitsNilAPIKeyID(t *testing.T) {
+	// api_key_id 为 nil 时 JSON 序列化应省略
+	req := GenerateRequest{Model: "sora2", Prompt: "test"}
+	b, err := json.Marshal(req)
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(b, &parsed))
+	_, hasAPIKeyID := parsed["api_key_id"]
+	require.False(t, hasAPIKeyID, "api_key_id 为 nil 时应省略")
+}
+
+func TestGenerateRequest_JSONSerialize_IncludesAPIKeyID(t *testing.T) {
+	// api_key_id 不为 nil 时 JSON 序列化应包含
+	id := int64(42)
+	req := GenerateRequest{Model: "sora2", Prompt: "test", APIKeyID: &id}
+	b, err := json.Marshal(req)
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(b, &parsed))
+	require.Equal(t, float64(42), parsed["api_key_id"])
 }
 
 // ==================== GetQuota: 有配额服务 ====================
@@ -1139,7 +1584,7 @@ func TestProcessGeneration_MarkGeneratingFails(t *testing.T) {
 	h := &SoraClientHandler{genService: genService}
 
 	// 直接调用（非 goroutine），MarkGenerating 失败 → 早退
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
 	// MarkGenerating 在调用 repo.Update 前已修改内存对象为 "generating"
 	// repo.Update 返回错误 → processGeneration 早退，不会继续到 MarkFailed
 	// 因此 ErrorMessage 为空（证明未调用 MarkFailed）
@@ -1154,7 +1599,7 @@ func TestProcessGeneration_GatewayServiceNil(t *testing.T) {
 	h := &SoraClientHandler{genService: genService}
 	// gatewayService 未设置 → MarkFailed
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "gatewayService")
 }
@@ -1578,7 +2023,7 @@ func (r *stubAccountRepoForHandler) ListCRSAccountIDs(context.Context) (map[stri
 	return nil, nil
 }
 func (r *stubAccountRepoForHandler) Update(context.Context, *service.Account) error { return nil }
-func (r *stubAccountRepoForHandler) Delete(context.Context, int64) error             { return nil }
+func (r *stubAccountRepoForHandler) Delete(context.Context, int64) error            { return nil }
 func (r *stubAccountRepoForHandler) List(context.Context, pagination.PaginationParams) ([]service.Account, *pagination.PaginationResult, error) {
 	return nil, nil, nil
 }
@@ -1748,7 +2193,7 @@ func TestProcessGeneration_SelectAccountError(t *testing.T) {
 	gatewayService := newMinimalGatewayService(accountRepo)
 	h := &SoraClientHandler{genService: genService, gatewayService: gatewayService}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "选择账号失败")
 }
@@ -1767,7 +2212,7 @@ func TestProcessGeneration_SoraGatewayServiceNil(t *testing.T) {
 	// soraGatewayService 为 nil
 	h := &SoraClientHandler{genService: genService, gatewayService: gatewayService}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "soraGatewayService")
 }
@@ -1796,7 +2241,7 @@ func TestProcessGeneration_ForwardError(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test prompt", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "")
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "生成失败")
 }
@@ -1825,7 +2270,7 @@ func TestProcessGeneration_ForwardErrorCancelled(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
 	// Forward 失败后检测到外部取消，不应调用 MarkFailed（状态保持 generating）
 	require.Equal(t, "generating", repo.gens[1].Status)
 }
@@ -1854,7 +2299,7 @@ func TestProcessGeneration_ForwardSuccessNoMediaURL(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "未获取到媒体 URL")
 }
@@ -1886,7 +2331,7 @@ func TestProcessGeneration_ForwardSuccessCancelledBeforeStore(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
 	// Forward 成功后检测到外部取消，不应调用存储和 MarkCompleted（状态保持 generating）
 	require.Equal(t, "generating", repo.gens[1].Status)
 }
@@ -1915,7 +2360,7 @@ func TestProcessGeneration_FullSuccessUpstream(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test prompt", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "")
 	require.Equal(t, "completed", repo.gens[1].Status)
 	require.Equal(t, service.SoraStorageTypeUpstream, repo.gens[1].StorageType)
 	require.NotEmpty(t, repo.gens[1].MediaURL)
@@ -1959,7 +2404,7 @@ func TestProcessGeneration_FullSuccessWithS3(t *testing.T) {
 		quotaService:       quotaService,
 	}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test prompt", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "")
 	require.Equal(t, "completed", repo.gens[1].Status)
 	require.Equal(t, service.SoraStorageTypeS3, repo.gens[1].StorageType)
 	require.NotEmpty(t, repo.gens[1].S3ObjectKeys)
@@ -1994,9 +2439,664 @@ func TestProcessGeneration_MarkCompletedFails(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, "sora2-landscape-10s", "test prompt", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "")
 	// MarkCompleted 内部先修改内存对象状态为 completed，然后 Update 失败。
 	// 由于 stub 存储的是指针，内存中的状态已被修改为 completed。
 	// 此测试验证 processGeneration 在 MarkCompleted 失败后提前返回（不调用 AddUsage）。
 	require.Equal(t, "completed", repo.gens[1].Status)
+}
+
+// ==================== cleanupStoredMedia 直接测试 ====================
+
+func TestCleanupStoredMedia_S3Path(t *testing.T) {
+	// S3 清理路径：s3Storage 为 nil 时不 panic
+	h := &SoraClientHandler{}
+	// 不应 panic
+	h.cleanupStoredMedia(context.Background(), service.SoraStorageTypeS3, []string{"key1"}, nil)
+}
+
+func TestCleanupStoredMedia_LocalPath(t *testing.T) {
+	// 本地清理路径：mediaStorage 为 nil 时不 panic
+	h := &SoraClientHandler{}
+	h.cleanupStoredMedia(context.Background(), service.SoraStorageTypeLocal, nil, []string{"/tmp/test.mp4"})
+}
+
+func TestCleanupStoredMedia_UpstreamPath(t *testing.T) {
+	// upstream 类型不清理
+	h := &SoraClientHandler{}
+	h.cleanupStoredMedia(context.Background(), service.SoraStorageTypeUpstream, nil, nil)
+}
+
+func TestCleanupStoredMedia_EmptyKeys(t *testing.T) {
+	// 空 keys 不触发清理
+	h := &SoraClientHandler{}
+	h.cleanupStoredMedia(context.Background(), service.SoraStorageTypeS3, nil, nil)
+	h.cleanupStoredMedia(context.Background(), service.SoraStorageTypeLocal, nil, nil)
+}
+
+// ==================== DeleteGeneration: 本地存储清理路径 ====================
+
+func TestDeleteGeneration_LocalStorageCleanup(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "sora-delete-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Sora: config.SoraConfig{
+			Storage: config.SoraStorageConfig{
+				Type:      "local",
+				LocalPath: tmpDir,
+			},
+		},
+	}
+	mediaStorage := service.NewSoraMediaStorage(cfg)
+
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID:          1,
+		UserID:      1,
+		Status:      "completed",
+		StorageType: service.SoraStorageTypeLocal,
+		MediaURL:    "video/test.mp4",
+		MediaURLs:   []string{"video/test.mp4"},
+	}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService, mediaStorage: mediaStorage}
+
+	c, rec := makeGinContext("DELETE", "/api/v1/sora/generations/1", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.DeleteGeneration(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	_, exists := repo.gens[1]
+	require.False(t, exists)
+}
+
+func TestDeleteGeneration_LocalStorageCleanup_MediaURLFallback(t *testing.T) {
+	// MediaURLs 为空，使用 MediaURL 作为清理路径
+	tmpDir, err := os.MkdirTemp("", "sora-delete-fallback-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Sora: config.SoraConfig{
+			Storage: config.SoraStorageConfig{
+				Type:      "local",
+				LocalPath: tmpDir,
+			},
+		},
+	}
+	mediaStorage := service.NewSoraMediaStorage(cfg)
+
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID:          1,
+		UserID:      1,
+		Status:      "completed",
+		StorageType: service.SoraStorageTypeLocal,
+		MediaURL:    "video/test.mp4",
+		MediaURLs:   nil, // 空
+	}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService, mediaStorage: mediaStorage}
+
+	c, rec := makeGinContext("DELETE", "/api/v1/sora/generations/1", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.DeleteGeneration(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestDeleteGeneration_NonLocalStorage_SkipCleanup(t *testing.T) {
+	// 非本地存储类型 → 跳过清理
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID:          1,
+		UserID:      1,
+		Status:      "completed",
+		StorageType: service.SoraStorageTypeUpstream,
+		MediaURL:    "https://upstream.com/v.mp4",
+	}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService}
+
+	c, rec := makeGinContext("DELETE", "/api/v1/sora/generations/1", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.DeleteGeneration(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestDeleteGeneration_DeleteError(t *testing.T) {
+	// repo.Delete 出错
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{ID: 1, UserID: 1, Status: "completed", StorageType: "upstream"}
+	repo.deleteErr = fmt.Errorf("delete failed")
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService}
+
+	c, rec := makeGinContext("DELETE", "/api/v1/sora/generations/1", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.DeleteGeneration(c)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// ==================== fetchUpstreamModels 测试 ====================
+
+func TestFetchUpstreamModels_NilGateway(t *testing.T) {
+	h := &SoraClientHandler{}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gatewayService 未初始化")
+}
+
+func TestFetchUpstreamModels_NoAccounts(t *testing.T) {
+	accountRepo := &stubAccountRepoForHandler{accounts: nil}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "选择 Sora 账号失败")
+}
+
+func TestFetchUpstreamModels_NonAPIKeyAccount(t *testing.T) {
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: "oauth", Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "不支持模型同步")
+}
+
+func TestFetchUpstreamModels_MissingAPIKey(t *testing.T) {
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: service.AccountTypeAPIKey, Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"base_url": "https://sora.test"}},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "api_key")
+}
+
+func TestFetchUpstreamModels_MissingBaseURL_FallsBackToDefault(t *testing.T) {
+	// GetBaseURL() 在缺少 base_url 时返回默认值 "https://api.anthropic.com"
+	// 因此不会触发 "账号缺少 base_url" 错误，而是会尝试请求默认 URL 并失败
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: service.AccountTypeAPIKey, Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"api_key": "sk-test"}},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+}
+
+func TestFetchUpstreamModels_UpstreamReturns500(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: service.AccountTypeAPIKey, Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"api_key": "sk-test", "base_url": ts.URL}},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "状态码 500")
+}
+
+func TestFetchUpstreamModels_UpstreamReturnsInvalidJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer ts.Close()
+
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: service.AccountTypeAPIKey, Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"api_key": "sk-test", "base_url": ts.URL}},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "解析响应失败")
+}
+
+func TestFetchUpstreamModels_UpstreamReturnsEmptyList(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer ts.Close()
+
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: service.AccountTypeAPIKey, Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"api_key": "sk-test", "base_url": ts.URL}},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "空模型列表")
+}
+
+func TestFetchUpstreamModels_Success(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 验证请求头
+		require.Equal(t, "Bearer sk-test", r.Header.Get("Authorization"))
+		require.True(t, strings.HasSuffix(r.URL.Path, "/sora/v1/models"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"sora2-landscape-10s"},{"id":"sora2-portrait-10s"},{"id":"sora2-landscape-15s"},{"id":"gpt-image"}]}`))
+	}))
+	defer ts.Close()
+
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: service.AccountTypeAPIKey, Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"api_key": "sk-test", "base_url": ts.URL}},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	families, err := h.fetchUpstreamModels(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, families)
+}
+
+func TestFetchUpstreamModels_UnrecognizedModels(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"unknown-model-1"},{"id":"unknown-model-2"}]}`))
+	}))
+	defer ts.Close()
+
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: service.AccountTypeAPIKey, Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"api_key": "sk-test", "base_url": ts.URL}},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+	_, err := h.fetchUpstreamModels(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "未能从上游模型列表中识别")
+}
+
+// ==================== getModelFamilies 缓存测试 ====================
+
+func TestGetModelFamilies_CachesLocalConfig(t *testing.T) {
+	// gatewayService 为 nil → fetchUpstreamModels 失败 → 降级到本地配置
+	h := &SoraClientHandler{}
+	families := h.getModelFamilies(context.Background())
+	require.NotEmpty(t, families)
+
+	// 第二次调用应命中缓存（modelCacheUpstream=false → 使用短 TTL）
+	families2 := h.getModelFamilies(context.Background())
+	require.Equal(t, families, families2)
+	require.False(t, h.modelCacheUpstream)
+}
+
+func TestGetModelFamilies_CachesUpstreamResult(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"sora2-landscape-10s"},{"id":"gpt-image"}]}`))
+	}))
+	defer ts.Close()
+
+	accountRepo := &stubAccountRepoForHandler{
+		accounts: []service.Account{
+			{ID: 1, Type: service.AccountTypeAPIKey, Platform: service.PlatformSora, Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"api_key": "sk-test", "base_url": ts.URL}},
+		},
+	}
+	gatewayService := newMinimalGatewayService(accountRepo)
+	h := &SoraClientHandler{gatewayService: gatewayService}
+
+	families := h.getModelFamilies(context.Background())
+	require.NotEmpty(t, families)
+	require.True(t, h.modelCacheUpstream)
+
+	// 第二次调用命中缓存
+	families2 := h.getModelFamilies(context.Background())
+	require.Equal(t, families, families2)
+}
+
+func TestGetModelFamilies_ExpiredCacheRefreshes(t *testing.T) {
+	// 预设过期的缓存（modelCacheUpstream=false → 短 TTL）
+	h := &SoraClientHandler{
+		cachedFamilies:     []service.SoraModelFamily{{ID: "old"}},
+		modelCacheTime:     time.Now().Add(-10 * time.Minute), // 已过期
+		modelCacheUpstream: false,
+	}
+	// gatewayService 为 nil → fetchUpstreamModels 失败 → 使用本地配置刷新缓存
+	families := h.getModelFamilies(context.Background())
+	require.NotEmpty(t, families)
+	// 缓存已刷新，不再是 "old"
+	found := false
+	for _, f := range families {
+		if f.ID == "old" {
+			found = true
+		}
+	}
+	require.False(t, found, "过期缓存应被刷新")
+}
+
+// ==================== processGeneration: groupID 与 ForcePlatform ====================
+
+func TestProcessGeneration_NilGroupID_WithGateway_SelectAccountFails(t *testing.T) {
+	// groupID 为 nil → 设置 ForcePlatform=sora → 无可用 sora 账号 → MarkFailed
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{ID: 1, UserID: 1, Status: "pending"}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	// 空账号列表 → SelectAccountForModel 失败
+	accountRepo := &stubAccountRepoForHandler{accounts: nil}
+	gatewayService := newMinimalGatewayService(accountRepo)
+
+	h := &SoraClientHandler{
+		genService:     genService,
+		gatewayService: gatewayService,
+	}
+
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	require.Equal(t, "failed", repo.gens[1].Status)
+	require.Contains(t, repo.gens[1].ErrorMessage, "选择账号失败")
+}
+
+// ==================== Generate: 配额检查非 QuotaExceeded 错误 ====================
+
+func TestGenerate_CheckQuotaNonQuotaError(t *testing.T) {
+	// quotaService.CheckQuota 返回非 QuotaExceededError → 返回 403
+	repo := newStubSoraGenRepo()
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	// 用户不存在 → GetByID 失败 → CheckQuota 返回普通 error
+	userRepo := newStubUserRepoForHandler()
+	quotaService := service.NewSoraQuotaService(userRepo, nil, nil)
+
+	h := NewSoraClientHandler(genService, quotaService, nil, nil, nil, nil, nil)
+
+	body := `{"model":"sora2-landscape-10s","prompt":"test"}`
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate", body, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// ==================== Generate: CreatePending 并发限制错误 ====================
+
+// stubSoraGenRepoWithAtomicCreate 实现 soraGenerationRepoAtomicCreator 接口
+type stubSoraGenRepoWithAtomicCreate struct {
+	stubSoraGenRepo
+	limitErr error
+}
+
+func (r *stubSoraGenRepoWithAtomicCreate) CreatePendingWithLimit(_ context.Context, gen *service.SoraGeneration, _ []string, _ int64) error {
+	if r.limitErr != nil {
+		return r.limitErr
+	}
+	return r.stubSoraGenRepo.Create(context.Background(), gen)
+}
+
+func TestGenerate_CreatePendingConcurrencyLimit(t *testing.T) {
+	repo := &stubSoraGenRepoWithAtomicCreate{
+		stubSoraGenRepo: *newStubSoraGenRepo(),
+		limitErr:        service.ErrSoraGenerationConcurrencyLimit,
+	}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := NewSoraClientHandler(genService, nil, nil, nil, nil, nil, nil)
+
+	body := `{"model":"sora2-landscape-10s","prompt":"test"}`
+	c, rec := makeGinContext("POST", "/api/v1/sora/generate", body, 1)
+	h.Generate(c)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	resp := parseResponse(t, rec)
+	require.Contains(t, resp["message"], "3")
+}
+
+// ==================== SaveToStorage: 配额超限 ====================
+
+func TestSaveToStorage_QuotaExceeded(t *testing.T) {
+	sourceServer := newFakeSourceServer()
+	defer sourceServer.Close()
+	fakeS3 := newFakeS3Server("ok")
+	defer fakeS3.Close()
+
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID: 1, UserID: 1, Status: "completed",
+		StorageType: "upstream",
+		MediaURL:    sourceServer.URL + "/v.mp4",
+	}
+	s3Storage := newS3StorageForHandler(fakeS3.URL)
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	// 用户配额已满
+	userRepo := newStubUserRepoForHandler()
+	userRepo.users[1] = &service.User{
+		ID:                    1,
+		SoraStorageQuotaBytes: 10,
+		SoraStorageUsedBytes:  10,
+	}
+	quotaService := service.NewSoraQuotaService(userRepo, nil, nil)
+	h := &SoraClientHandler{genService: genService, s3Storage: s3Storage, quotaService: quotaService}
+
+	c, rec := makeGinContext("POST", "/api/v1/sora/generations/1/save", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.SaveToStorage(c)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+}
+
+// ==================== SaveToStorage: 配额非 QuotaExceeded 错误 ====================
+
+func TestSaveToStorage_QuotaNonQuotaError(t *testing.T) {
+	sourceServer := newFakeSourceServer()
+	defer sourceServer.Close()
+	fakeS3 := newFakeS3Server("ok")
+	defer fakeS3.Close()
+
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID: 1, UserID: 1, Status: "completed",
+		StorageType: "upstream",
+		MediaURL:    sourceServer.URL + "/v.mp4",
+	}
+	s3Storage := newS3StorageForHandler(fakeS3.URL)
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	// 用户不存在 → GetByID 失败 → AddUsage 返回普通 error
+	userRepo := newStubUserRepoForHandler()
+	quotaService := service.NewSoraQuotaService(userRepo, nil, nil)
+	h := &SoraClientHandler{genService: genService, s3Storage: s3Storage, quotaService: quotaService}
+
+	c, rec := makeGinContext("POST", "/api/v1/sora/generations/1/save", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.SaveToStorage(c)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// ==================== SaveToStorage: MediaURLs 全为空 ====================
+
+func TestSaveToStorage_EmptyMediaURLs(t *testing.T) {
+	fakeS3 := newFakeS3Server("ok")
+	defer fakeS3.Close()
+
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID: 1, UserID: 1, Status: "completed",
+		StorageType: "upstream",
+		MediaURL:    "",
+		MediaURLs:   []string{},
+	}
+	s3Storage := newS3StorageForHandler(fakeS3.URL)
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService, s3Storage: s3Storage}
+
+	c, rec := makeGinContext("POST", "/api/v1/sora/generations/1/save", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.SaveToStorage(c)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	resp := parseResponse(t, rec)
+	require.Contains(t, resp["message"], "已过期")
+}
+
+// ==================== SaveToStorage: S3 上传失败时已有已上传文件需清理 ====================
+
+func TestSaveToStorage_MultiURL_SecondUploadFails(t *testing.T) {
+	sourceServer := newFakeSourceServer()
+	defer sourceServer.Close()
+	fakeS3 := newFakeS3Server("fail-second")
+	defer fakeS3.Close()
+
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID: 1, UserID: 1, Status: "completed",
+		StorageType: "upstream",
+		MediaURL:    sourceServer.URL + "/v1.mp4",
+		MediaURLs:   []string{sourceServer.URL + "/v1.mp4", sourceServer.URL + "/v2.mp4"},
+	}
+	s3Storage := newS3StorageForHandler(fakeS3.URL)
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService, s3Storage: s3Storage}
+
+	c, rec := makeGinContext("POST", "/api/v1/sora/generations/1/save", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.SaveToStorage(c)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// ==================== SaveToStorage: UpdateStorageForCompleted 失败（含配额回滚） ====================
+
+func TestSaveToStorage_MarkCompletedFailsWithQuotaRollback(t *testing.T) {
+	sourceServer := newFakeSourceServer()
+	defer sourceServer.Close()
+	fakeS3 := newFakeS3Server("ok")
+	defer fakeS3.Close()
+
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID: 1, UserID: 1, Status: "completed",
+		StorageType: "upstream",
+		MediaURL:    sourceServer.URL + "/v.mp4",
+	}
+	repo.updateErr = fmt.Errorf("db error")
+	s3Storage := newS3StorageForHandler(fakeS3.URL)
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+
+	userRepo := newStubUserRepoForHandler()
+	userRepo.users[1] = &service.User{
+		ID:                    1,
+		SoraStorageQuotaBytes: 100 * 1024 * 1024,
+		SoraStorageUsedBytes:  0,
+	}
+	quotaService := service.NewSoraQuotaService(userRepo, nil, nil)
+	h := &SoraClientHandler{genService: genService, s3Storage: s3Storage, quotaService: quotaService}
+
+	c, rec := makeGinContext("POST", "/api/v1/sora/generations/1/save", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.SaveToStorage(c)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// ==================== cleanupStoredMedia: 实际 S3 删除路径 ====================
+
+func TestCleanupStoredMedia_WithS3Storage_ActualDelete(t *testing.T) {
+	fakeS3 := newFakeS3Server("ok")
+	defer fakeS3.Close()
+	s3Storage := newS3StorageForHandler(fakeS3.URL)
+	h := &SoraClientHandler{s3Storage: s3Storage}
+
+	h.cleanupStoredMedia(context.Background(), service.SoraStorageTypeS3, []string{"key1", "key2"}, nil)
+}
+
+func TestCleanupStoredMedia_S3DeleteFails_LogOnly(t *testing.T) {
+	fakeS3 := newFakeS3Server("fail")
+	defer fakeS3.Close()
+	s3Storage := newS3StorageForHandler(fakeS3.URL)
+	h := &SoraClientHandler{s3Storage: s3Storage}
+
+	h.cleanupStoredMedia(context.Background(), service.SoraStorageTypeS3, []string{"key1"}, nil)
+}
+
+func TestCleanupStoredMedia_LocalDeleteFails_LogOnly(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "sora-cleanup-fail-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Sora: config.SoraConfig{
+			Storage: config.SoraStorageConfig{
+				Type:      "local",
+				LocalPath: tmpDir,
+			},
+		},
+	}
+	mediaStorage := service.NewSoraMediaStorage(cfg)
+	h := &SoraClientHandler{mediaStorage: mediaStorage}
+
+	h.cleanupStoredMedia(context.Background(), service.SoraStorageTypeLocal, nil, []string{"nonexistent/file.mp4"})
+}
+
+// ==================== DeleteGeneration: 本地文件删除失败（仅日志） ====================
+
+func TestDeleteGeneration_LocalStorageDeleteFails_LogOnly(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "sora-del-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Sora: config.SoraConfig{
+			Storage: config.SoraStorageConfig{
+				Type:      "local",
+				LocalPath: tmpDir,
+			},
+		},
+	}
+	mediaStorage := service.NewSoraMediaStorage(cfg)
+
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{
+		ID: 1, UserID: 1, Status: "completed",
+		StorageType: service.SoraStorageTypeLocal,
+		MediaURL:    "nonexistent/video.mp4",
+		MediaURLs:   []string{"nonexistent/video.mp4"},
+	}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService, mediaStorage: mediaStorage}
+
+	c, rec := makeGinContext("DELETE", "/api/v1/sora/generations/1", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.DeleteGeneration(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// ==================== CancelGeneration: 任务已结束冲突 ====================
+
+func TestCancelGeneration_AlreadyCompleted(t *testing.T) {
+	repo := newStubSoraGenRepo()
+	repo.gens[1] = &service.SoraGeneration{ID: 1, UserID: 1, Status: "completed"}
+	genService := service.NewSoraGenerationService(repo, nil, nil)
+	h := &SoraClientHandler{genService: genService}
+
+	c, rec := makeGinContext("POST", "/api/v1/sora/generations/1/cancel", "", 1)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	h.CancelGeneration(c)
+	require.Equal(t, http.StatusConflict, rec.Code)
 }

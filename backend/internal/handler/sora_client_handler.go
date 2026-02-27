@@ -16,13 +16,14 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 const (
 	// 上游模型缓存 TTL
-	modelCacheTTL       = 1 * time.Hour  // 上游获取成功
+	modelCacheTTL       = 1 * time.Hour   // 上游获取成功
 	modelCacheFailedTTL = 2 * time.Minute // 上游获取失败（降级到本地）
 )
 
@@ -34,6 +35,7 @@ type SoraClientHandler struct {
 	soraGatewayService *service.SoraGatewayService
 	gatewayService     *service.GatewayService
 	mediaStorage       *service.SoraMediaStorage
+	apiKeyService      *service.APIKeyService
 
 	// 上游模型缓存
 	modelCacheMu       sync.RWMutex
@@ -50,6 +52,7 @@ func NewSoraClientHandler(
 	soraGatewayService *service.SoraGatewayService,
 	gatewayService *service.GatewayService,
 	mediaStorage *service.SoraMediaStorage,
+	apiKeyService *service.APIKeyService,
 ) *SoraClientHandler {
 	return &SoraClientHandler{
 		genService:         genService,
@@ -58,6 +61,7 @@ func NewSoraClientHandler(
 		soraGatewayService: soraGatewayService,
 		gatewayService:     gatewayService,
 		mediaStorage:       mediaStorage,
+		apiKeyService:      apiKeyService,
 	}
 }
 
@@ -67,6 +71,7 @@ type GenerateRequest struct {
 	Prompt     string `json:"prompt" binding:"required"`
 	MediaType  string `json:"media_type"`            // video / image，默认 video
 	ImageInput string `json:"image_input,omitempty"` // 参考图（base64 或 URL）
+	APIKeyID   *int64 `json:"api_key_id,omitempty"`  // 前端传递的 API Key ID
 }
 
 // Generate 异步生成 — 创建 pending 记录后立即返回。
@@ -112,9 +117,29 @@ func (h *SoraClientHandler) Generate(c *gin.Context) {
 		}
 	}
 
-	// 获取 API Key ID（如果是通过 API Key 认证）
+	// 获取 API Key ID 和 Group ID
 	var apiKeyID *int64
-	if id, ok := c.Get("api_key_id"); ok {
+	var groupID *int64
+
+	if req.APIKeyID != nil && h.apiKeyService != nil {
+		// 前端传递了 api_key_id，需要校验
+		apiKey, err := h.apiKeyService.GetByID(c.Request.Context(), *req.APIKeyID)
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "API Key 不存在")
+			return
+		}
+		if apiKey.UserID != userID {
+			response.Error(c, http.StatusForbidden, "API Key 不属于当前用户")
+			return
+		}
+		if apiKey.Status != service.StatusAPIKeyActive {
+			response.Error(c, http.StatusForbidden, "API Key 不可用")
+			return
+		}
+		apiKeyID = &apiKey.ID
+		groupID = apiKey.GroupID
+	} else if id, ok := c.Get("api_key_id"); ok {
+		// 兼容 API Key 认证路径（/sora/v1/ 网关路由）
 		if v, ok := id.(int64); ok {
 			apiKeyID = &v
 		}
@@ -131,7 +156,7 @@ func (h *SoraClientHandler) Generate(c *gin.Context) {
 	}
 
 	// 启动后台异步生成 goroutine
-	go h.processGeneration(gen.ID, userID, req.Model, req.Prompt, req.MediaType, req.ImageInput)
+	go h.processGeneration(gen.ID, userID, groupID, req.Model, req.Prompt, req.MediaType, req.ImageInput)
 
 	response.Success(c, gin.H{
 		"generation_id": gen.ID,
@@ -141,7 +166,7 @@ func (h *SoraClientHandler) Generate(c *gin.Context) {
 
 // processGeneration 后台异步执行 Sora 生成任务。
 // 流程：选择账号 → Forward → 提取媒体 URL → 三层降级存储（S3 → 本地 → 上游）→ 更新记录。
-func (h *SoraClientHandler) processGeneration(genID int64, userID int64, model, prompt, mediaType, imageInput string) {
+func (h *SoraClientHandler) processGeneration(genID int64, userID int64, groupID *int64, model, prompt, mediaType, imageInput string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -155,8 +180,10 @@ func (h *SoraClientHandler) processGeneration(genID int64, userID int64, model, 
 		return
 	}
 
-	// 设置 ForcePlatform 用于 Sora 账号选择
-	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, service.PlatformSora)
+	// 有 groupID 时由分组决定平台，无 groupID 时用 ForcePlatform 兜底
+	if groupID == nil {
+		ctx = context.WithValue(ctx, ctxkey.ForcePlatform, service.PlatformSora)
+	}
 
 	if h.gatewayService == nil {
 		_ = h.genService.MarkFailed(ctx, genID, "内部错误: gatewayService 未初始化")
@@ -164,7 +191,7 @@ func (h *SoraClientHandler) processGeneration(genID int64, userID int64, model, 
 	}
 
 	// 选择 Sora 账号
-	account, err := h.gatewayService.SelectAccountForModel(ctx, nil, "", model)
+	account, err := h.gatewayService.SelectAccountForModel(ctx, groupID, "", model)
 	if err != nil {
 		_ = h.genService.MarkFailed(ctx, genID, "选择账号失败: "+err.Error())
 		return
@@ -698,6 +725,10 @@ func (h *SoraClientHandler) cleanupStoredMedia(ctx context.Context, storageType 
 
 // getUserIDFromContext 从 gin 上下文中提取用户 ID。
 func getUserIDFromContext(c *gin.Context) int64 {
+	if subject, ok := middleware2.GetAuthSubjectFromContext(c); ok && subject.UserID > 0 {
+		return subject.UserID
+	}
+
 	if id, ok := c.Get("user_id"); ok {
 		switch v := id.(type) {
 		case int64:
