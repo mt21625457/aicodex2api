@@ -1694,7 +1694,7 @@
         </div>
       </div>
 
-      <!-- OpenAI WS Mode 开关（按账号类型展示单一开关） -->
+      <!-- OpenAI WS Mode 三态（off/shared/dedicated） -->
       <div
         v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
@@ -1705,22 +1705,13 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.openai.wsModeDesc') }}
             </p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.wsModeConcurrencyHint') }}
+            </p>
           </div>
-          <button
-            type="button"
-            @click="openaiResponsesWebSocketV2Enabled = !openaiResponsesWebSocketV2Enabled"
-            :class="[
-              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-              openaiResponsesWebSocketV2Enabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
-            ]"
-          >
-            <span
-              :class="[
-                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
-                openaiResponsesWebSocketV2Enabled ? 'translate-x-5' : 'translate-x-0'
-              ]"
-            />
-          </button>
+          <div class="w-52">
+            <Select v-model="openaiResponsesWebSocketV2Mode" :options="openAIWSModeOptions" />
+          </div>
         </div>
       </div>
 
@@ -2228,6 +2219,7 @@ import type {
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -2235,6 +2227,13 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import {
+  OPENAI_WS_MODE_DEDICATED,
+  OPENAI_WS_MODE_OFF,
+  OPENAI_WS_MODE_SHARED,
+  isOpenAIWSModeEnabled,
+  type OpenAIWSMode
+} from '@/utils/openaiWsMode'
 import OAuthAuthorizationFlow from './OAuthAuthorizationFlow.vue'
 
 // Type for exposed OAuthAuthorizationFlow component
@@ -2356,8 +2355,8 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
-const openaiOAuthResponsesWebSocketV2Enabled = ref(false)
-const openaiAPIKeyResponsesWebSocketV2Enabled = ref(false)
+const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
@@ -2417,19 +2416,25 @@ const geminiSelectedTier = computed(() => {
   }
 })
 
-const openaiResponsesWebSocketV2Enabled = computed({
+const openAIWSModeOptions = computed(() => [
+  { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
+  { value: OPENAI_WS_MODE_SHARED, label: t('admin.accounts.openai.wsModeShared') },
+  { value: OPENAI_WS_MODE_DEDICATED, label: t('admin.accounts.openai.wsModeDedicated') }
+])
+
+const openaiResponsesWebSocketV2Mode = computed({
   get: () => {
     if (form.platform === 'openai' && accountCategory.value === 'apikey') {
-      return openaiAPIKeyResponsesWebSocketV2Enabled.value
+      return openaiAPIKeyResponsesWebSocketV2Mode.value
     }
-    return openaiOAuthResponsesWebSocketV2Enabled.value
+    return openaiOAuthResponsesWebSocketV2Mode.value
   },
-  set: (enabled: boolean) => {
+  set: (mode: OpenAIWSMode) => {
     if (form.platform === 'openai' && accountCategory.value === 'apikey') {
-      openaiAPIKeyResponsesWebSocketV2Enabled.value = enabled
+      openaiAPIKeyResponsesWebSocketV2Mode.value = mode
       return
     }
-    openaiOAuthResponsesWebSocketV2Enabled.value = enabled
+    openaiOAuthResponsesWebSocketV2Mode.value = mode
   }
 })
 
@@ -2628,8 +2633,8 @@ watch(
     }
     if (newPlatform !== 'openai') {
       openaiPassthroughEnabled.value = false
-      openaiOAuthResponsesWebSocketV2Enabled.value = false
-      openaiAPIKeyResponsesWebSocketV2Enabled.value = false
+      openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+      openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       codexCLIOnlyEnabled.value = false
     }
     if (newPlatform !== 'anthropic') {
@@ -3001,8 +3006,8 @@ const resetForm = () => {
   interceptWarmupRequests.value = false
   autoPauseOnExpired.value = true
   openaiPassthroughEnabled.value = false
-  openaiOAuthResponsesWebSocketV2Enabled.value = false
-  openaiAPIKeyResponsesWebSocketV2Enabled.value = false
+  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   anthropicPassthroughEnabled.value = false
   // Reset quota control state
@@ -3047,8 +3052,10 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   const extra: Record<string, unknown> = { ...(base || {}) }
-  extra.openai_oauth_responses_websockets_v2_enabled = openaiOAuthResponsesWebSocketV2Enabled.value
-  extra.openai_apikey_responses_websockets_v2_enabled = openaiAPIKeyResponsesWebSocketV2Enabled.value
+  extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
+  extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
+  extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
+  extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
   // 清理兼容旧键，统一改用分类型开关。
   delete extra.responses_websockets_v2_enabled
   delete extra.openai_ws_enabled
@@ -3097,6 +3104,8 @@ const buildSoraExtra = (
   delete extra.openai_passthrough
   delete extra.openai_oauth_passthrough
   delete extra.codex_cli_only
+  delete extra.openai_oauth_responses_websockets_v2_mode
+  delete extra.openai_apikey_responses_websockets_v2_mode
   delete extra.openai_oauth_responses_websockets_v2_enabled
   delete extra.openai_apikey_responses_websockets_v2_enabled
   delete extra.responses_websockets_v2_enabled

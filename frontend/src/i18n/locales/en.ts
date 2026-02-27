@@ -1733,8 +1733,12 @@ export default {
         responsesWebsocketsV2Desc:
           'Disabled by default. Enable to allow responses_websockets_v2 capability (still gated by global and account-type switches).',
         wsMode: 'WS mode',
-        wsModeDesc:
-          'Only applies to the current OpenAI account type. This account can use OpenAI WebSocket Mode only when enabled.',
+        wsModeDesc: 'Only applies to the current OpenAI account type.',
+        wsModeOff: 'Off (off)',
+        wsModeShared: 'Shared (shared)',
+        wsModeDedicated: 'Dedicated (dedicated)',
+        wsModeConcurrencyHint:
+          'When WS mode is enabled, account concurrency becomes the WS connection pool limit for this account.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',

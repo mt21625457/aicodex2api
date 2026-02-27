@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -166,8 +167,10 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	// Parse ID token to get user info
 	var userInfo *openai.UserInfo
 	if tokenResp.IDToken != "" {
-		claims, err := openai.ParseIDToken(tokenResp.IDToken)
-		if err == nil {
+		claims, parseErr := openai.ParseIDToken(tokenResp.IDToken)
+		if parseErr != nil {
+			slog.Warn("openai_oauth_id_token_parse_failed", "error", parseErr)
+		} else {
 			userInfo = claims.GetUserInfo()
 		}
 	}
@@ -209,8 +212,10 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 	// Parse ID token to get user info
 	var userInfo *openai.UserInfo
 	if tokenResp.IDToken != "" {
-		claims, err := openai.ParseIDToken(tokenResp.IDToken)
-		if err == nil {
+		claims, parseErr := openai.ParseIDToken(tokenResp.IDToken)
+		if parseErr != nil {
+			slog.Warn("openai_oauth_id_token_parse_failed", "error", parseErr)
+		} else {
 			userInfo = claims.GetUserInfo()
 		}
 	}
@@ -335,9 +340,12 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	expiresAt := time.Unix(tokenInfo.ExpiresAt, 0).Format(time.RFC3339)
 
 	creds := map[string]any{
-		"access_token":  tokenInfo.AccessToken,
-		"refresh_token": tokenInfo.RefreshToken,
-		"expires_at":    expiresAt,
+		"access_token": tokenInfo.AccessToken,
+		"expires_at":   expiresAt,
+	}
+	// 仅在刷新响应返回了新的 refresh_token 时才更新，防止用空值覆盖已有令牌
+	if strings.TrimSpace(tokenInfo.RefreshToken) != "" {
+		creds["refresh_token"] = tokenInfo.RefreshToken
 	}
 
 	if tokenInfo.IDToken != "" {
