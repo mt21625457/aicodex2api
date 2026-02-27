@@ -205,6 +205,65 @@ func TestAccount_IsOpenAIResponsesWebSocketV2Enabled(t *testing.T) {
 	})
 }
 
+func TestAccount_ResolveOpenAIResponsesWebSocketV2Mode(t *testing.T) {
+	t.Run("default fallback to shared", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{},
+		}
+		require.Equal(t, OpenAIWSIngressModeShared, account.ResolveOpenAIResponsesWebSocketV2Mode(""))
+		require.Equal(t, OpenAIWSIngressModeShared, account.ResolveOpenAIResponsesWebSocketV2Mode("invalid"))
+	})
+
+	t.Run("oauth mode field has highest priority", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode":    OpenAIWSIngressModeDedicated,
+				"openai_oauth_responses_websockets_v2_enabled": false,
+				"responses_websockets_v2_enabled":              false,
+			},
+		}
+		require.Equal(t, OpenAIWSIngressModeDedicated, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeShared))
+	})
+
+	t.Run("legacy enabled maps to shared", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"responses_websockets_v2_enabled": true,
+			},
+		}
+		require.Equal(t, OpenAIWSIngressModeShared, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeOff))
+	})
+
+	t.Run("legacy disabled maps to off", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": false,
+				"responses_websockets_v2_enabled":               true,
+			},
+		}
+		require.Equal(t, OpenAIWSIngressModeOff, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeShared))
+	})
+
+	t.Run("non openai always off", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformAnthropic,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeDedicated,
+			},
+		}
+		require.Equal(t, OpenAIWSIngressModeOff, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeDedicated))
+	})
+}
+
 func TestAccount_OpenAIWSExtraFlags(t *testing.T) {
 	account := &Account{
 		Platform: PlatformOpenAI,

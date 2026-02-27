@@ -150,6 +150,12 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.StoreDisabledConnMode != "strict" {
 		t.Fatalf("Gateway.OpenAIWS.StoreDisabledConnMode = %q, want %q", cfg.Gateway.OpenAIWS.StoreDisabledConnMode, "strict")
 	}
+	if cfg.Gateway.OpenAIWS.ModeRouterV2Enabled {
+		t.Fatalf("Gateway.OpenAIWS.ModeRouterV2Enabled = true, want false")
+	}
+	if cfg.Gateway.OpenAIWS.IngressModeDefault != "shared" {
+		t.Fatalf("Gateway.OpenAIWS.IngressModeDefault = %q, want %q", cfg.Gateway.OpenAIWS.IngressModeDefault, "shared")
+	}
 }
 
 func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
@@ -1365,6 +1371,11 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			name:    "store_disabled_conn_mode 必须为 strict|adaptive|off",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.StoreDisabledConnMode = "invalid" },
 			wantErr: "gateway.openai_ws.store_disabled_conn_mode",
+		},
+		{
+			name:    "ingress_mode_default 必须为 off|shared|dedicated",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.IngressModeDefault = "invalid" },
+			wantErr: "gateway.openai_ws.ingress_mode_default",
 		},
 		{
 			name:    "payload_log_sample_rate 必须在 [0,1] 范围内",
