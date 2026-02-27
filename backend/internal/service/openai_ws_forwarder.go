@@ -2270,16 +2270,17 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		acquireTimeout = 30 * time.Second
 	}
 
-	acquireTurnLease := func(turn int, preferred string) (*openAIWSConnLease, error) {
+	acquireTurnLease := func(turn int, preferred string, forcePreferredConn bool) (*openAIWSConnLease, error) {
 		req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
 		req.PreferredConnID = strings.TrimSpace(preferred)
+		req.ForcePreferredConn = forcePreferredConn
 		acquireCtx, acquireCancel := context.WithTimeout(ctx, acquireTimeout)
 		lease, acquireErr := pool.Acquire(acquireCtx, req)
 		acquireCancel()
 		if acquireErr != nil {
 			dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(acquireErr)
 			logOpenAIWSModeInfo(
-				"ingress_ws_upstream_acquire_fail account_id=%d turn=%d reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s ws_host=%s ws_path=%s proxy_enabled=%v",
+				"ingress_ws_upstream_acquire_fail account_id=%d turn=%d reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s force_preferred_conn=%v ws_host=%s ws_path=%s proxy_enabled=%v",
 				account.ID,
 				turn,
 				normalizeOpenAIWSLogValue(classifyOpenAIWSAcquireError(acquireErr)),
@@ -2293,10 +2294,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				dialRespReqID,
 				truncateOpenAIWSLogValue(acquireErr.Error(), openAIWSLogValueMaxLen),
 				truncateOpenAIWSLogValue(preferred, openAIWSIDValueMaxLen),
+				forcePreferredConn,
 				wsHost,
 				wsPath,
 				account.ProxyID != nil && account.Proxy != nil,
 			)
+			if errors.Is(acquireErr, errOpenAIWSPreferredConnUnavailable) {
+				return nil, NewOpenAIWSClientCloseError(
+					coderws.StatusPolicyViolation,
+					"upstream continuation connection is unavailable; please restart the conversation",
+					acquireErr,
+				)
+			}
 			if errors.Is(acquireErr, context.DeadlineExceeded) || errors.Is(acquireErr, errOpenAIWSConnQueueFull) {
 				return nil, NewOpenAIWSClientCloseError(
 					coderws.StatusTryAgainLater,
@@ -2556,12 +2565,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	currentPayload := firstPayload.payloadRaw
 	currentOriginalModel := firstPayload.originalModel
 	currentPayloadBytes := firstPayload.payloadBytes
+	isStrictAffinityTurn := func(payload []byte) bool {
+		if !storeDisabled {
+			return false
+		}
+		return strings.TrimSpace(openAIWSPayloadStringFromRaw(payload, "previous_response_id")) != ""
+	}
 	var sessionLease *openAIWSConnLease
 	sessionConnID := ""
+	pinnedSessionConnID := ""
+	unpinSessionConn := func(connID string) {
+		connID = strings.TrimSpace(connID)
+		if connID == "" || pinnedSessionConnID != connID {
+			return
+		}
+		pool.UnpinConn(account.ID, connID)
+		pinnedSessionConnID = ""
+	}
+	pinSessionConn := func(connID string) {
+		if !storeDisabled {
+			return
+		}
+		connID = strings.TrimSpace(connID)
+		if connID == "" || pinnedSessionConnID == connID {
+			return
+		}
+		if pinnedSessionConnID != "" {
+			pool.UnpinConn(account.ID, pinnedSessionConnID)
+			pinnedSessionConnID = ""
+		}
+		if pool.PinConn(account.ID, connID) {
+			pinnedSessionConnID = connID
+		}
+	}
 	releaseSessionLease := func() {
 		if sessionLease == nil {
 			return
 		}
+		unpinSessionConn(sessionConnID)
 		sessionLease.Release()
 		if debugEnabled {
 			logOpenAIWSModeDebug(
@@ -2593,6 +2634,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 	recoverIngressPrevResponseNotFound := func(relayErr error, turn int, connID string) bool {
 		if !isOpenAIWSIngressPreviousResponseNotFound(relayErr) {
+			return false
+		}
+		if isStrictAffinityTurn(currentPayload) {
+			logOpenAIWSModeInfo(
+				"ingress_ws_prev_response_recovery_skip account_id=%d turn=%d conn_id=%s reason=strict_affinity",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+			)
 			return false
 		}
 		if turnPrevRecoveryTried || !s.openAIWSIngressPreviousResponseRecoveryEnabled() {
@@ -2630,6 +2680,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if !isOpenAIWSIngressTurnRetryable(relayErr) || turnRetry >= 1 {
 			return false
 		}
+		if isStrictAffinityTurn(currentPayload) {
+			logOpenAIWSModeInfo(
+				"ingress_ws_turn_retry_skip account_id=%d turn=%d conn_id=%s reason=strict_affinity",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+			)
+			return false
+		}
 		turnRetry++
 		logOpenAIWSModeInfo(
 			"ingress_ws_turn_retry account_id=%d turn=%d retry=%d reason=%s conn_id=%s",
@@ -2650,13 +2709,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		skipBeforeTurn = false
+		forcePreferredConn := isStrictAffinityTurn(currentPayload)
 		if sessionLease == nil {
-			acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID)
+			acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn)
 			if acquireErr != nil {
 				return fmt.Errorf("acquire upstream websocket: %w", acquireErr)
 			}
 			sessionLease = acquiredLease
 			sessionConnID = strings.TrimSpace(sessionLease.ConnID())
+			if storeDisabled {
+				pinSessionConn(sessionConnID)
+			} else {
+				unpinSessionConn(sessionConnID)
+			}
 		}
 		shouldPreflightPing := turn > 1 && sessionLease != nil && turnRetry == 0
 		if shouldPreflightPing && openAIWSIngressPreflightPingIdle > 0 && !lastTurnFinishedAt.IsZero() {
@@ -2673,14 +2738,25 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
 					truncateOpenAIWSLogValue(pingErr.Error(), openAIWSLogValueMaxLen),
 				)
+				if forcePreferredConn {
+					resetSessionLease(true)
+					return NewOpenAIWSClientCloseError(
+						coderws.StatusPolicyViolation,
+						"upstream continuation connection is unavailable; please restart the conversation",
+						pingErr,
+					)
+				}
 				resetSessionLease(true)
 
-				acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID)
+				acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn)
 				if acquireErr != nil {
 					return fmt.Errorf("acquire upstream websocket after preflight ping fail: %w", acquireErr)
 				}
 				sessionLease = acquiredLease
 				sessionConnID = strings.TrimSpace(sessionLease.ConnID())
+				if storeDisabled {
+					pinSessionConn(sessionConnID)
+				}
 			}
 		}
 		connID := sessionConnID
@@ -2852,6 +2928,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentOriginalModel = nextPayload.originalModel
 		currentPayloadBytes = nextPayload.payloadBytes
 		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(currentPayload, account)
+		if !storeDisabled {
+			unpinSessionConn(sessionConnID)
+		}
 		turn++
 	}
 }
@@ -3243,6 +3322,9 @@ func classifyOpenAIWSAcquireError(err error) string {
 	}
 	if errors.Is(err, errOpenAIWSConnQueueFull) {
 		return "conn_queue_full"
+	}
+	if errors.Is(err, errOpenAIWSPreferredConnUnavailable) {
+		return "preferred_conn_unavailable"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "acquire_timeout"
