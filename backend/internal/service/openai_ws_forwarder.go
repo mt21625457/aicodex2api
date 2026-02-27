@@ -55,6 +55,7 @@ const (
 	openAIWSStoreDisabledConnModeOff      = "off"
 
 	openAIWSIngressStagePreviousResponseNotFound = "previous_response_not_found"
+	openAIWSMaxPrevResponseIDDeletePasses        = 8
 )
 
 var openAIWSLogValueReplacer = strings.NewReplacer(
@@ -1283,30 +1284,85 @@ func shouldForceNewConnOnStoreDisabled(mode, lastFailureReason string) bool {
 }
 
 func dropPreviousResponseIDFromRawPayload(payload []byte) ([]byte, bool, error) {
+	return dropPreviousResponseIDFromRawPayloadWithDeleteFn(payload, sjson.DeleteBytes)
+}
+
+func dropPreviousResponseIDFromRawPayloadWithDeleteFn(
+	payload []byte,
+	deleteFn func([]byte, string) ([]byte, error),
+) ([]byte, bool, error) {
 	if len(payload) == 0 {
 		return payload, false, nil
 	}
 	if !gjson.GetBytes(payload, "previous_response_id").Exists() {
 		return payload, false, nil
 	}
-	updated, err := sjson.DeleteBytes(payload, "previous_response_id")
+	if deleteFn == nil {
+		deleteFn = sjson.DeleteBytes
+	}
+
+	updated := payload
+	for i := 0; i < openAIWSMaxPrevResponseIDDeletePasses &&
+		gjson.GetBytes(updated, "previous_response_id").Exists(); i++ {
+		next, err := deleteFn(updated, "previous_response_id")
+		if err != nil {
+			return payload, false, err
+		}
+		updated = next
+	}
+	return updated, !gjson.GetBytes(updated, "previous_response_id").Exists(), nil
+}
+
+func setPreviousResponseIDToRawPayload(payload []byte, previousResponseID string) ([]byte, error) {
+	normalizedPrevID := strings.TrimSpace(previousResponseID)
+	if len(payload) == 0 || normalizedPrevID == "" {
+		return payload, nil
+	}
+	updated, err := sjson.SetBytes(payload, "previous_response_id", normalizedPrevID)
 	if err == nil {
-		return updated, true, nil
+		return updated, nil
 	}
 
 	var reqBody map[string]any
 	if unmarshalErr := json.Unmarshal(payload, &reqBody); unmarshalErr != nil {
-		return payload, false, err
+		return nil, err
 	}
-	if _, has := reqBody["previous_response_id"]; !has {
-		return payload, false, nil
-	}
-	delete(reqBody, "previous_response_id")
+	reqBody["previous_response_id"] = normalizedPrevID
 	rebuilt, marshalErr := json.Marshal(reqBody)
 	if marshalErr != nil {
-		return payload, false, marshalErr
+		return nil, marshalErr
 	}
-	return rebuilt, true, nil
+	return rebuilt, nil
+}
+
+func alignStoreDisabledPreviousResponseID(
+	payload []byte,
+	expectedPreviousResponseID string,
+) ([]byte, bool, error) {
+	if len(payload) == 0 {
+		return payload, false, nil
+	}
+	expected := strings.TrimSpace(expectedPreviousResponseID)
+	if expected == "" {
+		return payload, false, nil
+	}
+	current := openAIWSPayloadStringFromRaw(payload, "previous_response_id")
+	if current == "" || current == expected {
+		return payload, false, nil
+	}
+
+	withoutPrev, removed, dropErr := dropPreviousResponseIDFromRawPayload(payload)
+	if dropErr != nil {
+		return payload, false, dropErr
+	}
+	if !removed {
+		return payload, false, nil
+	}
+	updated, setErr := setPreviousResponseIDToRawPayload(withoutPrev, expected)
+	if setErr != nil {
+		return payload, false, setErr
+	}
+	return updated, true, nil
 }
 
 func (s *OpenAIGatewayService) forwardOpenAIWSV2(
@@ -2629,8 +2685,46 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		connID := sessionConnID
 		currentPreviousResponseID := openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id")
+		expectedPrev := strings.TrimSpace(lastTurnResponseID)
+		if storeDisabled && currentPreviousResponseID != "" && expectedPrev != "" && currentPreviousResponseID != expectedPrev {
+			if gjson.GetBytes(currentPayload, `input.#(type=="function_call_output")`).Exists() {
+				logOpenAIWSModeInfo(
+					"ingress_ws_prev_response_preflight_skip account_id=%d turn=%d conn_id=%s reason=has_function_call_output previous_response_id=%s expected_previous_response_id=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+				)
+			} else {
+				originalPreviousResponseID := currentPreviousResponseID
+				alignedPayload, aligned, alignErr := alignStoreDisabledPreviousResponseID(currentPayload, expectedPrev)
+				if alignErr != nil {
+					logOpenAIWSModeInfo(
+						"ingress_ws_prev_response_preflight_skip account_id=%d turn=%d conn_id=%s reason=align_error previous_response_id=%s expected_previous_response_id=%s cause=%s",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(alignErr.Error(), openAIWSLogValueMaxLen),
+					)
+				} else if aligned {
+					currentPayload = alignedPayload
+					currentPayloadBytes = len(alignedPayload)
+					currentPreviousResponseID = openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id")
+					logOpenAIWSModeInfo(
+						"ingress_ws_prev_response_preflight_rewrite account_id=%d turn=%d conn_id=%s from_previous_response_id=%s to_previous_response_id=%s action=rewrite_previous_response_id",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(originalPreviousResponseID, openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+					)
+				}
+			}
+		}
 		if currentPreviousResponseID != "" {
-			expectedPrev := strings.TrimSpace(lastTurnResponseID)
 			chainedFromLast := expectedPrev != "" && currentPreviousResponseID == expectedPrev
 			currentPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(currentPreviousResponseID)
 			logOpenAIWSModeInfo(
