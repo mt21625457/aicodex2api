@@ -211,10 +211,12 @@ func BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, platfor
 }
 
 // OAuthClientConfigByPlatform returns oauth client_id and whether codex simplified flow should be enabled.
+// Sora 授权流程复用 Codex CLI 的 client_id（支持 localhost redirect_uri），
+// 但不启用 codex_cli_simplified_flow；拿到的 access_token 绑定同一 OpenAI 账号，对 Sora API 同样可用。
 func OAuthClientConfigByPlatform(platform string) (clientID string, codexFlow bool) {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case OAuthPlatformSora:
-		return SoraClientID, false
+		return ClientID, false
 	default:
 		return ClientID, true
 	}
