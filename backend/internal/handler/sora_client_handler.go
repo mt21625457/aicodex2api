@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -703,21 +702,9 @@ func getUserIDFromContext(c *gin.Context) int64 {
 	return 0
 }
 
-// GetModels 获取可用 Sora 模型列表。
+// GetModels 获取可用 Sora 模型家族列表（从 soraModelConfigs 自动聚合）。
 // GET /api/v1/sora/models
 func (h *SoraClientHandler) GetModels(c *gin.Context) {
-	// 返回静态模型列表（后续可改为从账号配置动态获取）
-	models := []gin.H{
-		{"id": "sora2-landscape-10s", "name": "Sora 2 横屏 10s", "type": "video", "orientation": "landscape", "duration": 10},
-		{"id": "sora2-landscape-5s", "name": "Sora 2 横屏 5s", "type": "video", "orientation": "landscape", "duration": 5},
-		{"id": "sora2-landscape-20s", "name": "Sora 2 横屏 20s", "type": "video", "orientation": "landscape", "duration": 20},
-		{"id": "sora2-portrait-10s", "name": "Sora 2 竖屏 10s", "type": "video", "orientation": "portrait", "duration": 10},
-		{"id": "sora2-portrait-5s", "name": "Sora 2 竖屏 5s", "type": "video", "orientation": "portrait", "duration": 5},
-		{"id": "sora2-portrait-20s", "name": "Sora 2 竖屏 20s", "type": "video", "orientation": "portrait", "duration": 20},
-		{"id": "gpt-image", "name": "GPT Image 360p", "type": "image"},
-		{"id": "gpt-image-landscape", "name": "GPT Image 横屏 540p", "type": "image", "orientation": "landscape"},
-		{"id": "gpt-image-portrait", "name": "GPT Image 竖屏 540p", "type": "image", "orientation": "portrait"},
-	}
-	_ = fmt.Sprint() // 使 fmt 包被使用
-	response.Success(c, models)
+	families := service.BuildSoraModelFamilies()
+	response.Success(c, families)
 }

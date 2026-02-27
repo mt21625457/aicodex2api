@@ -56,12 +56,22 @@ export interface StorageStatus {
   local_enabled: boolean
 }
 
+/** 单个扁平模型（旧接口，保留兼容） */
 export interface SoraModel {
   id: string
   name: string
   type: string // video | image
   orientation?: string
   duration?: number
+}
+
+/** 模型家族（新接口 — 后端从 soraModelConfigs 自动聚合） */
+export interface SoraModelFamily {
+  id: string          // 家族 ID，如 "sora2"
+  name: string        // 显示名，如 "Sora 2"
+  type: string        // "video" | "image"
+  orientations: string[]  // ["landscape", "portrait"] 或 ["landscape", "portrait", "square"]
+  durations?: number[]    // [10, 15, 25]（仅视频模型）
 }
 
 // ==================== API 方法 ====================
@@ -118,9 +128,9 @@ export async function getQuota(): Promise<QuotaInfo> {
   return data
 }
 
-/** 获取可用模型列表 */
-export async function getModels(): Promise<SoraModel[]> {
-  const { data } = await apiClient.get<SoraModel[]>('/sora/models')
+/** 获取可用模型家族列表 */
+export async function getModels(): Promise<SoraModelFamily[]> {
+  const { data } = await apiClient.get<SoraModelFamily[]>('/sora/models')
   return data
 }
 
