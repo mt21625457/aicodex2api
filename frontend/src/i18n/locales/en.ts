@@ -3546,6 +3546,12 @@ export default {
         iframeWarning:
           '⚠️ iframe note: Some websites block embedding via X-Frame-Options or CSP (frame-ancestors). If the page is blank, provide an "Open in new tab" alternative.'
       },
+      soraClient: {
+        title: 'Sora Client',
+        description: 'Control whether to show the Sora client entry in the sidebar',
+        enabled: 'Enable Sora Client',
+        enabledHint: 'When enabled, the Sora entry will be shown in the sidebar for users to access Sora features'
+      },
       smtp: {
         title: 'SMTP Settings',
         description: 'Configure email sending for verification codes',
@@ -3619,7 +3625,37 @@ export default {
       },
       soraS3: {
         title: 'Sora S3 Storage',
-        description: 'Configure S3-compatible storage for saving Sora generated media files',
+        description: 'Manage multiple Sora S3 endpoints and switch the active profile',
+        newProfile: 'New Profile',
+        reloadProfiles: 'Reload Profiles',
+        empty: 'No Sora S3 profiles yet, create one first',
+        createTitle: 'Create Sora S3 Profile',
+        editTitle: 'Edit Sora S3 Profile',
+        profileID: 'Profile ID',
+        profileName: 'Profile Name',
+        setActive: 'Set as active after creation',
+        saveProfile: 'Save Profile',
+        activateProfile: 'Activate',
+        profileCreated: 'Sora S3 profile created',
+        profileSaved: 'Sora S3 profile saved',
+        profileDeleted: 'Sora S3 profile deleted',
+        profileActivated: 'Sora S3 active profile switched',
+        profileIDRequired: 'Profile ID is required',
+        profileNameRequired: 'Profile name is required',
+        profileSelectRequired: 'Please select a profile first',
+        endpointRequired: 'S3 endpoint is required when enabled',
+        bucketRequired: 'Bucket is required when enabled',
+        accessKeyRequired: 'Access Key ID is required when enabled',
+        deleteConfirm: 'Delete Sora S3 profile {profileID}?',
+        columns: {
+          profile: 'Profile',
+          active: 'Active',
+          endpoint: 'Endpoint',
+          bucket: 'Bucket',
+          quota: 'Default Quota',
+          updatedAt: 'Updated At',
+          actions: 'Actions'
+        },
         enabled: 'Enable S3 Storage',
         enabledHint: 'When enabled, Sora generated media files will be automatically uploaded to S3 storage',
         endpoint: 'S3 Endpoint',
@@ -4057,6 +4093,30 @@ export default {
     downloadNow: 'Download Now',
     referenceImage: 'Reference Image',
     removeImage: 'Remove',
-    imageTooLarge: 'Image size cannot exceed 20MB'
+    imageTooLarge: 'Image size cannot exceed 20MB',
+    // Sora dark theme additions
+    welcomeTitle: 'Turn your imagination into video',
+    welcomeSubtitle: 'Enter a description and Sora will create realistic videos or images for you. Try the examples below to get started.',
+    queueTasks: 'tasks',
+    queueWaiting: 'Queued',
+    waiting: 'Waiting',
+    waited: 'Waited',
+    errorCategory: 'Content Policy Violation',
+    savedToCloud: 'Saved to Cloud',
+    downloadLocal: 'Download',
+    canDownload: 'to download',
+    regenrate: 'Regenerate',
+    creatorPlaceholder: 'Describe the video or image you want to create...',
+    videoModels: 'Video Models',
+    imageModels: 'Image Models',
+    noStorageConfigured: 'No Storage',
+    uploadReference: 'Upload reference image',
+    generatingCount: 'Generating {current}/{max}',
+    noStorageToastMessage: 'Cloud storage is not configured. Please use "Download" to save files after generation, otherwise they will be lost.',
+    galleryCount: '{count} works',
+    galleryEmptyTitle: 'No works yet',
+    galleryEmptyDesc: 'Your creations will be displayed here. Go to the generate page to start your first creation.',
+    startCreating: 'Start Creating',
+    yesterday: 'Yesterday'
   }
 }

@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -78,6 +79,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		HideCcsImportButton:                  settings.HideCcsImportButton,
 		PurchaseSubscriptionEnabled:          settings.PurchaseSubscriptionEnabled,
 		PurchaseSubscriptionURL:              settings.PurchaseSubscriptionURL,
+		SoraClientEnabled:                    settings.SoraClientEnabled,
 		DefaultConcurrency:                   settings.DefaultConcurrency,
 		DefaultBalance:                       settings.DefaultBalance,
 		EnableModelFallback:                  settings.EnableModelFallback,
@@ -135,6 +137,7 @@ type UpdateSettingsRequest struct {
 	HideCcsImportButton         bool    `json:"hide_ccs_import_button"`
 	PurchaseSubscriptionEnabled *bool   `json:"purchase_subscription_enabled"`
 	PurchaseSubscriptionURL     *string `json:"purchase_subscription_url"`
+	SoraClientEnabled           bool    `json:"sora_client_enabled"`
 
 	// 默认配置
 	DefaultConcurrency int     `json:"default_concurrency"`
@@ -321,6 +324,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		HideCcsImportButton:         req.HideCcsImportButton,
 		PurchaseSubscriptionEnabled: purchaseEnabled,
 		PurchaseSubscriptionURL:     purchaseURL,
+		SoraClientEnabled:           req.SoraClientEnabled,
 		DefaultConcurrency:          req.DefaultConcurrency,
 		DefaultBalance:              req.DefaultBalance,
 		EnableModelFallback:         req.EnableModelFallback,
@@ -402,6 +406,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		HideCcsImportButton:                  updatedSettings.HideCcsImportButton,
 		PurchaseSubscriptionEnabled:          updatedSettings.PurchaseSubscriptionEnabled,
 		PurchaseSubscriptionURL:              updatedSettings.PurchaseSubscriptionURL,
+		SoraClientEnabled:                    updatedSettings.SoraClientEnabled,
 		DefaultConcurrency:                   updatedSettings.DefaultConcurrency,
 		DefaultBalance:                       updatedSettings.DefaultBalance,
 		EnableModelFallback:                  updatedSettings.EnableModelFallback,
@@ -752,7 +757,72 @@ func (h *SettingHandler) GetStreamTimeoutSettings(c *gin.Context) {
 	})
 }
 
-// GetSoraS3Settings 获取 Sora S3 存储配置
+func toSoraS3SettingsDTO(settings *service.SoraS3Settings) dto.SoraS3Settings {
+	if settings == nil {
+		return dto.SoraS3Settings{}
+	}
+	return dto.SoraS3Settings{
+		Enabled:                   settings.Enabled,
+		Endpoint:                  settings.Endpoint,
+		Region:                    settings.Region,
+		Bucket:                    settings.Bucket,
+		AccessKeyID:               settings.AccessKeyID,
+		SecretAccessKeyConfigured: settings.SecretAccessKeyConfigured,
+		Prefix:                    settings.Prefix,
+		ForcePathStyle:            settings.ForcePathStyle,
+		CDNURL:                    settings.CDNURL,
+		DefaultStorageQuotaBytes:  settings.DefaultStorageQuotaBytes,
+	}
+}
+
+func toSoraS3ProfileDTO(profile service.SoraS3Profile) dto.SoraS3Profile {
+	return dto.SoraS3Profile{
+		ProfileID:                 profile.ProfileID,
+		Name:                      profile.Name,
+		IsActive:                  profile.IsActive,
+		Enabled:                   profile.Enabled,
+		Endpoint:                  profile.Endpoint,
+		Region:                    profile.Region,
+		Bucket:                    profile.Bucket,
+		AccessKeyID:               profile.AccessKeyID,
+		SecretAccessKeyConfigured: profile.SecretAccessKeyConfigured,
+		Prefix:                    profile.Prefix,
+		ForcePathStyle:            profile.ForcePathStyle,
+		CDNURL:                    profile.CDNURL,
+		DefaultStorageQuotaBytes:  profile.DefaultStorageQuotaBytes,
+		UpdatedAt:                 profile.UpdatedAt,
+	}
+}
+
+func validateSoraS3RequiredWhenEnabled(enabled bool, endpoint, bucket, accessKeyID, secretAccessKey string, hasStoredSecret bool) error {
+	if !enabled {
+		return nil
+	}
+	if strings.TrimSpace(endpoint) == "" {
+		return fmt.Errorf("S3 Endpoint is required when enabled")
+	}
+	if strings.TrimSpace(bucket) == "" {
+		return fmt.Errorf("S3 Bucket is required when enabled")
+	}
+	if strings.TrimSpace(accessKeyID) == "" {
+		return fmt.Errorf("S3 Access Key ID is required when enabled")
+	}
+	if strings.TrimSpace(secretAccessKey) != "" || hasStoredSecret {
+		return nil
+	}
+	return fmt.Errorf("S3 Secret Access Key is required when enabled")
+}
+
+func findSoraS3ProfileByID(items []service.SoraS3Profile, profileID string) *service.SoraS3Profile {
+	for idx := range items {
+		if items[idx].ProfileID == profileID {
+			return &items[idx]
+		}
+	}
+	return nil
+}
+
+// GetSoraS3Settings 获取 Sora S3 存储配置（兼容旧单配置接口）
 // GET /api/v1/admin/settings/sora-s3
 func (h *SettingHandler) GetSoraS3Settings(c *gin.Context) {
 	settings, err := h.settingService.GetSoraS3Settings(c.Request.Context())
@@ -760,23 +830,30 @@ func (h *SettingHandler) GetSoraS3Settings(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	response.Success(c, toSoraS3SettingsDTO(settings))
+}
 
-	response.Success(c, dto.SoraS3Settings{
-		Enabled:                  settings.Enabled,
-		Endpoint:                 settings.Endpoint,
-		Region:                   settings.Region,
-		Bucket:                   settings.Bucket,
-		AccessKeyID:              settings.AccessKeyID,
-		SecretAccessKeyConfigured: settings.SecretAccessKeyConfigured,
-		Prefix:                   settings.Prefix,
-		ForcePathStyle:           settings.ForcePathStyle,
-		CDNURL:                   settings.CDNURL,
-		DefaultStorageQuotaBytes: settings.DefaultStorageQuotaBytes,
+// ListSoraS3Profiles 获取 Sora S3 多配置
+// GET /api/v1/admin/settings/sora-s3/profiles
+func (h *SettingHandler) ListSoraS3Profiles(c *gin.Context) {
+	result, err := h.settingService.ListSoraS3Profiles(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	items := make([]dto.SoraS3Profile, 0, len(result.Items))
+	for idx := range result.Items {
+		items = append(items, toSoraS3ProfileDTO(result.Items[idx]))
+	}
+	response.Success(c, dto.ListSoraS3ProfilesResponse{
+		ActiveProfileID: result.ActiveProfileID,
+		Items:           items,
 	})
 }
 
-// UpdateSoraS3SettingsRequest 更新 Sora S3 配置请求
+// UpdateSoraS3SettingsRequest 更新/测试 Sora S3 配置请求（兼容旧接口）
 type UpdateSoraS3SettingsRequest struct {
+	ProfileID                string `json:"profile_id"`
 	Enabled                  bool   `json:"enabled"`
 	Endpoint                 string `json:"endpoint"`
 	Region                   string `json:"region"`
@@ -789,7 +866,174 @@ type UpdateSoraS3SettingsRequest struct {
 	DefaultStorageQuotaBytes int64  `json:"default_storage_quota_bytes"`
 }
 
-// UpdateSoraS3Settings 更新 Sora S3 存储配置
+type CreateSoraS3ProfileRequest struct {
+	ProfileID                string `json:"profile_id"`
+	Name                     string `json:"name"`
+	SetActive                bool   `json:"set_active"`
+	Enabled                  bool   `json:"enabled"`
+	Endpoint                 string `json:"endpoint"`
+	Region                   string `json:"region"`
+	Bucket                   string `json:"bucket"`
+	AccessKeyID              string `json:"access_key_id"`
+	SecretAccessKey          string `json:"secret_access_key"`
+	Prefix                   string `json:"prefix"`
+	ForcePathStyle           bool   `json:"force_path_style"`
+	CDNURL                   string `json:"cdn_url"`
+	DefaultStorageQuotaBytes int64  `json:"default_storage_quota_bytes"`
+}
+
+type UpdateSoraS3ProfileRequest struct {
+	Name                     string `json:"name"`
+	Enabled                  bool   `json:"enabled"`
+	Endpoint                 string `json:"endpoint"`
+	Region                   string `json:"region"`
+	Bucket                   string `json:"bucket"`
+	AccessKeyID              string `json:"access_key_id"`
+	SecretAccessKey          string `json:"secret_access_key"`
+	Prefix                   string `json:"prefix"`
+	ForcePathStyle           bool   `json:"force_path_style"`
+	CDNURL                   string `json:"cdn_url"`
+	DefaultStorageQuotaBytes int64  `json:"default_storage_quota_bytes"`
+}
+
+// CreateSoraS3Profile 创建 Sora S3 配置
+// POST /api/v1/admin/settings/sora-s3/profiles
+func (h *SettingHandler) CreateSoraS3Profile(c *gin.Context) {
+	var req CreateSoraS3ProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	if req.DefaultStorageQuotaBytes < 0 {
+		req.DefaultStorageQuotaBytes = 0
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		response.BadRequest(c, "Name is required")
+		return
+	}
+	if strings.TrimSpace(req.ProfileID) == "" {
+		response.BadRequest(c, "Profile ID is required")
+		return
+	}
+	if err := validateSoraS3RequiredWhenEnabled(req.Enabled, req.Endpoint, req.Bucket, req.AccessKeyID, req.SecretAccessKey, false); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	created, err := h.settingService.CreateSoraS3Profile(c.Request.Context(), &service.SoraS3Profile{
+		ProfileID:                req.ProfileID,
+		Name:                     req.Name,
+		Enabled:                  req.Enabled,
+		Endpoint:                 req.Endpoint,
+		Region:                   req.Region,
+		Bucket:                   req.Bucket,
+		AccessKeyID:              req.AccessKeyID,
+		SecretAccessKey:          req.SecretAccessKey,
+		Prefix:                   req.Prefix,
+		ForcePathStyle:           req.ForcePathStyle,
+		CDNURL:                   req.CDNURL,
+		DefaultStorageQuotaBytes: req.DefaultStorageQuotaBytes,
+	}, req.SetActive)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, toSoraS3ProfileDTO(*created))
+}
+
+// UpdateSoraS3Profile 更新 Sora S3 配置
+// PUT /api/v1/admin/settings/sora-s3/profiles/:profile_id
+func (h *SettingHandler) UpdateSoraS3Profile(c *gin.Context) {
+	profileID := strings.TrimSpace(c.Param("profile_id"))
+	if profileID == "" {
+		response.BadRequest(c, "Profile ID is required")
+		return
+	}
+
+	var req UpdateSoraS3ProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	if req.DefaultStorageQuotaBytes < 0 {
+		req.DefaultStorageQuotaBytes = 0
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		response.BadRequest(c, "Name is required")
+		return
+	}
+
+	existingList, err := h.settingService.ListSoraS3Profiles(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	existing := findSoraS3ProfileByID(existingList.Items, profileID)
+	if existing == nil {
+		response.ErrorFrom(c, service.ErrSoraS3ProfileNotFound)
+		return
+	}
+	if err := validateSoraS3RequiredWhenEnabled(req.Enabled, req.Endpoint, req.Bucket, req.AccessKeyID, req.SecretAccessKey, existing.SecretAccessKeyConfigured); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	updated, updateErr := h.settingService.UpdateSoraS3Profile(c.Request.Context(), profileID, &service.SoraS3Profile{
+		Name:                     req.Name,
+		Enabled:                  req.Enabled,
+		Endpoint:                 req.Endpoint,
+		Region:                   req.Region,
+		Bucket:                   req.Bucket,
+		AccessKeyID:              req.AccessKeyID,
+		SecretAccessKey:          req.SecretAccessKey,
+		Prefix:                   req.Prefix,
+		ForcePathStyle:           req.ForcePathStyle,
+		CDNURL:                   req.CDNURL,
+		DefaultStorageQuotaBytes: req.DefaultStorageQuotaBytes,
+	})
+	if updateErr != nil {
+		response.ErrorFrom(c, updateErr)
+		return
+	}
+
+	response.Success(c, toSoraS3ProfileDTO(*updated))
+}
+
+// DeleteSoraS3Profile 删除 Sora S3 配置
+// DELETE /api/v1/admin/settings/sora-s3/profiles/:profile_id
+func (h *SettingHandler) DeleteSoraS3Profile(c *gin.Context) {
+	profileID := strings.TrimSpace(c.Param("profile_id"))
+	if profileID == "" {
+		response.BadRequest(c, "Profile ID is required")
+		return
+	}
+	if err := h.settingService.DeleteSoraS3Profile(c.Request.Context(), profileID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"deleted": true})
+}
+
+// SetActiveSoraS3Profile 切换激活 Sora S3 配置
+// POST /api/v1/admin/settings/sora-s3/profiles/:profile_id/activate
+func (h *SettingHandler) SetActiveSoraS3Profile(c *gin.Context) {
+	profileID := strings.TrimSpace(c.Param("profile_id"))
+	if profileID == "" {
+		response.BadRequest(c, "Profile ID is required")
+		return
+	}
+	active, err := h.settingService.SetActiveSoraS3Profile(c.Request.Context(), profileID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, toSoraS3ProfileDTO(*active))
+}
+
+// UpdateSoraS3Settings 更新 Sora S3 存储配置（兼容旧单配置接口）
 // PUT /api/v1/admin/settings/sora-s3
 func (h *SettingHandler) UpdateSoraS3Settings(c *gin.Context) {
 	var req UpdateSoraS3SettingsRequest
@@ -798,32 +1042,21 @@ func (h *SettingHandler) UpdateSoraS3Settings(c *gin.Context) {
 		return
 	}
 
-	// 启用时验证必填字段
-	if req.Enabled {
-		if req.Endpoint == "" {
-			response.BadRequest(c, "S3 Endpoint is required when enabled")
-			return
-		}
-		if req.Bucket == "" {
-			response.BadRequest(c, "S3 Bucket is required when enabled")
-			return
-		}
-		// 如果未提供 secret，检查是否已有保存的值
-		if req.SecretAccessKey == "" {
-			existing, err := h.settingService.GetSoraS3Settings(c.Request.Context())
-			if err != nil || !existing.SecretAccessKeyConfigured {
-				response.BadRequest(c, "S3 Secret Access Key is required when enabled")
-				return
-			}
-		}
+	existing, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
 	}
 
-	// 配额不能为负数
 	if req.DefaultStorageQuotaBytes < 0 {
 		req.DefaultStorageQuotaBytes = 0
 	}
+	if err := validateSoraS3RequiredWhenEnabled(req.Enabled, req.Endpoint, req.Bucket, req.AccessKeyID, req.SecretAccessKey, existing.SecretAccessKeyConfigured); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
 
-		settings := &service.SoraS3Settings{
+	settings := &service.SoraS3Settings{
 		Enabled:                  req.Enabled,
 		Endpoint:                 req.Endpoint,
 		Region:                   req.Region,
@@ -835,31 +1068,17 @@ func (h *SettingHandler) UpdateSoraS3Settings(c *gin.Context) {
 		CDNURL:                   req.CDNURL,
 		DefaultStorageQuotaBytes: req.DefaultStorageQuotaBytes,
 	}
-
 	if err := h.settingService.SetSoraS3Settings(c.Request.Context(), settings); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	// 重新获取设置返回（脱敏）
 	updatedSettings, err := h.settingService.GetSoraS3Settings(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-
-	response.Success(c, dto.SoraS3Settings{
-		Enabled:                  updatedSettings.Enabled,
-		Endpoint:                 updatedSettings.Endpoint,
-		Region:                   updatedSettings.Region,
-		Bucket:                   updatedSettings.Bucket,
-		AccessKeyID:              updatedSettings.AccessKeyID,
-		SecretAccessKeyConfigured: updatedSettings.SecretAccessKeyConfigured,
-		Prefix:                   updatedSettings.Prefix,
-		ForcePathStyle:           updatedSettings.ForcePathStyle,
-		CDNURL:                   updatedSettings.CDNURL,
-		DefaultStorageQuotaBytes: updatedSettings.DefaultStorageQuotaBytes,
-	})
+	response.Success(c, toSoraS3SettingsDTO(updatedSettings))
 }
 
 // TestSoraS3Connection 测试 Sora S3 连接（HeadBucket）
@@ -879,11 +1098,22 @@ func (h *SettingHandler) TestSoraS3Connection(c *gin.Context) {
 		response.BadRequest(c, "S3 未启用，无法测试连接")
 		return
 	}
-	// secret 留空时复用已保存值，支持“只改 endpoint/bucket 后直接测试”
+
 	if req.SecretAccessKey == "" {
-		existing, err := h.settingService.GetSoraS3Settings(c.Request.Context())
-		if err == nil {
-			req.SecretAccessKey = existing.SecretAccessKey
+		if req.ProfileID != "" {
+			profiles, err := h.settingService.ListSoraS3Profiles(c.Request.Context())
+			if err == nil {
+				profile := findSoraS3ProfileByID(profiles.Items, req.ProfileID)
+				if profile != nil {
+					req.SecretAccessKey = profile.SecretAccessKey
+				}
+			}
+		}
+		if req.SecretAccessKey == "" {
+			existing, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+			if err == nil {
+				req.SecretAccessKey = existing.SecretAccessKey
+			}
 		}
 	}
 
