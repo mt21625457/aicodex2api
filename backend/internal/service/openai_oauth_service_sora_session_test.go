@@ -13,7 +13,7 @@ import (
 
 type openaiOAuthClientNoopStub struct{}
 
-func (s *openaiOAuthClientNoopStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL string) (*openai.TokenResponse, error) {
+func (s *openaiOAuthClientNoopStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
 	return nil, errors.New("not implemented")
 }
 

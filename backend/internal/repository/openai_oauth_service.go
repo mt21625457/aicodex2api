@@ -22,16 +22,20 @@ type openaiOAuthService struct {
 	tokenURL string
 }
 
-func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL string) (*openai.TokenResponse, error) {
+func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
 	client := createOpenAIReqClient(proxyURL)
 
 	if redirectURI == "" {
 		redirectURI = openai.DefaultRedirectURI
 	}
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		clientID = openai.ClientID
+	}
 
 	formData := url.Values{}
 	formData.Set("grant_type", "authorization_code")
-	formData.Set("client_id", openai.ClientID)
+	formData.Set("client_id", clientID)
 	formData.Set("code", code)
 	formData.Set("redirect_uri", redirectURI)
 	formData.Set("code_verifier", codeVerifier)

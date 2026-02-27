@@ -47,7 +47,12 @@ func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 		req = OpenAIGenerateAuthURLRequest{}
 	}
 
-	result, err := h.openaiOAuthService.GenerateAuthURL(c.Request.Context(), req.ProxyID, req.RedirectURI)
+	result, err := h.openaiOAuthService.GenerateAuthURL(
+		c.Request.Context(),
+		req.ProxyID,
+		req.RedirectURI,
+		oauthPlatformFromPath(c),
+	)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
