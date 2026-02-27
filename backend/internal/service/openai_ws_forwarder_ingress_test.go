@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -459,7 +460,7 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 		require.Equal(t, "non_input_changed", reason)
 	})
 
-	t.Run("input_not_prefix_extended", func(t *testing.T) {
+	t.Run("delta_input_keeps_previous_response_id", func(t *testing.T) {
 		payload := []byte(`{
 			"type":"response.create",
 			"model":"gpt-5.1",
@@ -470,8 +471,8 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 		}`)
 		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false)
 		require.NoError(t, err)
-		require.False(t, keep)
-		require.Equal(t, "input_not_prefix_extended", reason)
+		require.True(t, keep)
+		require.Equal(t, "strict_incremental_ok", reason)
 	})
 
 	t.Run("function_call_output_keeps_previous_response_id", func(t *testing.T) {
@@ -501,4 +502,67 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 		require.False(t, keep)
 		require.Equal(t, "non_input_compare_error", reason)
 	})
+}
+
+func TestBuildOpenAIWSReplayInputSequence(t *testing.T) {
+	t.Parallel()
+
+	lastFull := []json.RawMessage{
+		json.RawMessage(`{"type":"input_text","text":"hello"}`),
+	}
+
+	t.Run("no_previous_response_id_use_current", func(t *testing.T) {
+		items, exists, err := buildOpenAIWSReplayInputSequence(
+			lastFull,
+			true,
+			[]byte(`{"input":[{"type":"input_text","text":"new"}]}`),
+			false,
+		)
+		require.NoError(t, err)
+		require.True(t, exists)
+		require.Len(t, items, 1)
+		require.Equal(t, "new", gjson.GetBytes(items[0], "text").String())
+	})
+
+	t.Run("previous_response_id_delta_append", func(t *testing.T) {
+		items, exists, err := buildOpenAIWSReplayInputSequence(
+			lastFull,
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"world"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.True(t, exists)
+		require.Len(t, items, 2)
+		require.Equal(t, "hello", gjson.GetBytes(items[0], "text").String())
+		require.Equal(t, "world", gjson.GetBytes(items[1], "text").String())
+	})
+
+	t.Run("previous_response_id_full_input_replace", func(t *testing.T) {
+		items, exists, err := buildOpenAIWSReplayInputSequence(
+			lastFull,
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"hello"},{"type":"input_text","text":"world"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.True(t, exists)
+		require.Len(t, items, 2)
+		require.Equal(t, "hello", gjson.GetBytes(items[0], "text").String())
+		require.Equal(t, "world", gjson.GetBytes(items[1], "text").String())
+	})
+}
+
+func TestSetOpenAIWSPayloadInputSequence(t *testing.T) {
+	t.Parallel()
+
+	original := []byte(`{"type":"response.create","previous_response_id":"resp_1"}`)
+	items := []json.RawMessage{
+		json.RawMessage(`{"type":"input_text","text":"hello"}`),
+		json.RawMessage(`{"type":"input_text","text":"world"}`),
+	}
+	updated, err := setOpenAIWSPayloadInputSequence(original, items, true)
+	require.NoError(t, err)
+	require.Equal(t, "hello", gjson.GetBytes(updated, "input.0.text").String())
+	require.Equal(t, "world", gjson.GetBytes(updated, "input.1.text").String())
 }

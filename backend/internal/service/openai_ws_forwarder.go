@@ -1374,6 +1374,17 @@ func cloneOpenAIWSPayloadBytes(payload []byte) []byte {
 	return cloned
 }
 
+func cloneOpenAIWSRawMessages(items []json.RawMessage) []json.RawMessage {
+	if len(items) == 0 {
+		return nil
+	}
+	cloned := make([]json.RawMessage, 0, len(items))
+	for idx := range items {
+		cloned = append(cloned, json.RawMessage(cloneOpenAIWSPayloadBytes(items[idx])))
+	}
+	return cloned
+}
+
 func normalizeOpenAIWSJSONForCompare(raw []byte) ([]byte, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
@@ -1465,6 +1476,66 @@ func openAIWSInputIsPrefixExtended(previousPayload, currentPayload []byte) (bool
 	return true, nil
 }
 
+func openAIWSRawItemsHasPrefix(items []json.RawMessage, prefix []json.RawMessage) bool {
+	if len(prefix) == 0 {
+		return true
+	}
+	if len(items) < len(prefix) {
+		return false
+	}
+	for idx := range prefix {
+		previousNormalized := normalizeOpenAIWSJSONForCompareOrRaw(prefix[idx])
+		currentNormalized := normalizeOpenAIWSJSONForCompareOrRaw(items[idx])
+		if !bytes.Equal(previousNormalized, currentNormalized) {
+			return false
+		}
+	}
+	return true
+}
+
+func buildOpenAIWSReplayInputSequence(
+	previousFullInput []json.RawMessage,
+	previousFullInputExists bool,
+	currentPayload []byte,
+	hasPreviousResponseID bool,
+) ([]json.RawMessage, bool, error) {
+	currentItems, currentExists, currentErr := openAIWSExtractNormalizedInputSequence(currentPayload)
+	if currentErr != nil {
+		return nil, false, currentErr
+	}
+	if !hasPreviousResponseID {
+		return cloneOpenAIWSRawMessages(currentItems), currentExists, nil
+	}
+	if !previousFullInputExists {
+		return cloneOpenAIWSRawMessages(currentItems), currentExists, nil
+	}
+	if !currentExists || len(currentItems) == 0 {
+		return cloneOpenAIWSRawMessages(previousFullInput), true, nil
+	}
+	if openAIWSRawItemsHasPrefix(currentItems, previousFullInput) {
+		return cloneOpenAIWSRawMessages(currentItems), true, nil
+	}
+	merged := make([]json.RawMessage, 0, len(previousFullInput)+len(currentItems))
+	merged = append(merged, cloneOpenAIWSRawMessages(previousFullInput)...)
+	merged = append(merged, cloneOpenAIWSRawMessages(currentItems)...)
+	return merged, true, nil
+}
+
+func setOpenAIWSPayloadInputSequence(
+	payload []byte,
+	fullInput []json.RawMessage,
+	fullInputExists bool,
+) ([]byte, error) {
+	if !fullInputExists {
+		return payload, nil
+	}
+	inputRaw, marshalErr := json.Marshal(fullInput)
+	if marshalErr != nil {
+		return nil, marshalErr
+	}
+	return sjson.SetRawBytes(payload, "input", inputRaw)
+}
+
 func shouldKeepIngressPreviousResponseID(
 	previousPayload []byte,
 	currentPayload []byte,
@@ -1500,21 +1571,11 @@ func shouldKeepIngressPreviousResponseID(
 	if !bytes.Equal(previousComparable, currentComparable) {
 		return false, "non_input_changed", nil
 	}
-
-	prefixExtended, prefixErr := openAIWSInputIsPrefixExtended(previousPayload, currentPayload)
-	if prefixErr != nil {
-		return false, "input_compare_error", prefixErr
-	}
-	if !prefixExtended {
-		return false, "input_not_prefix_extended", nil
-	}
 	return true, "strict_incremental_ok", nil
 }
 
 type openAIWSIngressPreviousTurnStrictState struct {
-	nonInputComparable  []byte
-	normalizedInput     [][]byte
-	normalizedInputSeen bool
+	nonInputComparable []byte
 }
 
 func buildOpenAIWSIngressPreviousTurnStrictState(payload []byte) (*openAIWSIngressPreviousTurnStrictState, error) {
@@ -1525,19 +1586,8 @@ func buildOpenAIWSIngressPreviousTurnStrictState(payload []byte) (*openAIWSIngre
 	if nonInputErr != nil {
 		return nil, nonInputErr
 	}
-	inputItems, inputExists, inputErr := openAIWSExtractNormalizedInputSequence(payload)
-	if inputErr != nil {
-		return nil, inputErr
-	}
-	normalizedInput := make([][]byte, 0, len(inputItems))
-	for idx := range inputItems {
-		normalized := normalizeOpenAIWSJSONForCompareOrRaw(inputItems[idx])
-		normalizedInput = append(normalizedInput, cloneOpenAIWSPayloadBytes(normalized))
-	}
 	return &openAIWSIngressPreviousTurnStrictState{
-		nonInputComparable:  nonInputComparable,
-		normalizedInput:     normalizedInput,
-		normalizedInputSeen: inputExists,
+		nonInputComparable: nonInputComparable,
 	}, nil
 }
 
@@ -1571,35 +1621,6 @@ func shouldKeepIngressPreviousResponseIDWithStrictState(
 	}
 	if !bytes.Equal(previousState.nonInputComparable, currentComparable) {
 		return false, "non_input_changed", nil
-	}
-
-	currentItems, currentExists, currentItemsErr := openAIWSExtractNormalizedInputSequence(currentPayload)
-	if currentItemsErr != nil {
-		return false, "input_compare_error", currentItemsErr
-	}
-	if !previousState.normalizedInputSeen && !currentExists {
-		return true, "strict_incremental_ok", nil
-	}
-	if !previousState.normalizedInputSeen {
-		if len(currentItems) == 0 {
-			return true, "strict_incremental_ok", nil
-		}
-		return false, "input_not_prefix_extended", nil
-	}
-	if !currentExists {
-		if len(previousState.normalizedInput) == 0 {
-			return true, "strict_incremental_ok", nil
-		}
-		return false, "input_not_prefix_extended", nil
-	}
-	if len(currentItems) < len(previousState.normalizedInput) {
-		return false, "input_not_prefix_extended", nil
-	}
-	for idx := range previousState.normalizedInput {
-		currentNormalized := normalizeOpenAIWSJSONForCompareOrRaw(currentItems[idx])
-		if !bytes.Equal(previousState.normalizedInput[idx], currentNormalized) {
-			return false, "input_not_prefix_extended", nil
-		}
 	}
 	return true, "strict_incremental_ok", nil
 }
@@ -2882,6 +2903,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	lastTurnResponseID := ""
 	lastTurnPayload := []byte(nil)
 	var lastTurnStrictState *openAIWSIngressPreviousTurnStrictState
+	lastTurnReplayInput := []json.RawMessage(nil)
+	lastTurnReplayInputExists := false
+	currentTurnReplayInput := []json.RawMessage(nil)
+	currentTurnReplayInputExists := false
 	skipBeforeTurn := false
 	resetSessionLease := func(markBroken bool) {
 		if sessionLease == nil {
@@ -2929,14 +2954,29 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 			return false
 		}
+		updatedWithInput, setInputErr := setOpenAIWSPayloadInputSequence(
+			updatedPayload,
+			currentTurnReplayInput,
+			currentTurnReplayInputExists,
+		)
+		if setInputErr != nil {
+			logOpenAIWSModeInfo(
+				"ingress_ws_prev_response_recovery_skip account_id=%d turn=%d conn_id=%s reason=set_full_input_error cause=%s",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(setInputErr.Error(), openAIWSLogValueMaxLen),
+			)
+			return false
+		}
 		logOpenAIWSModeInfo(
 			"ingress_ws_prev_response_recovery account_id=%d turn=%d conn_id=%s action=drop_previous_response_id retry=1",
 			account.ID,
 			turn,
 			truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
 		)
-		currentPayload = updatedPayload
-		currentPayloadBytes = len(updatedPayload)
+		currentPayload = updatedWithInput
+		currentPayloadBytes = len(updatedWithInput)
 		resetSessionLease(true)
 		skipBeforeTurn = true
 		return true
@@ -2977,6 +3017,26 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentPreviousResponseID := openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id")
 		expectedPrev := strings.TrimSpace(lastTurnResponseID)
 		hasFunctionCallOutput := gjson.GetBytes(currentPayload, `input.#(type=="function_call_output")`).Exists()
+		nextReplayInput, nextReplayInputExists, replayInputErr := buildOpenAIWSReplayInputSequence(
+			lastTurnReplayInput,
+			lastTurnReplayInputExists,
+			currentPayload,
+			currentPreviousResponseID != "",
+		)
+		if replayInputErr != nil {
+			logOpenAIWSModeInfo(
+				"ingress_ws_replay_input_skip account_id=%d turn=%d conn_id=%s reason=build_error cause=%s",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(replayInputErr.Error(), openAIWSLogValueMaxLen),
+			)
+			currentTurnReplayInput = nil
+			currentTurnReplayInputExists = false
+		} else {
+			currentTurnReplayInput = nextReplayInput
+			currentTurnReplayInputExists = nextReplayInputExists
+		}
 		if storeDisabled && turn > 1 && currentPreviousResponseID != "" {
 			shouldKeepPreviousResponseID := false
 			strictReason := ""
@@ -3027,19 +3087,38 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						hasFunctionCallOutput,
 					)
 				} else {
-					currentPayload = updatedPayload
-					currentPayloadBytes = len(updatedPayload)
-					logOpenAIWSModeInfo(
-						"ingress_ws_prev_response_strict_eval account_id=%d turn=%d conn_id=%s action=drop_previous_response_id_full_create reason=%s previous_response_id=%s expected_previous_response_id=%s has_function_call_output=%v",
-						account.ID,
-						turn,
-						truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
-						normalizeOpenAIWSLogValue(strictReason),
-						truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
-						truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
-						hasFunctionCallOutput,
+					updatedWithInput, setInputErr := setOpenAIWSPayloadInputSequence(
+						updatedPayload,
+						currentTurnReplayInput,
+						currentTurnReplayInputExists,
 					)
-					currentPreviousResponseID = ""
+					if setInputErr != nil {
+						logOpenAIWSModeInfo(
+							"ingress_ws_prev_response_strict_eval account_id=%d turn=%d conn_id=%s action=keep_previous_response_id reason=%s drop_reason=set_full_input_error previous_response_id=%s expected_previous_response_id=%s cause=%s has_function_call_output=%v",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+							normalizeOpenAIWSLogValue(strictReason),
+							truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+							truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+							truncateOpenAIWSLogValue(setInputErr.Error(), openAIWSLogValueMaxLen),
+							hasFunctionCallOutput,
+						)
+					} else {
+						currentPayload = updatedWithInput
+						currentPayloadBytes = len(updatedWithInput)
+						logOpenAIWSModeInfo(
+							"ingress_ws_prev_response_strict_eval account_id=%d turn=%d conn_id=%s action=drop_previous_response_id_full_create reason=%s previous_response_id=%s expected_previous_response_id=%s has_function_call_output=%v",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+							normalizeOpenAIWSLogValue(strictReason),
+							truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+							truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+							hasFunctionCallOutput,
+						)
+						currentPreviousResponseID = ""
+					}
 				}
 			}
 		}
@@ -3146,6 +3225,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		responseID := strings.TrimSpace(result.RequestID)
 		lastTurnResponseID = responseID
 		lastTurnPayload = cloneOpenAIWSPayloadBytes(currentPayload)
+		lastTurnReplayInput = cloneOpenAIWSRawMessages(currentTurnReplayInput)
+		lastTurnReplayInputExists = currentTurnReplayInputExists
 		nextStrictState, strictStateErr := buildOpenAIWSIngressPreviousTurnStrictState(currentPayload)
 		if strictStateErr != nil {
 			lastTurnStrictState = nil
