@@ -2305,9 +2305,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
+	modeRouterV2Enabled := s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
+	ingressMode := OpenAIWSIngressModeShared
+	if modeRouterV2Enabled {
+		ingressMode = account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
+		if ingressMode == OpenAIWSIngressModeOff {
+			return NewOpenAIWSClientCloseError(
+				coderws.StatusPolicyViolation,
+				"websocket mode is disabled for this account",
+				nil,
+			)
+		}
+	}
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
 	}
+	dedicatedMode := modeRouterV2Enabled && ingressMode == OpenAIWSIngressModeDedicated
 
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 	if err != nil {
@@ -2488,12 +2501,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	logOpenAIWSModeInfo(
-		"ingress_ws_protocol_confirm account_id=%d account_type=%s transport=%s ws_host=%s ws_path=%s store_disabled=%v has_session_hash=%v has_previous_response_id=%v",
+		"ingress_ws_protocol_confirm account_id=%d account_type=%s transport=%s ws_host=%s ws_path=%s ws_mode=%s store_disabled=%v has_session_hash=%v has_previous_response_id=%v",
 		account.ID,
 		account.Type,
 		normalizeOpenAIWSLogValue(string(wsDecision.Transport)),
 		wsHost,
 		wsPath,
+		normalizeOpenAIWSLogValue(ingressMode),
 		storeDisabled,
 		sessionHash != "",
 		firstPayload.previousResponseID != "",
@@ -2540,6 +2554,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
 		req.PreferredConnID = strings.TrimSpace(preferred)
 		req.ForcePreferredConn = forcePreferredConn
+		// dedicated 模式下每次获取均新建连接，避免跨会话复用残留上下文。
+		req.ForceNewConn = dedicatedMode
 		acquireCtx, acquireCancel := context.WithTimeout(ctx, acquireTimeout)
 		lease, acquireErr := pool.Acquire(acquireCtx, req)
 		acquireCancel()
@@ -2888,6 +2904,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	releaseSessionLease := func() {
 		if sessionLease == nil {
 			return
+		}
+		if dedicatedMode {
+			// dedicated 会话结束后主动标记损坏，确保连接不会跨会话复用。
+			sessionLease.MarkBroken()
 		}
 		unpinSessionConn(sessionConnID)
 		sessionLease.Release()

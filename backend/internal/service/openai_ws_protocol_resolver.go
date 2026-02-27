@@ -64,6 +64,33 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	} else {
 		return openAIWSHTTPDecision("unknown_auth_type")
 	}
+	if wsCfg.ModeRouterV2Enabled {
+		mode := account.ResolveOpenAIResponsesWebSocketV2Mode(wsCfg.IngressModeDefault)
+		switch mode {
+		case OpenAIWSIngressModeOff:
+			return openAIWSHTTPDecision("account_mode_off")
+		case OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
+			// continue
+		default:
+			return openAIWSHTTPDecision("account_mode_off")
+		}
+		if account.Concurrency <= 0 {
+			return openAIWSHTTPDecision("account_concurrency_invalid")
+		}
+		if wsCfg.ResponsesWebsocketsV2 {
+			return OpenAIWSProtocolDecision{
+				Transport: OpenAIUpstreamTransportResponsesWebsocketV2,
+				Reason:    "ws_v2_mode_" + mode,
+			}
+		}
+		if wsCfg.ResponsesWebsockets {
+			return OpenAIWSProtocolDecision{
+				Transport: OpenAIUpstreamTransportResponsesWebsocket,
+				Reason:    "ws_v1_mode_" + mode,
+			}
+		}
+		return openAIWSHTTPDecision("feature_disabled")
+	}
 	if !account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return openAIWSHTTPDecision("account_disabled")
 	}

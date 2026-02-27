@@ -851,6 +851,103 @@ func (a *Account) IsOpenAIResponsesWebSocketV2Enabled() bool {
 	return false
 }
 
+const (
+	OpenAIWSIngressModeOff       = "off"
+	OpenAIWSIngressModeShared    = "shared"
+	OpenAIWSIngressModeDedicated = "dedicated"
+)
+
+func normalizeOpenAIWSIngressMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case OpenAIWSIngressModeOff:
+		return OpenAIWSIngressModeOff
+	case OpenAIWSIngressModeShared:
+		return OpenAIWSIngressModeShared
+	case OpenAIWSIngressModeDedicated:
+		return OpenAIWSIngressModeDedicated
+	default:
+		return ""
+	}
+}
+
+func normalizeOpenAIWSIngressDefaultMode(mode string) string {
+	if normalized := normalizeOpenAIWSIngressMode(mode); normalized != "" {
+		return normalized
+	}
+	return OpenAIWSIngressModeShared
+}
+
+// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/shared/dedicated）。
+//
+// 优先级：
+// 1. 分类型 mode 新字段（string）
+// 2. 分类型 enabled 旧字段（bool）
+// 3. 兼容 enabled 旧字段（bool）
+// 4. defaultMode（非法时回退 shared）
+func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
+	resolvedDefault := normalizeOpenAIWSIngressDefaultMode(defaultMode)
+	if a == nil || !a.IsOpenAI() {
+		return OpenAIWSIngressModeOff
+	}
+	if a.Extra == nil {
+		return resolvedDefault
+	}
+
+	resolveModeString := func(key string) (string, bool) {
+		raw, ok := a.Extra[key]
+		if !ok {
+			return "", false
+		}
+		mode, ok := raw.(string)
+		if !ok {
+			return "", false
+		}
+		normalized := normalizeOpenAIWSIngressMode(mode)
+		if normalized == "" {
+			return "", false
+		}
+		return normalized, true
+	}
+	resolveBoolMode := func(key string) (string, bool) {
+		raw, ok := a.Extra[key]
+		if !ok {
+			return "", false
+		}
+		enabled, ok := raw.(bool)
+		if !ok {
+			return "", false
+		}
+		if enabled {
+			return OpenAIWSIngressModeShared, true
+		}
+		return OpenAIWSIngressModeOff, true
+	}
+
+	if a.IsOpenAIOAuth() {
+		if mode, ok := resolveModeString("openai_oauth_responses_websockets_v2_mode"); ok {
+			return mode
+		}
+		if mode, ok := resolveBoolMode("openai_oauth_responses_websockets_v2_enabled"); ok {
+			return mode
+		}
+	}
+	if a.IsOpenAIApiKey() {
+		if mode, ok := resolveModeString("openai_apikey_responses_websockets_v2_mode"); ok {
+			return mode
+		}
+		if mode, ok := resolveBoolMode("openai_apikey_responses_websockets_v2_enabled"); ok {
+			return mode
+		}
+	}
+	if mode, ok := resolveBoolMode("responses_websockets_v2_enabled"); ok {
+		return mode
+	}
+	if mode, ok := resolveBoolMode("openai_ws_enabled"); ok {
+		return mode
+	}
+	return resolvedDefault
+}
+
 // IsOpenAIWSForceHTTPEnabled 返回账号级“强制 HTTP”开关。
 // 字段：accounts.extra.openai_ws_force_http。
 func (a *Account) IsOpenAIWSForceHTTPEnabled() bool {
