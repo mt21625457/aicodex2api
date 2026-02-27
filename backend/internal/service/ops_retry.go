@@ -674,6 +674,7 @@ func newOpsRetryContext(ctx context.Context, errorLog *OpsErrorLogDetail) (*gin.
 	}
 
 	c.Request = req
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
 	return c, w
 }
 
