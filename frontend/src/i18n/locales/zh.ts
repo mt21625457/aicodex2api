@@ -3710,14 +3710,20 @@ export default {
       },
       purchase: {
         title: '购买订阅页面',
-        description: '在侧边栏展示“购买订阅”入口，并在页面内通过 iframe 打开指定链接',
+        description: '在侧边栏展示”购买订阅”入口，并在页面内通过 iframe 打开指定链接',
         enabled: '显示购买订阅入口',
         enabledHint: '仅在标准模式（非简单模式）下展示',
         url: '购买页面 URL',
         urlPlaceholder: 'https://example.com/purchase',
         urlHint: '必须是完整的 http(s) 链接',
         iframeWarning:
-          '⚠️ iframe 提示：部分网站会通过 X-Frame-Options 或 CSP（frame-ancestors）禁止被 iframe 嵌入，出现空白时可引导用户使用“新窗口打开”。'
+          '⚠️ iframe 提示：部分网站会通过 X-Frame-Options 或 CSP（frame-ancestors）禁止被 iframe 嵌入，出现空白时可引导用户使用”新窗口打开”。'
+      },
+      soraClient: {
+        title: 'Sora 客户端',
+        description: '控制是否在侧边栏展示 Sora 客户端入口',
+        enabled: '启用 Sora 客户端',
+        enabledHint: '开启后，侧边栏将显示 Sora 入口，用户可访问 Sora 功能'
       },
       smtp: {
         title: 'SMTP 设置',
@@ -3791,7 +3797,37 @@ export default {
       },
       soraS3: {
         title: 'Sora S3 存储配置',
-        description: '配置 S3 兼容存储，用于保存 Sora 生成的媒体文件',
+        description: '以多配置列表方式管理 Sora S3 端点，并可切换生效配置',
+        newProfile: '新建配置',
+        reloadProfiles: '刷新列表',
+        empty: '暂无 Sora S3 配置，请先创建',
+        createTitle: '新建 Sora S3 配置',
+        editTitle: '编辑 Sora S3 配置',
+        profileID: '配置 ID',
+        profileName: '配置名称',
+        setActive: '创建后设为生效',
+        saveProfile: '保存配置',
+        activateProfile: '设为生效',
+        profileCreated: 'Sora S3 配置创建成功',
+        profileSaved: 'Sora S3 配置保存成功',
+        profileDeleted: 'Sora S3 配置删除成功',
+        profileActivated: 'Sora S3 生效配置已切换',
+        profileIDRequired: '请填写配置 ID',
+        profileNameRequired: '请填写配置名称',
+        profileSelectRequired: '请先选择配置',
+        endpointRequired: '启用时必须填写 S3 端点',
+        bucketRequired: '启用时必须填写存储桶',
+        accessKeyRequired: '启用时必须填写 Access Key ID',
+        deleteConfirm: '确定删除 Sora S3 配置 {profileID} 吗？',
+        columns: {
+          profile: '配置',
+          active: '生效状态',
+          endpoint: '端点',
+          bucket: '存储桶',
+          quota: '默认配额',
+          updatedAt: '更新时间',
+          actions: '操作'
+        },
         enabled: '启用 S3 存储',
         enabledHint: '启用后，Sora 生成的媒体文件将自动上传到 S3 存储',
         endpoint: 'S3 端点',
@@ -4254,6 +4290,30 @@ export default {
     downloadNow: '立即下载',
     referenceImage: '参考图',
     removeImage: '移除',
-    imageTooLarge: '图片大小不能超过 20MB'
+    imageTooLarge: '图片大小不能超过 20MB',
+    // Sora 暗色主题新增
+    welcomeTitle: '将你的想象力变成视频',
+    welcomeSubtitle: '输入一段描述，Sora 将为你创作逼真的视频或图片。尝试以下示例开始创作。',
+    queueTasks: '个任务',
+    queueWaiting: '队列中等待',
+    waiting: '等待中',
+    waited: '已等待',
+    errorCategory: '内容策略限制',
+    savedToCloud: '已保存到云端',
+    downloadLocal: '本地下载',
+    canDownload: '可下载',
+    regenrate: '重新生成',
+    creatorPlaceholder: '描述你想要生成的视频或图片...',
+    videoModels: '视频模型',
+    imageModels: '图片模型',
+    noStorageConfigured: '存储未配置',
+    uploadReference: '上传参考图片',
+    generatingCount: '正在生成 {current}/{max}',
+    noStorageToastMessage: '管理员未开通云存储，生成完成后请使用"本地下载"保存文件，否则将会丢失。',
+    galleryCount: '共 {count} 个作品',
+    galleryEmptyTitle: '还没有任何作品',
+    galleryEmptyDesc: '你的创作成果将会展示在这里。前往生成页，开始你的第一次创作吧。',
+    startCreating: '开始创作',
+    yesterday: '昨天'
   }
 }
