@@ -104,6 +104,21 @@
               <span class="sora-tool-divider" />
             </template>
 
+            <!-- 视频数量（官方 Videos 1/2/3） -->
+            <template v-if="availableVideoCounts.length > 0">
+              <button
+                v-for="count in availableVideoCounts"
+                :key="count"
+                class="sora-tool-btn"
+                :class="{ active: currentVideoCount === count }"
+                @click="currentVideoCount = count"
+              >
+                {{ count }}
+              </button>
+
+              <span class="sora-tool-divider" />
+            </template>
+
             <!-- 图片上传 -->
             <button class="sora-upload-btn" :title="t('sora.uploadReference')" @click="triggerFileInput">
               📎
@@ -177,6 +192,7 @@ const families = ref<SoraModelFamily[]>([])
 const selectedFamily = ref('')
 const currentAspect = ref('landscape')
 const currentDuration = ref(10)
+const currentVideoCount = ref(1)
 const isFocused = ref(false)
 const imagePreview = ref<string | null>(null)
 const imageError = ref('')
@@ -210,6 +226,7 @@ const availableAspects = computed(() => {
 
 // 当前家族支持的时长列表
 const availableDurations = computed(() => currentFamily.value?.durations ?? [])
+const availableVideoCounts = computed(() => (currentFamily.value?.type === 'video' ? [1, 2, 3] : []))
 
 const isMaxReached = computed(() => props.activeTaskCount >= props.maxConcurrentTasks)
 const canSubmit = computed(() =>
@@ -242,6 +259,9 @@ function onFamilyChange() {
   // 若当前时长不在新家族支持列表中，重置为首个
   if (fam.durations?.length && !fam.durations.includes(currentDuration.value)) {
     currentDuration.value = fam.durations[0]
+  }
+  if (fam.type !== 'video') {
+    currentVideoCount.value = 1
   }
 }
 
@@ -331,6 +351,9 @@ function submit() {
     model: modelID,
     prompt: prompt.value.trim(),
     media_type: currentFamily.value?.type || 'video'
+  }
+  if ((currentFamily.value?.type || 'video') === 'video') {
+    req.video_count = currentVideoCount.value
   }
   if (imagePreview.value) {
     req.image_input = imagePreview.value

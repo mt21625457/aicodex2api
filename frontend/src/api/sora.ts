@@ -27,6 +27,7 @@ export interface SoraGeneration {
 export interface GenerateRequest {
   model: string
   prompt: string
+  video_count?: number
   media_type?: string
   image_input?: string
   api_key_id?: number

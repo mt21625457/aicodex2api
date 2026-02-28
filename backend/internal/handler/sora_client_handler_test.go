@@ -157,7 +157,7 @@ func parseResponse(t *testing.T, rec *httptest.ResponseRecorder) map[string]any 
 // ==================== 纯函数测试: buildAsyncRequestBody ====================
 
 func TestBuildAsyncRequestBody(t *testing.T) {
-	body := buildAsyncRequestBody("sora2-landscape-10s", "一只猫在跳舞", "")
+	body := buildAsyncRequestBody("sora2-landscape-10s", "一只猫在跳舞", "", 1)
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal(body, &parsed))
 	require.Equal(t, "sora2-landscape-10s", parsed["model"])
@@ -171,7 +171,7 @@ func TestBuildAsyncRequestBody(t *testing.T) {
 }
 
 func TestBuildAsyncRequestBody_EmptyPrompt(t *testing.T) {
-	body := buildAsyncRequestBody("gpt-image", "", "")
+	body := buildAsyncRequestBody("gpt-image", "", "", 1)
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal(body, &parsed))
 	require.Equal(t, "gpt-image", parsed["model"])
@@ -181,10 +181,24 @@ func TestBuildAsyncRequestBody_EmptyPrompt(t *testing.T) {
 }
 
 func TestBuildAsyncRequestBody_WithImageInput(t *testing.T) {
-	body := buildAsyncRequestBody("gpt-image", "一只猫", "https://example.com/ref.png")
+	body := buildAsyncRequestBody("gpt-image", "一只猫", "https://example.com/ref.png", 1)
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal(body, &parsed))
 	require.Equal(t, "https://example.com/ref.png", parsed["image_input"])
+}
+
+func TestBuildAsyncRequestBody_WithVideoCount(t *testing.T) {
+	body := buildAsyncRequestBody("sora2-landscape-10s", "一只猫在跳舞", "", 3)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	require.Equal(t, float64(3), parsed["video_count"])
+}
+
+func TestNormalizeVideoCount(t *testing.T) {
+	require.Equal(t, 1, normalizeVideoCount("video", 0))
+	require.Equal(t, 2, normalizeVideoCount("video", 2))
+	require.Equal(t, 3, normalizeVideoCount("video", 5))
+	require.Equal(t, 1, normalizeVideoCount("image", 3))
 }
 
 // ==================== 纯函数测试: parseMediaURLsFromBody ====================
@@ -1277,7 +1291,7 @@ func TestProcessGeneration_WithGroupID_NoForcePlatform(t *testing.T) {
 	h := &SoraClientHandler{genService: genService}
 
 	gid := int64(5)
-	h.processGeneration(1, 1, &gid, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, &gid, "sora2-landscape-10s", "test", "video", "", 1)
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "gatewayService")
 }
@@ -1289,7 +1303,7 @@ func TestProcessGeneration_NilGroupID_SetsForcePlatform(t *testing.T) {
 	genService := service.NewSoraGenerationService(repo, nil, nil)
 	h := &SoraClientHandler{genService: genService}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "gatewayService")
 }
@@ -1301,7 +1315,7 @@ func TestProcessGeneration_MarkGeneratingStateConflict(t *testing.T) {
 	genService := service.NewSoraGenerationService(repo, nil, nil)
 	h := &SoraClientHandler{genService: genService}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	// 状态为 cancelled 时 MarkGenerating 不符合状态转换规则 → 应保持 cancelled
 	require.Equal(t, "cancelled", repo.gens[1].Status)
 }
@@ -1340,6 +1354,7 @@ func TestGenerateRequest_FullFields_JSONParsing(t *testing.T) {
 		"model":"sora2-landscape-10s",
 		"prompt":"test prompt",
 		"media_type":"video",
+		"video_count":2,
 		"image_input":"data:image/png;base64,abc",
 		"api_key_id":100
 	}`), &req)
@@ -1347,6 +1362,7 @@ func TestGenerateRequest_FullFields_JSONParsing(t *testing.T) {
 	require.Equal(t, "sora2-landscape-10s", req.Model)
 	require.Equal(t, "test prompt", req.Prompt)
 	require.Equal(t, "video", req.MediaType)
+	require.Equal(t, 2, req.VideoCount)
 	require.Equal(t, "data:image/png;base64,abc", req.ImageInput)
 	require.NotNil(t, req.APIKeyID)
 	require.Equal(t, int64(100), *req.APIKeyID)
@@ -1584,7 +1600,7 @@ func TestProcessGeneration_MarkGeneratingFails(t *testing.T) {
 	h := &SoraClientHandler{genService: genService}
 
 	// 直接调用（非 goroutine），MarkGenerating 失败 → 早退
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	// MarkGenerating 在调用 repo.Update 前已修改内存对象为 "generating"
 	// repo.Update 返回错误 → processGeneration 早退，不会继续到 MarkFailed
 	// 因此 ErrorMessage 为空（证明未调用 MarkFailed）
@@ -1599,7 +1615,7 @@ func TestProcessGeneration_GatewayServiceNil(t *testing.T) {
 	h := &SoraClientHandler{genService: genService}
 	// gatewayService 未设置 → MarkFailed
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "gatewayService")
 }
@@ -2193,7 +2209,7 @@ func TestProcessGeneration_SelectAccountError(t *testing.T) {
 	gatewayService := newMinimalGatewayService(accountRepo)
 	h := &SoraClientHandler{genService: genService, gatewayService: gatewayService}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "选择账号失败")
 }
@@ -2212,7 +2228,7 @@ func TestProcessGeneration_SoraGatewayServiceNil(t *testing.T) {
 	// soraGatewayService 为 nil
 	h := &SoraClientHandler{genService: genService, gatewayService: gatewayService}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "soraGatewayService")
 }
@@ -2241,7 +2257,7 @@ func TestProcessGeneration_ForwardError(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "", 1)
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "生成失败")
 }
@@ -2270,7 +2286,7 @@ func TestProcessGeneration_ForwardErrorCancelled(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	// Forward 失败后检测到外部取消，不应调用 MarkFailed（状态保持 generating）
 	require.Equal(t, "generating", repo.gens[1].Status)
 }
@@ -2299,7 +2315,7 @@ func TestProcessGeneration_ForwardSuccessNoMediaURL(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "未获取到媒体 URL")
 }
@@ -2331,7 +2347,7 @@ func TestProcessGeneration_ForwardSuccessCancelledBeforeStore(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	// Forward 成功后检测到外部取消，不应调用存储和 MarkCompleted（状态保持 generating）
 	require.Equal(t, "generating", repo.gens[1].Status)
 }
@@ -2360,7 +2376,7 @@ func TestProcessGeneration_FullSuccessUpstream(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "", 1)
 	require.Equal(t, "completed", repo.gens[1].Status)
 	require.Equal(t, service.SoraStorageTypeUpstream, repo.gens[1].StorageType)
 	require.NotEmpty(t, repo.gens[1].MediaURL)
@@ -2404,7 +2420,7 @@ func TestProcessGeneration_FullSuccessWithS3(t *testing.T) {
 		quotaService:       quotaService,
 	}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "", 1)
 	require.Equal(t, "completed", repo.gens[1].Status)
 	require.Equal(t, service.SoraStorageTypeS3, repo.gens[1].StorageType)
 	require.NotEmpty(t, repo.gens[1].S3ObjectKeys)
@@ -2439,7 +2455,7 @@ func TestProcessGeneration_MarkCompletedFails(t *testing.T) {
 		soraGatewayService: soraGatewayService,
 	}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test prompt", "video", "", 1)
 	// MarkCompleted 内部先修改内存对象状态为 completed，然后 Update 失败。
 	// 由于 stub 存储的是指针，内存中的状态已被修改为 completed。
 	// 此测试验证 processGeneration 在 MarkCompleted 失败后提前返回（不调用 AddUsage）。
@@ -2816,7 +2832,7 @@ func TestProcessGeneration_NilGroupID_WithGateway_SelectAccountFails(t *testing.
 		gatewayService: gatewayService,
 	}
 
-	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "")
+	h.processGeneration(1, 1, nil, "sora2-landscape-10s", "test", "video", "", 1)
 	require.Equal(t, "failed", repo.gens[1].Status)
 	require.Contains(t, repo.gens[1].ErrorMessage, "选择账号失败")
 }

@@ -70,6 +70,7 @@ type GenerateRequest struct {
 	Model      string `json:"model" binding:"required"`
 	Prompt     string `json:"prompt" binding:"required"`
 	MediaType  string `json:"media_type"`            // video / image，默认 video
+	VideoCount int    `json:"video_count,omitempty"` // 视频数量（1-3）
 	ImageInput string `json:"image_input,omitempty"` // 参考图（base64 或 URL）
 	APIKeyID   *int64 `json:"api_key_id,omitempty"`  // 前端传递的 API Key ID
 }
@@ -92,6 +93,7 @@ func (h *SoraClientHandler) Generate(c *gin.Context) {
 	if req.MediaType == "" {
 		req.MediaType = "video"
 	}
+	req.VideoCount = normalizeVideoCount(req.MediaType, req.VideoCount)
 
 	// 并发数检查（最多 3 个）
 	activeCount, err := h.genService.CountActiveByUser(c.Request.Context(), userID)
@@ -156,7 +158,7 @@ func (h *SoraClientHandler) Generate(c *gin.Context) {
 	}
 
 	// 启动后台异步生成 goroutine
-	go h.processGeneration(gen.ID, userID, groupID, req.Model, req.Prompt, req.MediaType, req.ImageInput)
+	go h.processGeneration(gen.ID, userID, groupID, req.Model, req.Prompt, req.MediaType, req.ImageInput, req.VideoCount)
 
 	response.Success(c, gin.H{
 		"generation_id": gen.ID,
@@ -166,7 +168,7 @@ func (h *SoraClientHandler) Generate(c *gin.Context) {
 
 // processGeneration 后台异步执行 Sora 生成任务。
 // 流程：选择账号 → Forward → 提取媒体 URL → 三层降级存储（S3 → 本地 → 上游）→ 更新记录。
-func (h *SoraClientHandler) processGeneration(genID int64, userID int64, groupID *int64, model, prompt, mediaType, imageInput string) {
+func (h *SoraClientHandler) processGeneration(genID int64, userID int64, groupID *int64, model, prompt, mediaType, imageInput string, videoCount int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -179,6 +181,19 @@ func (h *SoraClientHandler) processGeneration(genID int64, userID int64, groupID
 		logger.LegacyPrintf("handler.sora_client", "[SoraClient] 标记生成中失败 id=%d err=%v", genID, err)
 		return
 	}
+
+	logger.LegacyPrintf(
+		"handler.sora_client",
+		"[SoraClient] 开始生成 id=%d user=%d group=%d model=%s media_type=%s video_count=%d has_image=%v prompt_len=%d",
+		genID,
+		userID,
+		groupIDForLog(groupID),
+		model,
+		mediaType,
+		videoCount,
+		strings.TrimSpace(imageInput) != "",
+		len(strings.TrimSpace(prompt)),
+	)
 
 	// 有 groupID 时由分组决定平台，无 groupID 时用 ForcePlatform 兜底
 	if groupID == nil {
@@ -193,12 +208,33 @@ func (h *SoraClientHandler) processGeneration(genID int64, userID int64, groupID
 	// 选择 Sora 账号
 	account, err := h.gatewayService.SelectAccountForModel(ctx, groupID, "", model)
 	if err != nil {
+		logger.LegacyPrintf(
+			"handler.sora_client",
+			"[SoraClient] 选择账号失败 id=%d user=%d group=%d model=%s err=%v",
+			genID,
+			userID,
+			groupIDForLog(groupID),
+			model,
+			err,
+		)
 		_ = h.genService.MarkFailed(ctx, genID, "选择账号失败: "+err.Error())
 		return
 	}
+	logger.LegacyPrintf(
+		"handler.sora_client",
+		"[SoraClient] 选中账号 id=%d user=%d group=%d model=%s account_id=%d account_name=%s platform=%s type=%s",
+		genID,
+		userID,
+		groupIDForLog(groupID),
+		model,
+		account.ID,
+		account.Name,
+		account.Platform,
+		account.Type,
+	)
 
 	// 构建 chat completions 请求体（非流式）
-	body := buildAsyncRequestBody(model, prompt, imageInput)
+	body := buildAsyncRequestBody(model, prompt, imageInput, normalizeVideoCount(mediaType, videoCount))
 
 	if h.soraGatewayService == nil {
 		_ = h.genService.MarkFailed(ctx, genID, "内部错误: soraGatewayService 未初始化")
@@ -213,6 +249,16 @@ func (h *SoraClientHandler) processGeneration(genID int64, userID int64, groupID
 	// 调用 Forward（非流式）
 	result, err := h.soraGatewayService.Forward(ctx, mockGinCtx, account, body, false)
 	if err != nil {
+		logger.LegacyPrintf(
+			"handler.sora_client",
+			"[SoraClient] Forward失败 id=%d account_id=%d model=%s status=%d body=%s err=%v",
+			genID,
+			account.ID,
+			model,
+			recorder.Code,
+			trimForLog(recorder.Body.String(), 400),
+			err,
+		)
 		// 检查是否已取消
 		gen, _ := h.genService.GetByID(ctx, genID, userID)
 		if gen != nil && gen.Status == service.SoraGenStatusCancelled {
@@ -225,6 +271,15 @@ func (h *SoraClientHandler) processGeneration(genID int64, userID int64, groupID
 	// 提取媒体 URL（优先从 ForwardResult，其次从响应体解析）
 	mediaURL, mediaURLs := extractMediaURLsFromResult(result, recorder)
 	if mediaURL == "" {
+		logger.LegacyPrintf(
+			"handler.sora_client",
+			"[SoraClient] 未提取到媒体URL id=%d account_id=%d model=%s status=%d body=%s",
+			genID,
+			account.ID,
+			model,
+			recorder.Code,
+			trimForLog(recorder.Body.String(), 400),
+		)
 		_ = h.genService.MarkFailed(ctx, genID, "未获取到媒体 URL")
 		return
 	}
@@ -347,7 +402,7 @@ func (h *SoraClientHandler) storeMediaWithDegradation(
 }
 
 // buildAsyncRequestBody 构建 Sora 异步生成的 chat completions 请求体。
-func buildAsyncRequestBody(model, prompt, imageInput string) []byte {
+func buildAsyncRequestBody(model, prompt, imageInput string, videoCount int) []byte {
 	body := map[string]any{
 		"model": model,
 		"messages": []map[string]string{
@@ -358,8 +413,24 @@ func buildAsyncRequestBody(model, prompt, imageInput string) []byte {
 	if imageInput != "" {
 		body["image_input"] = imageInput
 	}
+	if videoCount > 1 {
+		body["video_count"] = videoCount
+	}
 	b, _ := json.Marshal(body)
 	return b
+}
+
+func normalizeVideoCount(mediaType string, videoCount int) int {
+	if mediaType != "video" {
+		return 1
+	}
+	if videoCount <= 0 {
+		return 1
+	}
+	if videoCount > 3 {
+		return 3
+	}
+	return videoCount
 }
 
 // extractMediaURLsFromResult 从 Forward 结果和响应体中提取媒体 URL。
@@ -747,6 +818,21 @@ func getUserIDFromContext(c *gin.Context) int64 {
 		}
 	}
 	return 0
+}
+
+func groupIDForLog(groupID *int64) int64 {
+	if groupID == nil {
+		return 0
+	}
+	return *groupID
+}
+
+func trimForLog(raw string, maxLen int) string {
+	trimmed := strings.TrimSpace(raw)
+	if maxLen <= 0 || len(trimmed) <= maxLen {
+		return trimmed
+	}
+	return trimmed[:maxLen] + "...(truncated)"
 }
 
 // GetModels 获取可用 Sora 模型家族列表。

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
 // RateLimitService 处理限流和过载状态管理
@@ -166,6 +167,17 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		if upstreamMsg != "" {
 			msg = "Access forbidden (403): " + upstreamMsg
 		}
+		logger.LegacyPrintf(
+			"service.ratelimit",
+			"[HandleUpstreamErrorRaw] account_id=%d platform=%s type=%s status=403 request_id=%s cf_ray=%s upstream_msg=%s raw_body=%s",
+			account.ID,
+			account.Platform,
+			account.Type,
+			strings.TrimSpace(headers.Get("x-request-id")),
+			strings.TrimSpace(headers.Get("cf-ray")),
+			upstreamMsg,
+			truncateForLog(responseBody, 1024),
+		)
 		s.handleAuthError(ctx, account, msg)
 		shouldDisable = true
 	case 429:
