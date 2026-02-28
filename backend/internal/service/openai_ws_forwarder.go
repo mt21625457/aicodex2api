@@ -56,6 +56,7 @@ const (
 	openAIWSStoreDisabledConnModeOff      = "off"
 
 	openAIWSIngressStagePreviousResponseNotFound = "previous_response_not_found"
+	openAIWSIngressStageToolOutputNotFound       = "tool_output_not_found"
 	openAIWSMaxPrevResponseIDDeletePasses        = 8
 	openAIWSContinuationUnavailableReason        = "upstream continuation connection is unavailable; please restart the conversation"
 )
@@ -189,6 +190,17 @@ func isOpenAIWSIngressPreviousResponseNotFound(err error) bool {
 		return false
 	}
 	if strings.TrimSpace(turnErr.stage) != openAIWSIngressStagePreviousResponseNotFound {
+		return false
+	}
+	return !turnErr.wroteDownstream
+}
+
+func isOpenAIWSIngressToolOutputNotFound(err error) bool {
+	var turnErr *openAIWSIngressTurnError
+	if !errors.As(err, &turnErr) || turnErr == nil {
+		return false
+	}
+	if strings.TrimSpace(turnErr.stage) != openAIWSIngressStageToolOutputNotFound {
 		return false
 	}
 	return !turnErr.wroteDownstream
@@ -2937,7 +2949,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					recoveryEnabled &&
 					(turnPreviousResponseID != "" || (turnHasFunctionCallOutput && turnExpectedPreviousResponseID != "")) &&
 					!wroteDownstream
-				if recoverablePrevNotFound {
+				// tool_output_not_found: previous_response_id 指向的 response 包含未完成的 function_call
+				// （用户在 Codex CLI 按 ESC 取消后重新发送消息），需要移除 previous_response_id 后重放。
+				recoverableToolOutputNotFound := fallbackReason == openAIWSIngressStageToolOutputNotFound &&
+					recoveryEnabled &&
+					turnPreviousResponseID != "" &&
+					!wroteDownstream
+				recoverableContextMismatch := recoverablePrevNotFound || recoverableToolOutputNotFound
+				if recoverableContextMismatch {
 					// 可恢复场景使用非 error 关键字日志，避免被 LegacyPrintf 误判为 ERROR 级别。
 					logOpenAIWSModeInfo(
 						"ingress_ws_prev_response_recoverable account_id=%d turn=%d conn_id=%s idx=%d reason=%s code=%s type=%s message=%s previous_response_id=%s previous_response_id_kind=%s response_id=%s ws_mode=%s ctx_pool_mode=%v store_disabled=%v has_prompt_cache_key=%v has_function_call_output=%v recovery_enabled=%v wrote_downstream=%v",
@@ -2983,16 +3002,20 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						wroteDownstream,
 					)
 				}
-				// previous_response_not_found 在 ingress 模式支持单次恢复重试：
+				// previous_response_not_found / tool_output_not_found 在 ingress 模式支持单次恢复重试：
 				// 不把该 error 直接下发客户端，而是由上层去掉 previous_response_id 后重放当前 turn。
-				if recoverablePrevNotFound {
+				if recoverableContextMismatch {
 					lease.MarkBroken()
 					errMsg := strings.TrimSpace(errMsgRaw)
 					if errMsg == "" {
-						errMsg = "previous response not found"
+						if fallbackReason == openAIWSIngressStageToolOutputNotFound {
+							errMsg = "no tool output found for function call"
+						} else {
+							errMsg = "previous response not found"
+						}
 					}
 					return nil, wrapOpenAIWSIngressTurnError(
-						openAIWSIngressStagePreviousResponseNotFound,
+						fallbackReason,
 						errors.New(errMsg),
 						false,
 					)
@@ -3169,6 +3192,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	strictAffinityBypassOnce := false
 	lastTurnFinishedAt := time.Time{}
 	lastTurnResponseID := sessionLastResponseID
+	clearSessionLastResponseID := func() {
+		lastTurnResponseID = ""
+		if stateStore == nil || sessionHash == "" {
+			return
+		}
+		stateStore.DeleteSessionLastResponseID(groupID, sessionHash)
+		if ctxPoolMode && legacySessionHash != "" && legacySessionHash != sessionHash {
+			stateStore.DeleteSessionLastResponseID(groupID, legacySessionHash)
+		}
+	}
 	lastTurnPayload := []byte(nil)
 	var lastTurnStrictState *openAIWSIngressPreviousTurnStrictState
 	lastTurnReplayInput := []json.RawMessage(nil)
@@ -3189,13 +3222,64 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		preferredConnID = ""
 	}
 	recoverIngressPrevResponseNotFound := func(relayErr error, turn int, connID string) bool {
-		if !isOpenAIWSIngressPreviousResponseNotFound(relayErr) {
+		isPrevNotFound := isOpenAIWSIngressPreviousResponseNotFound(relayErr)
+		isToolOutputMissing := isOpenAIWSIngressToolOutputNotFound(relayErr)
+		if !isPrevNotFound && !isToolOutputMissing {
 			return false
 		}
 		if turnPrevRecoveryTried || !s.openAIWSIngressPreviousResponseRecoveryEnabled() {
 			return false
 		}
 		currentPreviousResponseID := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id"))
+		// tool_output_not_found: previous_response_id 指向的 response 包含未完成的 function_call
+		// （用户在 Codex CLI 按 ESC 取消了 function_call 后重新发送消息）。
+		// 对齐/保持 previous_response_id 无法解决问题，直接跳到 drop 分支移除后重放。
+		if isToolOutputMissing {
+			logOpenAIWSModeInfo(
+				"ingress_ws_tool_output_not_found_recovery account_id=%d turn=%d conn_id=%s action=drop_previous_response_id_retry previous_response_id=%s",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+			)
+			turnPrevRecoveryTried = true
+			updatedPayload, removed, dropErr := dropPreviousResponseIDFromRawPayload(currentPayload)
+			if dropErr != nil || !removed {
+				reason := "not_removed"
+				if dropErr != nil {
+					reason = "drop_error"
+				}
+				logOpenAIWSModeInfo(
+					"ingress_ws_tool_output_not_found_recovery_skip account_id=%d turn=%d conn_id=%s reason=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+					normalizeOpenAIWSLogValue(reason),
+				)
+				return false
+			}
+			updatedWithInput, setInputErr := setOpenAIWSPayloadInputSequence(
+				updatedPayload,
+				currentTurnReplayInput,
+				currentTurnReplayInputExists,
+			)
+			if setInputErr != nil {
+				logOpenAIWSModeInfo(
+					"ingress_ws_tool_output_not_found_recovery_skip account_id=%d turn=%d conn_id=%s reason=set_full_input_error cause=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(setInputErr.Error(), openAIWSLogValueMaxLen),
+				)
+				return false
+			}
+			currentPayload = updatedWithInput
+			currentPayloadBytes = len(updatedWithInput)
+			clearSessionLastResponseID()
+			resetSessionLease(true)
+			skipBeforeTurn = true
+			return true
+		}
 		hasFunctionCallOutput := gjson.GetBytes(currentPayload, `input.#(type=="function_call_output")`).Exists()
 		if hasFunctionCallOutput {
 			turnPrevRecoveryTried = true
@@ -3516,14 +3600,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
 				truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
 			)
-			lastTurnResponseID = ""
+			clearSessionLastResponseID()
 			expectedPrev = ""
-			if stateStore != nil && sessionHash != "" {
-				stateStore.DeleteSessionLastResponseID(groupID, sessionHash)
-				if ctxPoolMode && legacySessionHash != "" && legacySessionHash != sessionHash {
-					stateStore.DeleteSessionLastResponseID(groupID, legacySessionHash)
-				}
-			}
 		}
 		// store=false + function_call_output 场景必须有续链锚点。
 		// 若客户端未传 previous_response_id，优先回填上一轮响应 ID，避免上游报 call_id 无法关联。
@@ -3974,7 +4052,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if hooks != nil && hooks.AfterTurn != nil {
 				hooks.AfterTurn(turn, nil, finalErr)
 			}
-			if isOpenAIWSIngressUpstreamErrorEvent(relayErr) || isOpenAIWSIngressPreviousResponseNotFound(relayErr) {
+			if isOpenAIWSIngressUpstreamErrorEvent(relayErr) || isOpenAIWSIngressPreviousResponseNotFound(relayErr) || isOpenAIWSIngressToolOutputNotFound(relayErr) {
 				// 对上游 error 事件采用 turn 级终止：当前 turn 失败，但客户端 WS 会话继续。
 				// 这样可与 Codex 客户端语义对齐：后续 turn 允许在新上游连接上继续进行。
 				resetSessionLease(true)
@@ -4490,6 +4568,12 @@ func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (stri
 	if strings.Contains(msg, "previous_response_not_found") ||
 		(strings.Contains(msg, "previous response") && strings.Contains(msg, "not found")) {
 		return "previous_response_not_found", true
+	}
+	// "No tool output found for function call <call_id>" 表示 previous_response_id 指向的
+	// response 包含未完成的 function_call（例如用户在 Codex CLI 按 ESC 取消了 function_call
+	// 后重新发送消息）。此时 previous_response_id 本身就是问题，需要移除后重放。
+	if strings.Contains(msg, "no tool output found") {
+		return openAIWSIngressStageToolOutputNotFound, true
 	}
 	if strings.Contains(errType, "server_error") || strings.Contains(code, "server_error") {
 		return "upstream_error_event", true

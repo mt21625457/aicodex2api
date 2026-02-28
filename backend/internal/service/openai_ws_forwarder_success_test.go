@@ -192,6 +192,26 @@ func TestOpenAIWSPoolPreferredConnIDFromResponse(t *testing.T) {
 	require.Equal(t, "", openAIWSPoolPreferredConnIDFromResponse(store, "resp_missing"))
 }
 
+func TestIsOpenAIWSIngressToolOutputNotFound(t *testing.T) {
+	// tool_output_not_found stage → true
+	err := wrapOpenAIWSIngressTurnError(openAIWSIngressStageToolOutputNotFound, errors.New("No tool output found for function call call_abc."), false)
+	require.True(t, isOpenAIWSIngressToolOutputNotFound(err))
+
+	// previous_response_not_found stage → false
+	err = wrapOpenAIWSIngressTurnError(openAIWSIngressStagePreviousResponseNotFound, errors.New("previous response not found"), false)
+	require.False(t, isOpenAIWSIngressToolOutputNotFound(err))
+
+	// wroteDownstream=true → false
+	err = wrapOpenAIWSIngressTurnError(openAIWSIngressStageToolOutputNotFound, errors.New("msg"), true)
+	require.False(t, isOpenAIWSIngressToolOutputNotFound(err))
+
+	// nil → false
+	require.False(t, isOpenAIWSIngressToolOutputNotFound(nil))
+
+	// plain error → false
+	require.False(t, isOpenAIWSIngressToolOutputNotFound(errors.New("plain")))
+}
+
 func TestOpenAIWSIngressSessionScopeHelpers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
