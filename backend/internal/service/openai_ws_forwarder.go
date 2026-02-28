@@ -3177,6 +3177,53 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					truncateOpenAIWSLogValue(pingErr.Error(), openAIWSLogValueMaxLen),
 				)
 				if forcePreferredConn {
+					if !turnPrevRecoveryTried && currentPreviousResponseID != "" {
+						updatedPayload, removed, dropErr := dropPreviousResponseIDFromRawPayload(currentPayload)
+						if dropErr != nil || !removed {
+							reason := "not_removed"
+							if dropErr != nil {
+								reason = "drop_error"
+							}
+							logOpenAIWSModeInfo(
+								"ingress_ws_preflight_ping_recovery_skip account_id=%d turn=%d conn_id=%s reason=%s previous_response_id=%s",
+								account.ID,
+								turn,
+								truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+								normalizeOpenAIWSLogValue(reason),
+								truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+							)
+						} else {
+							updatedWithInput, setInputErr := setOpenAIWSPayloadInputSequence(
+								updatedPayload,
+								currentTurnReplayInput,
+								currentTurnReplayInputExists,
+							)
+							if setInputErr != nil {
+								logOpenAIWSModeInfo(
+									"ingress_ws_preflight_ping_recovery_skip account_id=%d turn=%d conn_id=%s reason=set_full_input_error previous_response_id=%s cause=%s",
+									account.ID,
+									turn,
+									truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+									truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+									truncateOpenAIWSLogValue(setInputErr.Error(), openAIWSLogValueMaxLen),
+								)
+							} else {
+								logOpenAIWSModeInfo(
+									"ingress_ws_preflight_ping_recovery account_id=%d turn=%d conn_id=%s action=drop_previous_response_id_retry previous_response_id=%s",
+									account.ID,
+									turn,
+									truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+									truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+								)
+								turnPrevRecoveryTried = true
+								currentPayload = updatedWithInput
+								currentPayloadBytes = len(updatedWithInput)
+								resetSessionLease(true)
+								skipBeforeTurn = true
+								continue
+							}
+						}
+					}
 					resetSessionLease(true)
 					return NewOpenAIWSClientCloseError(
 						coderws.StatusPolicyViolation,
