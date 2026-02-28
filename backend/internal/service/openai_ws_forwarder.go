@@ -3065,6 +3065,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	turnRetry := 0
 	turnPrevRecoveryTried := false
 	turnPreferredRehydrateTried := false
+	strictAffinityBypassOnce := false
 	lastTurnFinishedAt := time.Time{}
 	lastTurnResponseID := ""
 	lastTurnPayload := []byte(nil)
@@ -3391,6 +3392,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		forcePreferredConn := isStrictAffinityTurn(currentPayload)
+		if strictAffinityBypassOnce {
+			forcePreferredConn = false
+			strictAffinityBypassOnce = false
+		}
 		if sessionLease == nil {
 			acquiredLease, acquireErr := acquireTurnLease(
 				turn,
@@ -3533,6 +3538,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 								continue
 							}
 						}
+					}
+					if dedicatedMode {
+						logOpenAIWSModeInfo(
+							"ingress_ws_preflight_ping_recovery account_id=%d turn=%d conn_id=%s action=retry_without_strict_affinity previous_response_id=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+							truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+						)
+						resetSessionLease(true)
+						strictAffinityBypassOnce = true
+						skipBeforeTurn = true
+						continue
 					}
 					resetSessionLease(true)
 					return NewOpenAIWSClientCloseError(
