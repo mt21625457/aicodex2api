@@ -329,6 +329,41 @@ func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAI
 	return resolution
 }
 
+func openAIWSIngressSessionScopeFromContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	value, exists := c.Get("api_key")
+	if !exists || value == nil {
+		return ""
+	}
+	apiKey, ok := value.(*APIKey)
+	if !ok || apiKey == nil {
+		return ""
+	}
+	userID := apiKey.UserID
+	if userID <= 0 && apiKey.User != nil {
+		userID = apiKey.User.ID
+	}
+	apiKeyID := apiKey.ID
+	if userID <= 0 && apiKeyID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("u%d:k%d", userID, apiKeyID)
+}
+
+func openAIWSApplySessionScope(sessionHash, scope string) string {
+	hash := strings.TrimSpace(sessionHash)
+	if hash == "" {
+		return ""
+	}
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return hash
+	}
+	return scope + "|" + hash
+}
+
 func shouldLogOpenAIWSEvent(idx int, eventType string) bool {
 	if idx <= openAIWSEventLogHeadLimit {
 		return true
@@ -2389,6 +2424,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 	}
+	dedicatedMode := ingressMode == OpenAIWSIngressModeDedicated
+	// Ingress ws_v2 请求天然是 Codex 会话语义，ctx_pool 是否启用仅由账号 mode 决定。
+	ctxPoolMode := ingressMode == OpenAIWSIngressModeCtxPool
+	ctxPoolSessionScope := ""
+	if ctxPoolMode {
+		ctxPoolSessionScope = openAIWSIngressSessionScopeFromContext(c)
+	}
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
 	}
@@ -2529,16 +2571,58 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	turnState := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
 	stateStore := s.getOpenAIWSStateStore()
 	groupID := getOpenAIGroupIDFromContext(c)
-	sessionHash := s.GenerateSessionHash(c, firstPayload.rawForHash)
-	if turnState == "" && stateStore != nil && sessionHash != "" {
+	legacySessionHash := strings.TrimSpace(s.GenerateSessionHash(c, firstPayload.rawForHash))
+	sessionHash := legacySessionHash
+	if ctxPoolMode {
+		sessionHash = openAIWSApplySessionScope(legacySessionHash, ctxPoolSessionScope)
+	}
+	resolveSessionTurnState := func() (string, bool) {
+		if stateStore == nil || sessionHash == "" {
+			return "", false
+		}
 		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+			return savedTurnState, true
+		}
+		if !ctxPoolMode || legacySessionHash == "" || legacySessionHash == sessionHash {
+			return "", false
+		}
+		return stateStore.GetSessionTurnState(groupID, legacySessionHash)
+	}
+	resolveSessionLastResponseID := func() (string, bool) {
+		if stateStore == nil || sessionHash == "" {
+			return "", false
+		}
+		if savedResponseID, ok := stateStore.GetSessionLastResponseID(groupID, sessionHash); ok {
+			return strings.TrimSpace(savedResponseID), true
+		}
+		if !ctxPoolMode || legacySessionHash == "" || legacySessionHash == sessionHash {
+			return "", false
+		}
+		savedResponseID, ok := stateStore.GetSessionLastResponseID(groupID, legacySessionHash)
+		return strings.TrimSpace(savedResponseID), ok
+	}
+	resolveSessionConnID := func() (string, bool) {
+		if stateStore == nil || sessionHash == "" {
+			return "", false
+		}
+		if connID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
+			return strings.TrimSpace(connID), true
+		}
+		if !ctxPoolMode || legacySessionHash == "" || legacySessionHash == sessionHash {
+			return "", false
+		}
+		connID, ok := stateStore.GetSessionConn(groupID, legacySessionHash)
+		return strings.TrimSpace(connID), ok
+	}
+	if turnState == "" && stateStore != nil && sessionHash != "" {
+		if savedTurnState, ok := resolveSessionTurnState(); ok {
 			turnState = savedTurnState
 		}
 	}
 	sessionLastResponseID := ""
 	if stateStore != nil && sessionHash != "" {
-		if savedResponseID, ok := stateStore.GetSessionLastResponseID(groupID, sessionHash); ok {
-			sessionLastResponseID = strings.TrimSpace(savedResponseID)
+		if savedResponseID, ok := resolveSessionLastResponseID(); ok {
+			sessionLastResponseID = savedResponseID
 		}
 	}
 
@@ -2549,16 +2633,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	storeDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(firstPayload.payloadRaw, account)
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
-	if stateStore != nil && storeDisabled && firstPayload.previousResponseID == "" && sessionHash != "" {
-		if connID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
+	if stateStore != nil && !ctxPoolMode && storeDisabled && firstPayload.previousResponseID == "" && sessionHash != "" {
+		if connID, ok := resolveSessionConnID(); ok {
 			preferredConnID = connID
 		}
 	}
 
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
-	dedicatedMode := ingressMode == OpenAIWSIngressModeDedicated
-	// Ingress ws_v2 请求天然是 Codex 会话语义，ctx_pool 是否启用仅由账号 mode 决定。
-	ctxPoolMode := ingressMode == OpenAIWSIngressModeCtxPool
 	wsHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
 	baseAcquireReq := openAIWSAcquireRequest{
 		Account: account,
@@ -3322,22 +3403,27 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return false, parseErr
 		}
 		nextStoreDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(nextPayload.payloadRaw, account)
-		nextSessionHash := s.GenerateSessionHash(c, nextPayload.rawForHash)
+		nextLegacySessionHash := strings.TrimSpace(s.GenerateSessionHash(c, nextPayload.rawForHash))
+		nextSessionHash := nextLegacySessionHash
+		if ctxPoolMode {
+			nextSessionHash = openAIWSApplySessionScope(nextLegacySessionHash, ctxPoolSessionScope)
+		}
 		if sessionHash == "" && nextSessionHash != "" {
 			sessionHash = nextSessionHash
+			legacySessionHash = nextLegacySessionHash
 			if stateStore != nil {
 				if turnState == "" {
-					if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+					if savedTurnState, ok := resolveSessionTurnState(); ok {
 						turnState = savedTurnState
 					}
 				}
 				if lastTurnResponseID == "" {
-					if savedResponseID, ok := stateStore.GetSessionLastResponseID(groupID, sessionHash); ok {
-						lastTurnResponseID = strings.TrimSpace(savedResponseID)
+					if savedResponseID, ok := resolveSessionLastResponseID(); ok {
+						lastTurnResponseID = savedResponseID
 					}
 				}
-				if nextStoreDisabled && nextPayload.previousResponseID == "" {
-					if stickyConnID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
+				if !ctxPoolMode && nextStoreDisabled && nextPayload.previousResponseID == "" {
+					if stickyConnID, ok := resolveSessionConnID(); ok {
 						preferredConnID = stickyConnID
 					}
 				}
@@ -3413,8 +3499,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentPreviousResponseID := openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id")
 		expectedPrev := strings.TrimSpace(lastTurnResponseID)
 		if expectedPrev == "" && stateStore != nil && sessionHash != "" {
-			if savedResponseID, ok := stateStore.GetSessionLastResponseID(groupID, sessionHash); ok {
-				expectedPrev = strings.TrimSpace(savedResponseID)
+			if savedResponseID, ok := resolveSessionLastResponseID(); ok {
+				expectedPrev = savedResponseID
 				if expectedPrev != "" {
 					lastTurnResponseID = expectedPrev
 				}
@@ -3434,6 +3520,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			expectedPrev = ""
 			if stateStore != nil && sessionHash != "" {
 				stateStore.DeleteSessionLastResponseID(groupID, sessionHash)
+				if ctxPoolMode && legacySessionHash != "" && legacySessionHash != sessionHash {
+					stateStore.DeleteSessionLastResponseID(groupID, legacySessionHash)
+				}
 			}
 		}
 		// store=false + function_call_output 场景必须有续链锚点。
@@ -3601,8 +3690,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		forcePreferredConn := isStrictAffinityTurn(currentPayload)
+		hasPreviousResponseIDForAcquire := currentPreviousResponseID != ""
 		if strictAffinityBypassOnce {
 			forcePreferredConn = false
+			// strict bypass 仅影响连接调度层：允许迁移/复用候选；
+			// payload 中 previous_response_id 仍按原语义保留。
+			hasPreviousResponseIDForAcquire = false
 			strictAffinityBypassOnce = false
 		}
 		if sessionLease == nil {
@@ -3610,9 +3703,26 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				turn,
 				preferredConnID,
 				forcePreferredConn,
-				currentPreviousResponseID != "",
+				hasPreviousResponseIDForAcquire,
 			)
 			if acquireErr != nil {
+				if forcePreferredConn &&
+					ctxPoolMode &&
+					currentPreviousResponseID != "" &&
+					hasFunctionCallOutput &&
+					(errors.Is(acquireErr, errOpenAIWSConnQueueFull) ||
+						errors.Is(acquireErr, errOpenAIWSIngressContextBusy) ||
+						errors.Is(acquireErr, context.DeadlineExceeded)) {
+					logOpenAIWSModeInfo(
+						"ingress_ws_preferred_conn_recovery account_id=%d turn=%d action=retry_without_strict_affinity_keep_previous_response_id reason=ctx_pool_busy previous_response_id=%s",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+					)
+					strictAffinityBypassOnce = true
+					skipBeforeTurn = true
+					continue
+				}
 				if forcePreferredConn && currentPreviousResponseID != "" && isOpenAIWSContinuationUnavailableCloseError(acquireErr) {
 					if !turnPreferredRehydrateTried && stateStore != nil && strings.TrimSpace(preferredConnID) == "" {
 						if stickyConnID := openAIWSPoolPreferredConnIDFromResponse(stateStore, currentPreviousResponseID); stickyConnID != "" {
@@ -3726,6 +3836,21 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					truncateOpenAIWSLogValue(pingErr.Error(), openAIWSLogValueMaxLen),
 				)
 				if forcePreferredConn {
+					if !turnPrevRecoveryTried && hasFunctionCallOutput {
+						// 与 acquire 失败分支对齐：function_call_output 续链优先保留 previous_response_id，
+						// 仅单次放宽 strict affinity，避免因 preflight 失败提前降级为 full create。
+						logOpenAIWSModeInfo(
+							"ingress_ws_preflight_ping_recovery account_id=%d turn=%d conn_id=%s action=retry_without_strict_affinity_keep_previous_response_id previous_response_id=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+							truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+						)
+						resetSessionLease(true)
+						strictAffinityBypassOnce = true
+						skipBeforeTurn = true
+						continue
+					}
 					if !turnPrevRecoveryTried && currentPreviousResponseID != "" {
 						updatedPayload, removed, dropErr := dropPreviousResponseIDFromRawPayload(currentPayload)
 						if dropErr != nil || !removed {
@@ -3908,7 +4033,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				stateStore.BindSessionLastResponseID(groupID, sessionHash, responseID, s.openAIWSSessionStickyTTL())
 			}
 		}
-		if stateStore != nil && storeDisabled && sessionHash != "" {
+		if stateStore != nil && !ctxPoolMode && storeDisabled && sessionHash != "" {
 			stateStore.BindSessionConn(groupID, sessionHash, connID, s.openAIWSSessionStickyTTL())
 		}
 		if connID != "" {
