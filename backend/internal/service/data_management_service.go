@@ -2,9 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
-	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -15,6 +12,7 @@ const (
 	DefaultDataManagementAgentSocketPath = "/tmp/sub2api-datamanagement.sock"
 	LegacyBackupAgentSocketPath          = "/tmp/sub2api-backup.sock"
 
+	DataManagementDeprecatedReason         = "DATA_MANAGEMENT_DEPRECATED"
 	DataManagementAgentSocketMissingReason = "DATA_MANAGEMENT_AGENT_SOCKET_MISSING"
 	DataManagementAgentUnavailableReason   = "DATA_MANAGEMENT_AGENT_UNAVAILABLE"
 
@@ -25,6 +23,10 @@ const (
 )
 
 var (
+	ErrDataManagementDeprecated = infraerrors.ServiceUnavailable(
+		DataManagementDeprecatedReason,
+		"data management feature is deprecated",
+	)
 	ErrDataManagementAgentSocketMissing = infraerrors.ServiceUnavailable(
 		DataManagementAgentSocketMissingReason,
 		"data management agent socket is missing",
@@ -83,69 +85,15 @@ func (s *DataManagementService) SocketPath() string {
 }
 
 func (s *DataManagementService) GetAgentHealth(ctx context.Context) DataManagementAgentHealth {
-	primaryPath := s.SocketPath()
-	health := s.getAgentHealthBySocket(ctx, primaryPath)
-	if health.Enabled || primaryPath != DefaultDataManagementAgentSocketPath {
-		return health
-	}
-
-	fallbackPath := strings.TrimSpace(LegacyBackupAgentSocketPath)
-	if fallbackPath == "" || fallbackPath == primaryPath {
-		return health
-	}
-
-	fallback := s.getAgentHealthBySocket(ctx, fallbackPath)
-	if fallback.Enabled {
-		return fallback
-	}
-	return health
-}
-
-func (s *DataManagementService) getAgentHealthBySocket(ctx context.Context, socketPath string) DataManagementAgentHealth {
-	health := DataManagementAgentHealth{
+	_ = ctx
+	return DataManagementAgentHealth{
 		Enabled:    false,
-		Reason:     DataManagementAgentUnavailableReason,
-		SocketPath: socketPath,
+		Reason:     DataManagementDeprecatedReason,
+		SocketPath: s.SocketPath(),
 	}
-
-	info, err := os.Stat(socketPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			health.Reason = DataManagementAgentSocketMissingReason
-		}
-		return health
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return health
-	}
-
-	dialer := net.Dialer{Timeout: s.dialTimeout}
-	conn, err := dialer.DialContext(ctx, "unix", socketPath)
-	if err != nil {
-		return health
-	}
-	_ = conn.Close()
-
-	agent, err := s.probeAgentHealth(ctx, socketPath)
-	if err != nil {
-		return health
-	}
-
-	health.Enabled = true
-	health.Reason = ""
-	health.Agent = agent
-	return health
 }
 
 func (s *DataManagementService) EnsureAgentEnabled(ctx context.Context) error {
-	health := s.GetAgentHealth(ctx)
-	if health.Enabled {
-		return nil
-	}
-
-	metadata := map[string]string{"socket_path": health.SocketPath}
-	if health.Reason == DataManagementAgentSocketMissingReason {
-		return ErrDataManagementAgentSocketMissing.WithMetadata(metadata)
-	}
-	return ErrDataManagementAgentUnavailable.WithMetadata(metadata)
+	_ = ctx
+	return ErrDataManagementDeprecated.WithMetadata(map[string]string{"socket_path": s.SocketPath()})
 }
