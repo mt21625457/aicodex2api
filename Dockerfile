@@ -6,9 +6,9 @@
 # Stage 3: Final minimal image
 # =============================================================================
 
-ARG NODE_IMAGE=node:24-alpine
-ARG GOLANG_IMAGE=golang:1.25.7-alpine
-ARG ALPINE_IMAGE=alpine:3.21
+ARG NODE_IMAGE=registry-1.docker.io/library/node:24-alpine
+ARG GOLANG_IMAGE=registry-1.docker.io/library/golang:1.25.7-alpine
+ARG ALPINE_IMAGE=registry-1.docker.io/library/alpine:3.21
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 
