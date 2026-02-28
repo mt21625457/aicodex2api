@@ -44,6 +44,12 @@ type openAIWSSessionLastResponseBinding struct {
 	expiresAt  time.Time
 }
 
+type openAIWSStateStoreSessionLastResponseCache interface {
+	SetOpenAIWSSessionLastResponseID(ctx context.Context, groupID int64, sessionHash, responseID string, ttl time.Duration) error
+	GetOpenAIWSSessionLastResponseID(ctx context.Context, groupID int64, sessionHash string) (string, error)
+	DeleteOpenAIWSSessionLastResponseID(ctx context.Context, groupID int64, sessionHash string) error
+}
+
 // OpenAIWSStateStore 管理 WSv2 的粘连状态。
 // - response_id -> account_id 用于续链路由
 // - response_id -> conn_id 用于连接内上下文复用
@@ -282,6 +288,12 @@ func (s *defaultOpenAIWSStateStore) BindSessionLastResponseID(groupID int64, ses
 		expiresAt:  time.Now().Add(ttl),
 	}
 	s.sessionToLastRespMu.Unlock()
+
+	if cache := s.sessionLastResponseCache(); cache != nil {
+		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
+		defer cancel()
+		_ = cache.SetOpenAIWSSessionLastResponseID(cacheCtx, groupID, strings.TrimSpace(sessionHash), id, ttl)
+	}
 }
 
 func (s *defaultOpenAIWSStateStore) GetSessionLastResponseID(groupID int64, sessionHash string) (string, bool) {
@@ -295,10 +307,31 @@ func (s *defaultOpenAIWSStateStore) GetSessionLastResponseID(groupID int64, sess
 	s.sessionToLastRespMu.RLock()
 	binding, ok := s.sessionToLastResp[key]
 	s.sessionToLastRespMu.RUnlock()
-	if !ok || now.After(binding.expiresAt) || strings.TrimSpace(binding.responseID) == "" {
+	if ok && now.Before(binding.expiresAt) && strings.TrimSpace(binding.responseID) != "" {
+		return binding.responseID, true
+	}
+
+	cache := s.sessionLastResponseCache()
+	if cache == nil {
 		return "", false
 	}
-	return binding.responseID, true
+	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
+	defer cancel()
+	responseID, err := cache.GetOpenAIWSSessionLastResponseID(cacheCtx, groupID, strings.TrimSpace(sessionHash))
+	responseID = normalizeOpenAIWSResponseID(responseID)
+	if err != nil || responseID == "" {
+		return "", false
+	}
+
+	// Redis 命中后回填本地热缓存，降低后续访问开销。
+	s.sessionToLastRespMu.Lock()
+	ensureBindingCapacity(s.sessionToLastResp, key, openAIWSStateStoreMaxEntriesPerMap)
+	s.sessionToLastResp[key] = openAIWSSessionLastResponseBinding{
+		responseID: responseID,
+		expiresAt:  time.Now().Add(time.Minute),
+	}
+	s.sessionToLastRespMu.Unlock()
+	return responseID, true
 }
 
 func (s *defaultOpenAIWSStateStore) DeleteSessionLastResponseID(groupID int64, sessionHash string) {
@@ -309,6 +342,12 @@ func (s *defaultOpenAIWSStateStore) DeleteSessionLastResponseID(groupID int64, s
 	s.sessionToLastRespMu.Lock()
 	delete(s.sessionToLastResp, key)
 	s.sessionToLastRespMu.Unlock()
+
+	if cache := s.sessionLastResponseCache(); cache != nil {
+		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
+		defer cancel()
+		_ = cache.DeleteOpenAIWSSessionLastResponseID(cacheCtx, groupID, strings.TrimSpace(sessionHash))
+	}
 }
 
 func (s *defaultOpenAIWSStateStore) BindSessionConn(groupID int64, sessionHash, connID string, ttl time.Duration) {
@@ -499,6 +538,17 @@ func normalizeOpenAIWSTTL(ttl time.Duration) time.Duration {
 		return time.Hour
 	}
 	return ttl
+}
+
+func (s *defaultOpenAIWSStateStore) sessionLastResponseCache() openAIWSStateStoreSessionLastResponseCache {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	cache, ok := s.cache.(openAIWSStateStoreSessionLastResponseCache)
+	if !ok {
+		return nil
+	}
+	return cache
 }
 
 func openAIWSSessionTurnStateKey(groupID int64, sessionHash string) string {
