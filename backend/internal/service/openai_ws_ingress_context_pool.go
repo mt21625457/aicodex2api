@@ -311,6 +311,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 		migrationUsed bool
 		scheduleLayer string
 		oldUpstream   openAIWSClientConn
+		deferredClose []openAIWSClientConn
 	)
 
 	p.mu.Lock()
@@ -320,7 +321,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 	defer ap.refs.Add(-1)
 
 	ap.mu.Lock()
-	p.cleanupAccountExpiredLocked(ap, now)
+	deferredClose = append(deferredClose, p.cleanupAccountExpiredLocked(ap, now)...)
 
 	stickiness := p.resolveStickinessLevelLocked(ap, sessionKey, req, now)
 	allowMigration, minMigrationScore := openAIWSIngressMigrationPolicyByStickiness(stickiness)
@@ -344,6 +345,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 			default:
 				existing.mu.Unlock()
 				ap.mu.Unlock()
+				closeOpenAIWSClientConns(deferredClose)
 				return nil, errOpenAIWSIngressContextBusy
 			}
 			existing.mu.Unlock()
@@ -352,17 +354,19 @@ func (p *openAIWSIngressContextPool) Acquire(
 
 	if selected == nil {
 		if len(ap.contexts) >= capacity {
-			p.evictExpiredIdleLocked(ap, now)
+			deferredClose = append(deferredClose, p.evictExpiredIdleLocked(ap, now)...)
 		}
 		if len(ap.contexts) >= capacity {
 			if !allowMigration {
 				ap.mu.Unlock()
+				closeOpenAIWSClientConns(deferredClose)
 				return nil, errOpenAIWSConnQueueFull
 			}
 
 			recycle := p.pickMigrationCandidateLocked(ap, minMigrationScore, now)
 			if recycle == nil {
 				ap.mu.Unlock()
+				closeOpenAIWSClientConns(deferredClose)
 				return nil, errOpenAIWSConnQueueFull
 			}
 			recycle.mu.Lock()
@@ -393,6 +397,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 			migrationUsed = true
 			scheduleLayer = openAIWSIngressScheduleLayerMigration
 			ap.mu.Unlock()
+			closeOpenAIWSClientConns(deferredClose)
 			if oldUpstream != nil {
 				_ = oldUpstream.Close()
 			}
@@ -432,6 +437,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 		scheduleLayer = openAIWSIngressScheduleLayerNew
 	}
 	ap.mu.Unlock()
+	closeOpenAIWSClientConns(deferredClose)
 
 	reusedConn, ensureErr := p.ensureContextUpstream(ctx, selected, req)
 	if ensureErr != nil {
@@ -622,6 +628,14 @@ func minInt(a, b int) int {
 	return b
 }
 
+func closeOpenAIWSClientConns(conns []openAIWSClientConn) {
+	for _, conn := range conns {
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}
+}
+
 func (p *openAIWSIngressContextPool) ensureContextUpstream(
 	ctx context.Context,
 	c *openAIWSIngressContext,
@@ -775,10 +789,14 @@ func (p *openAIWSIngressContextPool) getOrCreateAccountPoolLocked(accountID int6
 	return ap
 }
 
-func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(ap *openAIWSIngressAccountPool, now time.Time) {
+func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(
+	ap *openAIWSIngressAccountPool,
+	now time.Time,
+) []openAIWSClientConn {
 	if ap == nil {
-		return
+		return nil
 	}
+	toClose := make([]openAIWSClientConn, 0)
 	for id, ctx := range ap.contexts {
 		if ctx == nil {
 			delete(ap.contexts, id)
@@ -804,15 +822,20 @@ func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(ap *openAIWSIng
 			delete(ap.bySession, ctx.sessionKey)
 		}
 		if upstream != nil {
-			_ = upstream.Close()
+			toClose = append(toClose, upstream)
 		}
 	}
+	return toClose
 }
 
-func (p *openAIWSIngressContextPool) evictExpiredIdleLocked(ap *openAIWSIngressAccountPool, now time.Time) {
+func (p *openAIWSIngressContextPool) evictExpiredIdleLocked(
+	ap *openAIWSIngressAccountPool,
+	now time.Time,
+) []openAIWSClientConn {
 	if ap == nil {
-		return
+		return nil
 	}
+	toClose := make([]openAIWSClientConn, 0)
 	for id, ctx := range ap.contexts {
 		if ctx == nil {
 			delete(ap.contexts, id)
@@ -836,9 +859,10 @@ func (p *openAIWSIngressContextPool) evictExpiredIdleLocked(ap *openAIWSIngressA
 			delete(ap.bySession, ctx.sessionKey)
 		}
 		if upstream != nil {
-			_ = upstream.Close()
+			toClose = append(toClose, upstream)
 		}
 	}
+	return toClose
 }
 
 func (p *openAIWSIngressContextPool) pickOldestIdleContextLocked(ap *openAIWSIngressAccountPool) *openAIWSIngressContext {
@@ -894,9 +918,10 @@ func (p *openAIWSIngressContextPool) sweepExpiredIdleContexts() {
 	for _, item := range snapshots {
 		ap := item.ap
 		ap.mu.Lock()
-		p.evictExpiredIdleLocked(ap, now)
+		toClose := p.evictExpiredIdleLocked(ap, now)
 		empty := len(ap.contexts) == 0
 		ap.mu.Unlock()
+		closeOpenAIWSClientConns(toClose)
 		if empty && ap.refs.Load() == 0 {
 			removable = append(removable, item)
 		}
