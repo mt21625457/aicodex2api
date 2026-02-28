@@ -855,18 +855,16 @@ const (
 	OpenAIWSIngressModeOff       = "off"
 	OpenAIWSIngressModeShared    = "shared"
 	OpenAIWSIngressModeDedicated = "dedicated"
-	OpenAIWSIngressModeCtxPool   = "ctx_pool"
 )
 
 func normalizeOpenAIWSIngressMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case OpenAIWSIngressModeOff:
 		return OpenAIWSIngressModeOff
-	case OpenAIWSIngressModeCtxPool:
-		return OpenAIWSIngressModeCtxPool
-	case OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
-		// Deprecated: shared/dedicated 已废弃，平滑迁移到 ctx_pool
-		return OpenAIWSIngressModeCtxPool
+	case OpenAIWSIngressModeShared:
+		return OpenAIWSIngressModeShared
+	case OpenAIWSIngressModeDedicated:
+		return OpenAIWSIngressModeDedicated
 	default:
 		return ""
 	}
@@ -876,16 +874,16 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 	if normalized := normalizeOpenAIWSIngressMode(mode); normalized != "" {
 		return normalized
 	}
-	return OpenAIWSIngressModeOff
+	return OpenAIWSIngressModeShared
 }
 
-// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/ctx_pool）。
+// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/shared/dedicated）。
 //
 // 优先级：
 // 1. 分类型 mode 新字段（string）
 // 2. 分类型 enabled 旧字段（bool）
 // 3. 兼容 enabled 旧字段（bool）
-// 4. defaultMode（非法时回退 off）
+// 4. defaultMode（非法时回退 shared）
 func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
 	resolvedDefault := normalizeOpenAIWSIngressDefaultMode(defaultMode)
 	if a == nil || !a.IsOpenAI() {
@@ -920,8 +918,7 @@ func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) stri
 			return "", false
 		}
 		if enabled {
-			// 兼容旧 enabled 字段：开启时至少落到 ctx_pool。
-			return OpenAIWSIngressModeCtxPool, true
+			return OpenAIWSIngressModeShared, true
 		}
 		return OpenAIWSIngressModeOff, true
 	}

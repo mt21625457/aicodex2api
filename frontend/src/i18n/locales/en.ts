@@ -1788,7 +1788,6 @@ export default {
         wsModeOff: 'Off (off)',
         wsModeShared: 'Shared (shared)',
         wsModeDedicated: 'Dedicated (dedicated)',
-        wsModeCtxPool: 'Context Pool (ctx_pool)',
         wsModeConcurrencyHint:
           'When WS mode is enabled, account concurrency becomes the WS connection pool limit for this account.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',

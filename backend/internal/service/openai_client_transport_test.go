@@ -103,40 +103,5 @@ func TestResolveOpenAIWSDecisionByClientTransport(t *testing.T) {
 	require.Equal(t, base, wsDecision)
 
 	unknownDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportUnknown)
-	require.Equal(t, OpenAIUpstreamTransportHTTPSSE, unknownDecision.Transport)
-	require.Equal(t, "client_protocol_http", unknownDecision.Reason)
-}
-
-func TestShouldWarnOpenAIWSUnknownTransportFallback(t *testing.T) {
-	require.True(t, shouldWarnOpenAIWSUnknownTransportFallback(
-		OpenAIWSProtocolDecision{
-			Transport: OpenAIUpstreamTransportResponsesWebsocketV2,
-			Reason:    "ws_v2_enabled",
-		},
-		OpenAIClientTransportUnknown,
-	))
-
-	require.True(t, shouldWarnOpenAIWSUnknownTransportFallback(
-		OpenAIWSProtocolDecision{
-			Transport: OpenAIUpstreamTransportResponsesWebsocket,
-			Reason:    "ws_v1_enabled",
-		},
-		OpenAIClientTransportUnknown,
-	))
-
-	require.False(t, shouldWarnOpenAIWSUnknownTransportFallback(
-		OpenAIWSProtocolDecision{
-			Transport: OpenAIUpstreamTransportHTTPSSE,
-			Reason:    "http_only",
-		},
-		OpenAIClientTransportUnknown,
-	))
-
-	require.False(t, shouldWarnOpenAIWSUnknownTransportFallback(
-		OpenAIWSProtocolDecision{
-			Transport: OpenAIUpstreamTransportResponsesWebsocketV2,
-			Reason:    "ws_v2_enabled",
-		},
-		OpenAIClientTransportHTTP,
-	))
+	require.Equal(t, base, unknownDecision)
 }

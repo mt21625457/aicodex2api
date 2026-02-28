@@ -404,15 +404,7 @@ import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import {
-  buildBulkEditPlatformOptions,
-  buildBulkEditScopeGroupedStats,
-  buildBulkEditTypeOptions,
-  countBulkEditScopedAccounts,
-  matchBulkEditScopedAccountIds
-} from './accountsBulkEditScope'
-import { resolveBulkEditScopeEditorKey } from '@/components/account/bulkEditScopeProfile'
-import type { Account, Proxy, AdminGroup, WindowStats, AccountPlatform, AccountType } from '@/types'
+import type { Account, AccountPlatform, Proxy, AdminGroup, WindowStats } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -703,10 +695,6 @@ watch(loading, (isLoading, wasLoading) => {
       console.error('Failed to refresh account today stats after table load:', error)
     })
   }
-})
-
-watch(bulkEditPlatform, () => {
-  bulkEditType.value = ''
 })
 
 const isAnyModalOpen = computed(() => {

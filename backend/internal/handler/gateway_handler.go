@@ -1350,10 +1350,23 @@ func (h *GatewayHandler) maybeLogCompatibilityFallbackMetrics(reqLog *zap.Logger
 }
 
 func (h *GatewayHandler) submitUsageRecordTask(task service.UsageRecordTask) {
-	submitUsageRecordTaskWithFallback(
-		"handler.gateway.messages",
-		h.usageRecordWorkerPool,
-		h.cfg,
-		task,
-	)
+	if task == nil {
+		return
+	}
+	if h.usageRecordWorkerPool != nil {
+		h.usageRecordWorkerPool.Submit(task)
+		return
+	}
+	// 回退路径：worker 池未注入时同步执行，避免退回到无界 goroutine 模式。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logger.L().With(
+				zap.String("component", "handler.gateway.messages"),
+				zap.Any("panic", recovered),
+			).Error("gateway.usage_record_task_panic_recovered")
+		}
+	}()
+	task(ctx)
 }

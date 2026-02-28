@@ -366,7 +366,9 @@ func (r *soraGenerationRepository) List(ctx context.Context, params service.Sora
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	var results []*service.SoraGeneration
 	for rows.Next() {

@@ -1496,10 +1496,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// 预加载账号平台信息（混合渠道检查或 Sora 同步需要）。
 	platformByID := map[int64]string{}
-	accountByID := map[int64]*Account{}
 	groupAccountsByID := map[int64][]Account{}
 	groupNameByID := map[int64]string{}
-	if needAccountSnapshot {
+	if needMixedChannelCheck {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -1511,6 +1510,13 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				}
 			}
 		}
+
+		loadedAccounts, loadedNames, err := s.preloadMixedChannelRiskData(ctx, *input.GroupIDs)
+		if err != nil {
+			return nil, err
+		}
+		groupAccountsByID = loadedAccounts
+		groupNameByID = loadedNames
 	}
 
 	if needOpenAIScopeCheck {

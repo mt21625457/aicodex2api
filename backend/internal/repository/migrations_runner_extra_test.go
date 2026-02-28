@@ -24,7 +24,7 @@ func TestApplyMigrations_NilDB(t *testing.T) {
 func TestApplyMigrations_DelegatesToApplyMigrationsFS(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery("SELECT pg_try_advisory_lock\\(\\$1\\)").
 		WithArgs(migrationsAdvisoryLockID).
@@ -98,7 +98,7 @@ func TestEnsureAtlasBaselineAligned(t *testing.T) {
 	t.Run("skip_when_no_legacy_table", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectQuery("SELECT EXISTS \\(").
 			WithArgs("schema_migrations").
@@ -112,7 +112,7 @@ func TestEnsureAtlasBaselineAligned(t *testing.T) {
 	t.Run("create_atlas_and_insert_baseline_when_empty", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectQuery("SELECT EXISTS \\(").
 			WithArgs("schema_migrations").
@@ -140,7 +140,7 @@ func TestEnsureAtlasBaselineAligned(t *testing.T) {
 	t.Run("error_when_checking_legacy_table", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectQuery("SELECT EXISTS \\(").
 			WithArgs("schema_migrations").
@@ -155,7 +155,7 @@ func TestEnsureAtlasBaselineAligned(t *testing.T) {
 	t.Run("error_when_counting_atlas_rows", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectQuery("SELECT EXISTS \\(").
 			WithArgs("schema_migrations").
@@ -175,7 +175,7 @@ func TestEnsureAtlasBaselineAligned(t *testing.T) {
 	t.Run("error_when_creating_atlas_table", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectQuery("SELECT EXISTS \\(").
 			WithArgs("schema_migrations").
@@ -195,7 +195,7 @@ func TestEnsureAtlasBaselineAligned(t *testing.T) {
 	t.Run("error_when_inserting_baseline", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectQuery("SELECT EXISTS \\(").
 			WithArgs("schema_migrations").
@@ -222,7 +222,7 @@ func TestEnsureAtlasBaselineAligned(t *testing.T) {
 func TestApplyMigrationsFS_ChecksumMismatchRejected(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	prepareMigrationsBootstrapExpectations(mock)
 	mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").
@@ -244,7 +244,7 @@ func TestApplyMigrationsFS_ChecksumMismatchRejected(t *testing.T) {
 func TestApplyMigrationsFS_CheckMigrationQueryError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	prepareMigrationsBootstrapExpectations(mock)
 	mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").
@@ -266,7 +266,7 @@ func TestApplyMigrationsFS_CheckMigrationQueryError(t *testing.T) {
 func TestApplyMigrationsFS_SkipEmptyAndAlreadyApplied(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	prepareMigrationsBootstrapExpectations(mock)
 
@@ -291,7 +291,7 @@ func TestApplyMigrationsFS_SkipEmptyAndAlreadyApplied(t *testing.T) {
 func TestApplyMigrationsFS_ReadMigrationError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	prepareMigrationsBootstrapExpectations(mock)
 	mock.ExpectExec("SELECT pg_advisory_unlock\\(\\$1\\)").
@@ -311,7 +311,7 @@ func TestPgAdvisoryLockAndUnlock_ErrorBranches(t *testing.T) {
 	t.Run("context_cancelled_while_not_locked", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectQuery("SELECT pg_try_advisory_lock\\(\\$1\\)").
 			WithArgs(migrationsAdvisoryLockID).
@@ -328,7 +328,7 @@ func TestPgAdvisoryLockAndUnlock_ErrorBranches(t *testing.T) {
 	t.Run("unlock_exec_error", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectExec("SELECT pg_advisory_unlock\\(\\$1\\)").
 			WithArgs(migrationsAdvisoryLockID).
@@ -343,7 +343,7 @@ func TestPgAdvisoryLockAndUnlock_ErrorBranches(t *testing.T) {
 	t.Run("acquire_lock_after_retry", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		mock.ExpectQuery("SELECT pg_try_advisory_lock\\(\\$1\\)").
 			WithArgs(migrationsAdvisoryLockID).

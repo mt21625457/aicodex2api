@@ -1,13 +1,16 @@
 export const OPENAI_WS_MODE_OFF = 'off'
-export const OPENAI_WS_MODE_CTX_POOL = 'ctx_pool'
+export const OPENAI_WS_MODE_SHARED = 'shared'
+export const OPENAI_WS_MODE_DEDICATED = 'dedicated'
 
 export type OpenAIWSMode =
   | typeof OPENAI_WS_MODE_OFF
-  | typeof OPENAI_WS_MODE_CTX_POOL
+  | typeof OPENAI_WS_MODE_SHARED
+  | typeof OPENAI_WS_MODE_DEDICATED
 
 const OPENAI_WS_MODES = new Set<OpenAIWSMode>([
   OPENAI_WS_MODE_OFF,
-  OPENAI_WS_MODE_CTX_POOL
+  OPENAI_WS_MODE_SHARED,
+  OPENAI_WS_MODE_DEDICATED
 ])
 
 export interface ResolveOpenAIWSModeOptions {
@@ -28,7 +31,7 @@ export const normalizeOpenAIWSMode = (mode: unknown): OpenAIWSMode | null => {
 
 export const openAIWSModeFromEnabled = (enabled: unknown): OpenAIWSMode | null => {
   if (typeof enabled !== 'boolean') return null
-  return enabled ? OPENAI_WS_MODE_CTX_POOL : OPENAI_WS_MODE_OFF
+  return enabled ? OPENAI_WS_MODE_SHARED : OPENAI_WS_MODE_OFF
 }
 
 export const isOpenAIWSModeEnabled = (mode: OpenAIWSMode): boolean => {

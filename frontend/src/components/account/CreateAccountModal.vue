@@ -1694,7 +1694,7 @@
         </div>
       </div>
 
-      <!-- OpenAI WS Mode 二态（off/ctx_pool） -->
+      <!-- OpenAI WS Mode 三态（off/shared/dedicated） -->
       <div
         v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
@@ -2228,8 +2228,9 @@ import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import {
-  OPENAI_WS_MODE_CTX_POOL,
+  OPENAI_WS_MODE_DEDICATED,
   OPENAI_WS_MODE_OFF,
+  OPENAI_WS_MODE_SHARED,
   isOpenAIWSModeEnabled,
   type OpenAIWSMode
 } from '@/utils/openaiWsMode'
@@ -2417,7 +2418,8 @@ const geminiSelectedTier = computed(() => {
 
 const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
-  { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') }
+  { value: OPENAI_WS_MODE_SHARED, label: t('admin.accounts.openai.wsModeShared') },
+  { value: OPENAI_WS_MODE_DEDICATED, label: t('admin.accounts.openai.wsModeDedicated') }
 ])
 
 const openaiResponsesWebSocketV2Mode = computed({

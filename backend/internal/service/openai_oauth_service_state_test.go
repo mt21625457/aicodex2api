@@ -13,7 +13,7 @@ import (
 
 type openaiOAuthClientStateStub struct {
 	exchangeCalled int32
-	lastClientID  string
+	lastClientID   string
 }
 
 func (s *openaiOAuthClientStateStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {

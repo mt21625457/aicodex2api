@@ -330,6 +330,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/data-management',
+    name: 'AdminDataManagement',
+    component: () => import('@/views/admin/DataManagementView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Data Management',
+      titleKey: 'admin.dataManagement.title',
+      descriptionKey: 'admin.dataManagement.description'
+    }
+  },
+  {
     path: '/admin/settings',
     name: 'AdminSettings',
     component: () => import('@/views/admin/SettingsView.vue'),

@@ -65,4 +65,3 @@ func TestOpenAIOAuthService_GenerateAuthURL_SoraUsesCodexClient(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, openai.ClientID, session.ClientID)
 }
-

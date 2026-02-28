@@ -399,7 +399,9 @@ func mergeSoraSessionChunkSegment(chunks []soraSessionChunk, requiredMaxIndex in
 
 	var builder strings.Builder
 	for _, idx := range orderedIndexes {
-		builder.WriteString(byIndex[idx])
+		if _, err := builder.WriteString(byIndex[idx]); err != nil {
+			return ""
+		}
 	}
 	return sanitizeSessionToken(builder.String())
 }

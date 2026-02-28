@@ -35,29 +35,10 @@ func deriveOpenAISessionHashes(sessionID string) (currentHash string, legacyHash
 		return "", ""
 	}
 
-	currentHash = deriveOpenAISessionHash(normalized)
-	legacyHash = deriveOpenAILegacySessionHash(normalized)
-	return currentHash, legacyHash
-}
-
-// deriveOpenAISessionHash returns the fast xxhash-based session hash.
-func deriveOpenAISessionHash(sessionID string) string {
-	normalized := strings.TrimSpace(sessionID)
-	if normalized == "" {
-		return ""
-	}
-	return fmt.Sprintf("%016x", xxhash.Sum64String(normalized))
-}
-
-// deriveOpenAILegacySessionHash returns the SHA-256 legacy hash.
-// Only call this when legacy fallback or dual-write is enabled.
-func deriveOpenAILegacySessionHash(sessionID string) string {
-	normalized := strings.TrimSpace(sessionID)
-	if normalized == "" {
-		return ""
-	}
+	currentHash = fmt.Sprintf("%016x", xxhash.Sum64String(normalized))
 	sum := sha256.Sum256([]byte(normalized))
-	return hex.EncodeToString(sum[:])
+	legacyHash = hex.EncodeToString(sum[:])
+	return currentHash, legacyHash
 }
 
 func withOpenAILegacySessionHash(ctx context.Context, legacyHash string) context.Context {

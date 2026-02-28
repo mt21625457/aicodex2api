@@ -34,4 +34,3 @@ func TestIsMigrationChecksumCompatible(t *testing.T) {
 		require.False(t, ok)
 	})
 }
-
