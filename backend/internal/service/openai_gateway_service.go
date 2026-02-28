@@ -264,9 +264,11 @@ type OpenAIGatewayService struct {
 	openaiWSResolver    OpenAIWSProtocolResolver
 
 	openaiWSPoolOnce       sync.Once
+	openaiWSIngressCtxOnce sync.Once
 	openaiWSStateStoreOnce sync.Once
 	openaiSchedulerOnce    sync.Once
 	openaiWSPool           *openAIWSConnPool
+	openaiWSIngressCtxPool *openAIWSIngressContextPool
 	openaiWSStateStore     OpenAIWSStateStore
 	openaiScheduler        OpenAIAccountScheduler
 	openaiAccountStats     *openAIAccountRuntimeStats
@@ -322,6 +324,9 @@ func NewOpenAIGatewayService(
 func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 	if s != nil && s.openaiWSPool != nil {
 		s.openaiWSPool.Close()
+	}
+	if s != nil && s.openaiWSIngressCtxPool != nil {
+		s.openaiWSIngressCtxPool.Close()
 	}
 }
 

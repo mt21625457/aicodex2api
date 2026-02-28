@@ -119,6 +119,18 @@ func (l *openAIWSConnLease) Reused() bool {
 	return l.reused
 }
 
+func (l *openAIWSConnLease) ScheduleLayer() string {
+	return ""
+}
+
+func (l *openAIWSConnLease) StickinessLevel() string {
+	return ""
+}
+
+func (l *openAIWSConnLease) MigrationUsed() bool {
+	return false
+}
+
 func (l *openAIWSConnLease) HandshakeHeader(name string) string {
 	if l == nil || l.conn == nil {
 		return ""

@@ -855,6 +855,7 @@ const (
 	OpenAIWSIngressModeOff       = "off"
 	OpenAIWSIngressModeShared    = "shared"
 	OpenAIWSIngressModeDedicated = "dedicated"
+	OpenAIWSIngressModeCtxPool   = "ctx_pool"
 )
 
 func normalizeOpenAIWSIngressMode(mode string) string {
@@ -865,6 +866,8 @@ func normalizeOpenAIWSIngressMode(mode string) string {
 		return OpenAIWSIngressModeShared
 	case OpenAIWSIngressModeDedicated:
 		return OpenAIWSIngressModeDedicated
+	case OpenAIWSIngressModeCtxPool:
+		return OpenAIWSIngressModeCtxPool
 	default:
 		return ""
 	}
@@ -918,7 +921,11 @@ func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) stri
 			return "", false
 		}
 		if enabled {
-			return OpenAIWSIngressModeShared, true
+			// 兼容旧 enabled 字段：开启时跟随 defaultMode（但不允许退化到 off）。
+			if resolvedDefault == OpenAIWSIngressModeOff {
+				return OpenAIWSIngressModeShared, true
+			}
+			return resolvedDefault, true
 		}
 		return OpenAIWSIngressModeOff, true
 	}
