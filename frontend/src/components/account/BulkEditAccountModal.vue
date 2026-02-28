@@ -428,7 +428,7 @@
             <!-- Model Checkbox List -->
             <div class="mb-3 grid grid-cols-2 gap-2">
               <label
-                v-for="model in allModels"
+                v-for="model in filteredModels"
                 :key="model.value"
                 class="flex cursor-pointer items-center rounded-lg border p-3 transition-all hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700"
                 :class="
@@ -549,7 +549,7 @@
             <!-- Quick Add Buttons -->
             <div class="flex flex-wrap gap-2">
               <button
-                v-for="preset in presetMappings"
+                v-for="preset in filteredPresets"
                 :key="preset.label"
                 type="button"
                 :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
@@ -986,6 +986,33 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const appStore = useAppStore()
 
+const platformModelPrefix: Record<string, string[]> = {
+  anthropic: ['claude-'],
+  antigravity: ['claude-', 'gemini-', 'gpt-oss-', 'tab_'],
+  openai: ['gpt-'],
+  gemini: ['gemini-'],
+  sora: []
+}
+
+const scopedModelPrefixes = computed(() => {
+  if (!props.scopePlatform) return []
+  const prefixes = platformModelPrefix[props.scopePlatform] ?? []
+  return [...new Set(prefixes)]
+})
+
+const filteredModels = computed(() => {
+  if (scopedModelPrefixes.value.length === 0) return allModels
+  return allModels.filter((model) =>
+    scopedModelPrefixes.value.some(prefix => model.value.startsWith(prefix))
+  )
+})
+
+const filteredPresets = computed(() => {
+  if (scopedModelPrefixes.value.length === 0) return presetMappings
+  return presetMappings.filter((preset) =>
+    scopedModelPrefixes.value.some(prefix => preset.from.startsWith(prefix))
+  )
+})
 // State - field enable flags
 const enableBaseUrl = ref(false)
 const enableModelRestriction = ref(false)
@@ -1043,6 +1070,8 @@ const allModels = [
   { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
   { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
+  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
   { value: 'gpt-5.2-2025-12-11', label: 'GPT-5.2' },
   { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
   { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
@@ -1053,6 +1082,8 @@ const allModels = [
   { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { value: 'gemini-3.1-flash-image', label: 'Gemini 3.1 Flash Image' },
+  { value: 'gemini-3-pro-image', label: 'Gemini 3 Pro Image (Legacy)' },
   { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview' },
   { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro Preview' }
 ]
@@ -1082,7 +1113,14 @@ const presetMappings = [
   {
     label: 'Opus 4.6',
     from: 'claude-opus-4-6',
-    to: 'claude-opus-4-6',
+    to: 'claude-opus-4-6-thinking',
+    color:
+      'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400'
+  },
+  {
+    label: 'Opus 4.6-thinking',
+    from: 'claude-opus-4-6-thinking',
+    to: 'claude-opus-4-6-thinking',
     color:
       'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400'
   },
@@ -1123,6 +1161,36 @@ const presetMappings = [
     from: 'claude-opus-4-5-20251101',
     to: 'claude-sonnet-4-5-20250929',
     color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400'
+  },
+  {
+    label: 'Gemini 3.1 Image',
+    from: 'gemini-3.1-flash-image',
+    to: 'gemini-3.1-flash-image',
+    color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400'
+  },
+  {
+    label: 'G3 Image→3.1',
+    from: 'gemini-3-pro-image',
+    to: 'gemini-3.1-flash-image',
+    color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400'
+  },
+  {
+    label: 'GPT-5.3 Codex',
+    from: 'gpt-5.3-codex',
+    to: 'gpt-5.3-codex',
+    color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400'
+  },
+  {
+    label: 'GPT-5.3 Spark',
+    from: 'gpt-5.3-codex-spark',
+    to: 'gpt-5.3-codex-spark',
+    color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400'
+  },
+  {
+    label: '5.2→5.3',
+    from: 'gpt-5.2-codex',
+    to: 'gpt-5.3-codex',
+    color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400'
   },
   {
     label: 'GPT-5.2',

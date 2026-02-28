@@ -150,11 +150,11 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.StoreDisabledConnMode != "strict" {
 		t.Fatalf("Gateway.OpenAIWS.StoreDisabledConnMode = %q, want %q", cfg.Gateway.OpenAIWS.StoreDisabledConnMode, "strict")
 	}
-	if cfg.Gateway.OpenAIWS.ModeRouterV2Enabled {
-		t.Fatalf("Gateway.OpenAIWS.ModeRouterV2Enabled = true, want false")
+	if !cfg.Gateway.OpenAIWS.ModeRouterV2Enabled {
+		t.Fatalf("Gateway.OpenAIWS.ModeRouterV2Enabled = false, want true")
 	}
-	if cfg.Gateway.OpenAIWS.IngressModeDefault != "shared" {
-		t.Fatalf("Gateway.OpenAIWS.IngressModeDefault = %q, want %q", cfg.Gateway.OpenAIWS.IngressModeDefault, "shared")
+	if cfg.Gateway.OpenAIWS.IngressModeDefault != "dedicated" {
+		t.Fatalf("Gateway.OpenAIWS.IngressModeDefault = %q, want %q", cfg.Gateway.OpenAIWS.IngressModeDefault, "dedicated")
 	}
 }
 
@@ -1373,7 +1373,7 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			wantErr: "gateway.openai_ws.store_disabled_conn_mode",
 		},
 		{
-			name:    "ingress_mode_default 必须为 off|shared|dedicated",
+			name:    "ingress_mode_default 必须为 off|shared|dedicated|ctx_pool",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.IngressModeDefault = "invalid" },
 			wantErr: "gateway.openai_ws.ingress_mode_default",
 		},
@@ -1386,6 +1386,14 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			name:    "retry_total_budget_ms 不能为负数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.RetryTotalBudgetMS = -1 },
 			wantErr: "gateway.openai_ws.retry_total_budget_ms",
+		},
+		{
+			name: "responses_websockets v1-only 配置不允许",
+			mutate: func(c *Config) {
+				c.Gateway.OpenAIWS.ResponsesWebsockets = true
+				c.Gateway.OpenAIWS.ResponsesWebsocketsV2 = false
+			},
+			wantErr: "gateway.openai_ws.responses_websockets",
 		},
 		{
 			name:    "lb_top_k 必须为正数",

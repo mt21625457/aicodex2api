@@ -198,6 +198,24 @@ func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t 
 	require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
 }
 
+func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	svc := &OpenAIGatewayService{}
+	seed := "openai_ws_ingress:9:100:200"
+
+	got := svc.GenerateSessionHashWithFallback(c, []byte(`{}`), seed)
+	want := fmt.Sprintf("%016x", xxhash.Sum64String(seed))
+	require.Equal(t, want, got)
+	require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
+
+	empty := svc.GenerateSessionHashWithFallback(c, []byte(`{}`), "   ")
+	require.Equal(t, "", empty)
+}
+
 func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
 	if c.waitCounts != nil {
 		if count, ok := c.waitCounts[accountID]; ok {

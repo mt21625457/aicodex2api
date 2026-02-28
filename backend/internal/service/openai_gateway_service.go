@@ -264,9 +264,11 @@ type OpenAIGatewayService struct {
 	openaiWSResolver    OpenAIWSProtocolResolver
 
 	openaiWSPoolOnce       sync.Once
+	openaiWSIngressCtxOnce sync.Once
 	openaiWSStateStoreOnce sync.Once
 	openaiSchedulerOnce    sync.Once
 	openaiWSPool           *openAIWSConnPool
+	openaiWSIngressCtxPool *openAIWSIngressContextPool
 	openaiWSStateStore     OpenAIWSStateStore
 	openaiScheduler        OpenAIAccountScheduler
 	openaiAccountStats     *openAIAccountRuntimeStats
@@ -322,6 +324,9 @@ func NewOpenAIGatewayService(
 func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 	if s != nil && s.openaiWSPool != nil {
 		s.openaiWSPool.Close()
+	}
+	if s != nil && s.openaiWSIngressCtxPool != nil {
+		s.openaiWSIngressCtxPool.Close()
 	}
 }
 
@@ -899,6 +904,25 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 	}
 
 	currentHash, legacyHash := deriveOpenAISessionHashes(sessionID)
+	attachOpenAILegacySessionHashToGin(c, legacyHash)
+	return currentHash
+}
+
+// GenerateSessionHashWithFallback 先按常规信号生成会话哈希；
+// 当未携带 session_id/conversation_id/prompt_cache_key 时，使用 fallbackSeed 生成稳定哈希。
+// 该方法用于 WS ingress，避免会话信号缺失时发生跨账号漂移。
+func (s *OpenAIGatewayService) GenerateSessionHashWithFallback(c *gin.Context, body []byte, fallbackSeed string) string {
+	sessionHash := s.GenerateSessionHash(c, body)
+	if sessionHash != "" {
+		return sessionHash
+	}
+
+	seed := strings.TrimSpace(fallbackSeed)
+	if seed == "" {
+		return ""
+	}
+
+	currentHash, legacyHash := deriveOpenAISessionHashes(seed)
 	attachOpenAILegacySessionHashToGin(c, legacyHash)
 	return currentHash
 }

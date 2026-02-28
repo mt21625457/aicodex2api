@@ -462,7 +462,7 @@ type ForwardResult struct {
 	FirstTokenMs     *int // 首字时间（流式请求）
 	ClientDisconnect bool // 客户端是否在流式传输过程中断开
 
-	// 图片生成计费字段（仅 gemini-3-pro-image 使用）
+	// 图片生成计费字段（图片生成模型使用）
 	ImageCount int    // 生成的图片数量
 	ImageSize  string // 图片尺寸 "1K", "2K", "4K"
 
@@ -4889,12 +4889,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			// messages requests typically use only oauth + interleaved-thinking.
 			// Also drop claude-code beta if a downstream client added it.
 			requiredBetas := []string{claude.BetaOAuth, claude.BetaInterleavedThinking}
-			drop := map[string]struct{}{claude.BetaClaudeCode: {}, claude.BetaContext1M: {}}
-			req.Header.Set("anthropic-beta", mergeAnthropicBetaDropping(requiredBetas, incomingBeta, drop))
+			req.Header.Set("anthropic-beta", mergeAnthropicBetaDropping(requiredBetas, incomingBeta, droppedBetasWithClaudeCodeSet))
 		} else {
 			// Claude Code 客户端：尽量透传原始 header，仅补齐 oauth beta
 			clientBetaHeader := req.Header.Get("anthropic-beta")
-			req.Header.Set("anthropic-beta", stripBetaToken(s.getBetaHeader(modelID, clientBetaHeader), claude.BetaContext1M))
+			req.Header.Set("anthropic-beta", stripBetaTokensWithSet(s.getBetaHeader(modelID, clientBetaHeader), defaultDroppedBetasSet))
 		}
 	} else if s.cfg != nil && s.cfg.Gateway.InjectBetaForAPIKey && req.Header.Get("anthropic-beta") == "" {
 		// API-key：仅在请求显式使用 beta 特性且客户端未提供时，按需补齐（默认关闭）
@@ -5048,22 +5047,63 @@ func mergeAnthropicBetaDropping(required []string, incoming string, drop map[str
 	return strings.Join(out, ",")
 }
 
-// stripBetaToken removes a single beta token from a comma-separated header value.
-// It short-circuits when the token is not present to avoid unnecessary allocations.
-func stripBetaToken(header, token string) string {
-	if !strings.Contains(header, token) {
+// stripBetaTokens removes the given beta tokens from a comma-separated header value.
+func stripBetaTokens(header string, tokens []string) string {
+	if header == "" || len(tokens) == 0 {
 		return header
 	}
-	out := make([]string, 0, 8)
-	for _, p := range strings.Split(header, ",") {
+	return stripBetaTokensWithSet(header, buildBetaTokenSet(tokens))
+}
+
+func stripBetaTokensWithSet(header string, drop map[string]struct{}) string {
+	if header == "" || len(drop) == 0 {
+		return header
+	}
+	parts := strings.Split(header, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
 		p = strings.TrimSpace(p)
-		if p == "" || p == token {
+		if p == "" {
+			continue
+		}
+		if _, ok := drop[p]; ok {
 			continue
 		}
 		out = append(out, p)
 	}
+	if len(out) == len(parts) {
+		return header // no change, avoid allocation
+	}
 	return strings.Join(out, ",")
 }
+
+// droppedBetaSet returns claude.DroppedBetas as a set, with optional extra tokens.
+func droppedBetaSet(extra ...string) map[string]struct{} {
+	m := make(map[string]struct{}, len(defaultDroppedBetasSet)+len(extra))
+	for t := range defaultDroppedBetasSet {
+		m[t] = struct{}{}
+	}
+	for _, t := range extra {
+		m[t] = struct{}{}
+	}
+	return m
+}
+
+func buildBetaTokenSet(tokens []string) map[string]struct{} {
+	m := make(map[string]struct{}, len(tokens))
+	for _, t := range tokens {
+		if t == "" {
+			continue
+		}
+		m[t] = struct{}{}
+	}
+	return m
+}
+
+var (
+	defaultDroppedBetasSet        = buildBetaTokenSet(claude.DroppedBetas)
+	droppedBetasWithClaudeCodeSet = droppedBetaSet(claude.BetaClaudeCode)
+)
 
 // applyClaudeCodeMimicHeaders forces "Claude Code-like" request headers.
 // This mirrors opencode-anthropic-auth behavior: do not trust downstream
@@ -5192,6 +5232,20 @@ func extractUpstreamErrorMessage(body []byte) string {
 
 	// 兜底：尝试顶层 message
 	return gjson.GetBytes(body, "message").String()
+}
+
+func isCountTokensUnsupported404(statusCode int, body []byte) bool {
+	if statusCode != http.StatusNotFound {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	if msg == "" {
+		return false
+	}
+	if strings.Contains(msg, "/v1/messages/count_tokens") {
+		return true
+	}
+	return strings.Contains(msg, "count_tokens") && strings.Contains(msg, "not found")
 }
 
 func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account) (*ForwardResult, error) {
@@ -6577,9 +6631,10 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
 	}
 
-	// Antigravity 账户不支持 count_tokens 转发，直接返回空值
+	// Antigravity 账户不支持 count_tokens，返回 404 让客户端 fallback 到本地估算。
+	// 返回 nil 避免 handler 层记录为错误，也不设置 ops 上游错误上下文。
 	if account.Platform == PlatformAntigravity {
-		c.JSON(http.StatusOK, gin.H{"input_tokens": 0})
+		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for this platform")
 		return nil
 	}
 
@@ -6783,6 +6838,18 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+		// 中转站不支持 count_tokens 端点时（404），返回 404 让客户端 fallback 到本地估算。
+		// 仅在错误消息明确指向 count_tokens endpoint 不存在时生效，避免误吞其他 404（如错误 base_url）。
+		// 返回 nil 避免 handler 层记录为错误，也不设置 ops 上游错误上下文。
+		if isCountTokensUnsupported404(resp.StatusCode, respBody) {
+			logger.LegacyPrintf("service.gateway",
+				"[count_tokens] Upstream does not support count_tokens (404), returning 404: account=%d name=%s msg=%s",
+				account.ID, account.Name, truncateString(upstreamMsg, 512))
+			s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported by upstream")
+			return nil
+		}
+
 		upstreamDetail := ""
 		if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 			maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -6959,7 +7026,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 			incomingBeta := req.Header.Get("anthropic-beta")
 			requiredBetas := []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaTokenCounting}
-			drop := map[string]struct{}{claude.BetaContext1M: {}}
+			drop := droppedBetaSet()
 			req.Header.Set("anthropic-beta", mergeAnthropicBetaDropping(requiredBetas, incomingBeta, drop))
 		} else {
 			clientBetaHeader := req.Header.Get("anthropic-beta")
@@ -6970,7 +7037,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 				if !strings.Contains(beta, claude.BetaTokenCounting) {
 					beta = beta + "," + claude.BetaTokenCounting
 				}
-				req.Header.Set("anthropic-beta", stripBetaToken(beta, claude.BetaContext1M))
+				req.Header.Set("anthropic-beta", stripBetaTokensWithSet(beta, defaultDroppedBetasSet))
 			}
 		}
 	} else if s.cfg != nil && s.cfg.Gateway.InjectBetaForAPIKey && req.Header.Get("anthropic-beta") == "" {

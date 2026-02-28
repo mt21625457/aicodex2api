@@ -902,16 +902,6 @@ func (r *opsRepository) queryCurrentRates(ctx context.Context, filter *service.O
 	return qpsCurrent, tpsCurrent, nil
 }
 
-func (r *opsRepository) queryPeakQPS(ctx context.Context, filter *service.OpsDashboardFilter, start, end time.Time) (float64, error) {
-	qpsPeak, _, err := r.queryPeakRates(ctx, filter, start, end)
-	return qpsPeak, err
-}
-
-func (r *opsRepository) queryPeakTPS(ctx context.Context, filter *service.OpsDashboardFilter, start, end time.Time) (float64, error) {
-	_, tpsPeak, err := r.queryPeakRates(ctx, filter, start, end)
-	return tpsPeak, err
-}
-
 func (r *opsRepository) queryPeakRates(ctx context.Context, filter *service.OpsDashboardFilter, start, end time.Time) (qpsPeak float64, tpsPeak float64, err error) {
 	usageJoin, usageWhere, usageArgs, next := buildUsageWhere(filter, start, end, 1)
 	errorWhere, errorArgs, _ := buildErrorWhere(filter, start, end, next)

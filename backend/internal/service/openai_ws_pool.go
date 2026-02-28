@@ -119,6 +119,18 @@ func (l *openAIWSConnLease) Reused() bool {
 	return l.reused
 }
 
+func (l *openAIWSConnLease) ScheduleLayer() string {
+	return ""
+}
+
+func (l *openAIWSConnLease) StickinessLevel() string {
+	return ""
+}
+
+func (l *openAIWSConnLease) MigrationUsed() bool {
+	return false
+}
+
 func (l *openAIWSConnLease) HandshakeHeader(name string) string {
 	if l == nil || l.conn == nil {
 		return ""
@@ -1134,6 +1146,13 @@ func (p *openAIWSConnPool) cleanupAccountLocked(ap *openAIWSAccountPool, now tim
 
 	evicted := make([]*openAIWSConn, 0)
 	for id, conn := range ap.conns {
+		if conn == nil {
+			delete(ap.conns, id)
+			if len(ap.pinnedConns) > 0 {
+				delete(ap.pinnedConns, id)
+			}
+			continue
+		}
 		select {
 		case <-conn.closedCh:
 			delete(ap.conns, id)
@@ -1165,7 +1184,14 @@ func (p *openAIWSConnPool) cleanupAccountLocked(ap *openAIWSAccountPool, now tim
 	}
 	if maxIdle >= 0 && len(ap.conns) > maxIdle {
 		idleConns := make([]*openAIWSConn, 0, len(ap.conns))
-		for _, conn := range ap.conns {
+		for id, conn := range ap.conns {
+			if conn == nil {
+				delete(ap.conns, id)
+				if len(ap.pinnedConns) > 0 {
+					delete(ap.pinnedConns, id)
+				}
+				continue
+			}
 			// 有等待者的连接不能在清理阶段被淘汰，否则等待中的 acquire 会收到 closed 错误。
 			if conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) {
 				continue

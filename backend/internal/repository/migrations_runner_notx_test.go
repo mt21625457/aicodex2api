@@ -54,7 +54,7 @@ DROP INDEX CONCURRENTLY IF EXISTS idx_b;
 func TestApplyMigrationsFS_NonTransactionalMigration(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	prepareMigrationsBootstrapExpectations(mock)
 	mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").
@@ -83,7 +83,7 @@ func TestApplyMigrationsFS_NonTransactionalMigration(t *testing.T) {
 func TestApplyMigrationsFS_NonTransactionalMigration_MultiStatements(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	prepareMigrationsBootstrapExpectations(mock)
 	mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").
@@ -119,7 +119,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_t_b ON t(b);
 func TestApplyMigrationsFS_TransactionalMigration(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	prepareMigrationsBootstrapExpectations(mock)
 	mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").

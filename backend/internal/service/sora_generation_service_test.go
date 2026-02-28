@@ -141,7 +141,7 @@ func (r *stubUserRepoForQuota) Update(_ context.Context, user *User) error {
 	r.users[user.ID] = user
 	return nil
 }
-func (r *stubUserRepoForQuota) Create(context.Context, *User) error   { return nil }
+func (r *stubUserRepoForQuota) Create(context.Context, *User) error { return nil }
 func (r *stubUserRepoForQuota) GetByEmail(context.Context, string) (*User, error) {
 	return nil, nil
 }
@@ -153,10 +153,12 @@ func (r *stubUserRepoForQuota) List(context.Context, pagination.PaginationParams
 func (r *stubUserRepoForQuota) ListWithFilters(context.Context, pagination.PaginationParams, UserListFilters) ([]User, *pagination.PaginationResult, error) {
 	return nil, nil, nil
 }
-func (r *stubUserRepoForQuota) UpdateBalance(context.Context, int64, float64) error   { return nil }
-func (r *stubUserRepoForQuota) DeductBalance(context.Context, int64, float64) error   { return nil }
-func (r *stubUserRepoForQuota) UpdateConcurrency(context.Context, int64, int) error   { return nil }
-func (r *stubUserRepoForQuota) ExistsByEmail(context.Context, string) (bool, error)   { return false, nil }
+func (r *stubUserRepoForQuota) UpdateBalance(context.Context, int64, float64) error { return nil }
+func (r *stubUserRepoForQuota) DeductBalance(context.Context, int64, float64) error { return nil }
+func (r *stubUserRepoForQuota) UpdateConcurrency(context.Context, int64, int) error { return nil }
+func (r *stubUserRepoForQuota) ExistsByEmail(context.Context, string) (bool, error) {
+	return false, nil
+}
 func (r *stubUserRepoForQuota) RemoveGroupFromAllowedGroups(context.Context, int64) (int64, error) {
 	return 0, nil
 }
@@ -363,7 +365,7 @@ func TestMarkCancelled_Completed(t *testing.T) {
 
 	err := svc.MarkCancelled(context.Background(), 1)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "只能取消")
+	require.ErrorIs(t, err, ErrSoraGenerationNotActive)
 }
 
 func TestMarkCancelled_Failed(t *testing.T) {

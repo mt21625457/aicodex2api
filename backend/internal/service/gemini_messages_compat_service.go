@@ -284,15 +284,6 @@ func (s *GeminiMessagesCompatService) isAccountValidForPlatform(account *Account
 	return false
 }
 
-// passesRateLimitPreCheck 执行速率限制预检。
-// 返回 true 表示通过预检或无需预检。
-//
-// passesRateLimitPreCheck performs rate limit precheck.
-// Returns true if passed or precheck not required.
-func (s *GeminiMessagesCompatService) passesRateLimitPreCheck(ctx context.Context, account *Account, requestedModel string) bool {
-	return s.passesRateLimitPreCheckWithCache(ctx, account, requestedModel, nil)
-}
-
 func (s *GeminiMessagesCompatService) passesRateLimitPreCheckWithCache(ctx context.Context, account *Account, requestedModel string, precheckResult map[int64]bool) bool {
 	if s.rateLimitService == nil || requestedModel == "" {
 		return true

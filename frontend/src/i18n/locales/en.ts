@@ -1314,7 +1314,7 @@ export default {
       },
       imagePricing: {
         title: 'Image Generation Pricing',
-        description: 'Configure pricing for gemini-3-pro-image model. Leave empty to use default prices.'
+        description: 'Configure pricing for image generation models. Leave empty to use default prices.'
       },
       soraPricing: {
         title: 'Sora Per-Request Pricing',
@@ -1743,7 +1743,8 @@ export default {
         templateRollbacking: 'Rolling back...',
         templateRollbackConfirm: 'Rollback template "{name}" to {updatedAt}?',
         templateRollbackSuccess: 'Template "{name}" rollback succeeded',
-        templateRollbackFailed: 'Failed to rollback template'
+        templateRollbackFailed: 'Failed to rollback template',
+        mixedPlatformWarning: 'Selected accounts span multiple platforms ({platforms}). Model mapping presets shown are combined — ensure mappings are appropriate for each platform.'
       },
       bulkDeleteTitle: 'Bulk Delete Accounts',
       bulkDeleteConfirm: 'Delete the selected {count} account(s)? This action cannot be undone.',
@@ -2312,7 +2313,7 @@ export default {
         geminiFlashDaily: 'Flash',
         gemini3Pro: 'G3P',
         gemini3Flash: 'G3F',
-        gemini3Image: 'G3I',
+        gemini3Image: 'GImage',
         claude: 'Claude'
       },
       tier: {

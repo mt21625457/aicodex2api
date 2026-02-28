@@ -77,7 +77,7 @@ func TestOpenAIWSConnLease_WriteJSONAndGuards(t *testing.T) {
 func TestOpenAIWSConn_WriteJSONWithTimeout_NilParentContextUsesBackground(t *testing.T) {
 	probe := &openAIWSContextProbeConn{}
 	conn := newOpenAIWSConn("ctx_probe", 1, probe, nil)
-	require.NoError(t, conn.writeJSONWithTimeout(nil, map[string]any{"type": "response.create"}, 0))
+	require.NoError(t, conn.writeJSONWithTimeout(context.Background(), map[string]any{"type": "response.create"}, 0))
 	require.NotNil(t, probe.lastWriteCtx)
 }
 
@@ -800,6 +800,7 @@ func TestOpenAIWSConnPool_RunBackgroundCleanupSweep_SkipsInvalidAndUsesAccountCa
 	ap := &openAIWSAccountPool{
 		conns: make(map[string]*openAIWSConn),
 	}
+	ap.conns["nil_conn"] = nil
 	stale := newOpenAIWSConn("stale_bg_cleanup", accountID, &openAIWSFakeConn{}, nil)
 	stale.createdAtNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
 	stale.lastUsedNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
@@ -815,13 +816,17 @@ func TestOpenAIWSConnPool_RunBackgroundCleanupSweep_SkipsInvalidAndUsesAccountCa
 	pool.accounts.Store(accountID, ap)
 
 	now := time.Now()
-	pool.runBackgroundCleanupSweep(now)
+	require.NotPanics(t, func() {
+		pool.runBackgroundCleanupSweep(now)
+	})
 
 	ap.mu.Lock()
+	_, nilConnExists := ap.conns["nil_conn"]
 	_, exists := ap.conns[stale.id]
 	lastCleanupAt := ap.lastCleanupAt
 	ap.mu.Unlock()
 
+	require.False(t, nilConnExists, "后台清理应移除无效 nil 连接条目")
 	require.False(t, exists, "后台清理应清理过期连接")
 	require.Equal(t, now, lastCleanupAt)
 }
@@ -901,7 +906,7 @@ func TestOpenAIWSConnLease_ReadWriteHelpersAndConnStats(t *testing.T) {
 	require.False(t, conn.isLeased())
 
 	// 覆盖空上下文路径
-	_, err = conn.readMessage(nil)
+	_, err = conn.readMessage(context.Background())
 	require.NoError(t, err)
 
 	// 覆盖 nil 保护分支
@@ -1271,7 +1276,7 @@ func TestOpenAIWSConn_AdditionalGuardBranches(t *testing.T) {
 
 	connOK := newOpenAIWSConn("ok", 1, &openAIWSFakeConn{}, nil)
 	require.NoError(t, connOK.writeJSON(map[string]any{"k": "v"}, nil))
-	_, err = connOK.readMessageWithContextTimeout(nil, 0)
+	_, err = connOK.readMessageWithContextTimeout(context.Background(), 0)
 	require.NoError(t, err)
 	require.NoError(t, connOK.pingWithTimeout(0))
 

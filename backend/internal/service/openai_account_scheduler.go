@@ -4,8 +4,10 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"hash/fnv"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -341,18 +343,15 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 
 	cfg := s.service.schedulingConfig()
 	if s.service.concurrencyService != nil {
-		waitingCount, _ := s.service.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-		if waitingCount < cfg.StickySessionMaxWaiting {
-			return &AccountSelectionResult{
-				Account: account,
-				WaitPlan: &AccountWaitPlan{
-					AccountID:      accountID,
-					MaxConcurrency: account.Concurrency,
-					Timeout:        cfg.StickySessionWaitTimeout,
-					MaxWaiting:     cfg.StickySessionMaxWaiting,
-				},
-			}, nil
-		}
+		return &AccountSelectionResult{
+			Account: account,
+			WaitPlan: &AccountWaitPlan{
+				AccountID:      accountID,
+				MaxConcurrency: account.Concurrency,
+				Timeout:        cfg.StickySessionWaitTimeout,
+				MaxWaiting:     cfg.StickySessionMaxWaiting,
+			},
+		}, nil
 	}
 	return nil, nil
 }
@@ -382,7 +381,11 @@ func (h openAIAccountCandidateHeap) Swap(i, j int) {
 }
 
 func (h *openAIAccountCandidateHeap) Push(x any) {
-	*h = append(*h, x.(openAIAccountCandidateScore))
+	candidate, ok := x.(openAIAccountCandidateScore)
+	if !ok {
+		panic("openAIAccountCandidateHeap: invalid element type")
+	}
+	*h = append(*h, candidate)
 }
 
 func (h *openAIAccountCandidateHeap) Pop() any {
@@ -442,6 +445,116 @@ func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK i
 		return isOpenAIAccountCandidateBetter(ranked[i], ranked[j])
 	})
 	return ranked
+}
+
+type openAISelectionRNG struct {
+	state uint64
+}
+
+func newOpenAISelectionRNG(seed uint64) openAISelectionRNG {
+	if seed == 0 {
+		seed = 0x9e3779b97f4a7c15
+	}
+	return openAISelectionRNG{state: seed}
+}
+
+func (r *openAISelectionRNG) nextUint64() uint64 {
+	// xorshift64*
+	x := r.state
+	x ^= x >> 12
+	x ^= x << 25
+	x ^= x >> 27
+	r.state = x
+	return x * 2685821657736338717
+}
+
+func (r *openAISelectionRNG) nextFloat64() float64 {
+	// [0,1)
+	return float64(r.nextUint64()>>11) / (1 << 53)
+}
+
+func deriveOpenAISelectionSeed(req OpenAIAccountScheduleRequest) uint64 {
+	hasher := fnv.New64a()
+	writeValue := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		_, _ = hasher.Write([]byte(trimmed))
+		_, _ = hasher.Write([]byte{0})
+	}
+
+	writeValue(req.SessionHash)
+	writeValue(req.PreviousResponseID)
+	writeValue(req.RequestedModel)
+	if req.GroupID != nil {
+		_, _ = hasher.Write([]byte(strconv.FormatInt(*req.GroupID, 10)))
+	}
+
+	seed := hasher.Sum64()
+	// 对“无会话锚点”的纯负载均衡请求引入时间熵，避免固定命中同一账号。
+	if strings.TrimSpace(req.SessionHash) == "" && strings.TrimSpace(req.PreviousResponseID) == "" {
+		seed ^= uint64(time.Now().UnixNano())
+	}
+	if seed == 0 {
+		seed = uint64(time.Now().UnixNano()) ^ 0x9e3779b97f4a7c15
+	}
+	return seed
+}
+
+func buildOpenAIWeightedSelectionOrder(
+	candidates []openAIAccountCandidateScore,
+	req OpenAIAccountScheduleRequest,
+) []openAIAccountCandidateScore {
+	if len(candidates) <= 1 {
+		return append([]openAIAccountCandidateScore(nil), candidates...)
+	}
+
+	pool := append([]openAIAccountCandidateScore(nil), candidates...)
+	weights := make([]float64, len(pool))
+	minScore := pool[0].score
+	for i := 1; i < len(pool); i++ {
+		if pool[i].score < minScore {
+			minScore = pool[i].score
+		}
+	}
+	for i := range pool {
+		// 将 top-K 分值平移到正区间，避免“单一最高分账号”长期垄断。
+		weight := (pool[i].score - minScore) + 1.0
+		if math.IsNaN(weight) || math.IsInf(weight, 0) || weight <= 0 {
+			weight = 1.0
+		}
+		weights[i] = weight
+	}
+
+	order := make([]openAIAccountCandidateScore, 0, len(pool))
+	rng := newOpenAISelectionRNG(deriveOpenAISelectionSeed(req))
+	for len(pool) > 0 {
+		total := 0.0
+		for _, w := range weights {
+			total += w
+		}
+
+		selectedIdx := 0
+		if total > 0 {
+			r := rng.nextFloat64() * total
+			acc := 0.0
+			for i, w := range weights {
+				acc += w
+				if r <= acc {
+					selectedIdx = i
+					break
+				}
+			}
+		} else {
+			selectedIdx = int(rng.nextUint64() % uint64(len(pool)))
+		}
+
+		order = append(order, pool[selectedIdx])
+		pool = append(pool[:selectedIdx], pool[selectedIdx+1:]...)
+		weights = append(weights[:selectedIdx], weights[selectedIdx+1:]...)
+	}
+	return order
 }
 
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
@@ -569,9 +682,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		topK = 1
 	}
 	rankedCandidates := selectTopKOpenAICandidates(candidates, topK)
+	selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
 
-	for i := 0; i < topK; i++ {
-		candidate := rankedCandidates[i]
+	for i := 0; i < len(selectionOrder); i++ {
+		candidate := selectionOrder[i]
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, candidate.account.ID, candidate.account.Concurrency)
 		if acquireErr != nil {
 			return nil, len(candidates), topK, loadSkew, acquireErr
@@ -589,7 +703,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	cfg := s.service.schedulingConfig()
-	candidate := rankedCandidates[0]
+	candidate := selectionOrder[0]
 	return &AccountSelectionResult{
 		Account: candidate.account,
 		WaitPlan: &AccountWaitPlan{
@@ -741,7 +855,7 @@ func (s *OpenAIGatewayService) openAIWSLBTopK() int {
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.LBTopK > 0 {
 		return s.cfg.Gateway.OpenAIWS.LBTopK
 	}
-	return 3
+	return 7
 }
 
 func (s *OpenAIGatewayService) openAIWSSchedulerWeights() GatewayOpenAIWSSchedulerScoreWeightsView {
@@ -780,16 +894,6 @@ func clamp01(value float64) float64 {
 	default:
 		return value
 	}
-}
-
-func calcLoadSkew(loadRates []float64) float64 {
-	sum := 0.0
-	sumSquares := 0.0
-	for _, value := range loadRates {
-		sum += value
-		sumSquares += value * value
-	}
-	return calcLoadSkewByMoments(sum, sumSquares, len(loadRates))
 }
 
 func calcLoadSkewByMoments(sum float64, sumSquares float64, count int) float64 {

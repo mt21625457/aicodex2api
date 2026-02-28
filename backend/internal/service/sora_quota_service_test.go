@@ -30,12 +30,12 @@ func (r *stubGroupRepoForQuota) GetByID(_ context.Context, id int64) (*Group, er
 	}
 	return nil, fmt.Errorf("group not found")
 }
-func (r *stubGroupRepoForQuota) Create(context.Context, *Group) error   { return nil }
+func (r *stubGroupRepoForQuota) Create(context.Context, *Group) error { return nil }
 func (r *stubGroupRepoForQuota) GetByIDLite(_ context.Context, id int64) (*Group, error) {
 	return r.GetByID(context.Background(), id)
 }
-func (r *stubGroupRepoForQuota) Update(context.Context, *Group) error          { return nil }
-func (r *stubGroupRepoForQuota) Delete(context.Context, int64) error           { return nil }
+func (r *stubGroupRepoForQuota) Update(context.Context, *Group) error { return nil }
+func (r *stubGroupRepoForQuota) Delete(context.Context, int64) error  { return nil }
 func (r *stubGroupRepoForQuota) DeleteCascade(context.Context, int64) ([]int64, error) {
 	return nil, nil
 }

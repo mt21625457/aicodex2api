@@ -936,7 +936,9 @@ func (h *SoraClientHandler) fetchUpstreamModels(ctx context.Context) ([]service.
 	if err != nil {
 		return nil, fmt.Errorf("请求上游失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("上游返回状态码 %d", resp.StatusCode)
