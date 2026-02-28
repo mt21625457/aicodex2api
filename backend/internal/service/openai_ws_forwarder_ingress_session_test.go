@@ -318,13 +318,19 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CtxPoolModeBinds
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
 
-	captureConn := &openAIWSCaptureConn{
+	upstreamConn1 := &openAIWSCaptureConn{
 		events: [][]byte{
 			[]byte(`{"type":"response.completed","response":{"id":"resp_ctx_pool_1","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+	}
+	upstreamConn2 := &openAIWSCaptureConn{
+		events: [][]byte{
 			[]byte(`{"type":"response.completed","response":{"id":"resp_ctx_pool_2","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`),
 		},
 	}
-	dialer := &openAIWSCaptureDialer{conn: captureConn}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{upstreamConn1, upstreamConn2},
+	}
 	ctxPool := newOpenAIWSIngressContextPool(cfg)
 	ctxPool.setClientDialerForTest(dialer)
 	defer ctxPool.Close()
@@ -424,8 +430,19 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CtxPoolModeBinds
 	runSingleTurnSession("resp_ctx_pool_1")
 	runSingleTurnSession("resp_ctx_pool_2")
 
-	require.Equal(t, 1, dialer.DialCount(), "ctx_pool 模式下同 session 跨客户端连接应复用同一上游 ws context")
-	require.Len(t, captureConn.writes, 2, "ctx_pool 模式应通过同一上游连接完成两轮请求")
+	require.Equal(t, 2, dialer.DialCount(), "ctx_pool 模式下每个客户端 ws 会话都应新建上游连接")
+	upstreamConn1.mu.Lock()
+	writes1 := len(upstreamConn1.writes)
+	closed1 := upstreamConn1.closed
+	upstreamConn1.mu.Unlock()
+	upstreamConn2.mu.Lock()
+	writes2 := len(upstreamConn2.writes)
+	closed2 := upstreamConn2.closed
+	upstreamConn2.mu.Unlock()
+	require.Equal(t, 1, writes1, "首个客户端会话应仅使用首条上游连接发送一次请求")
+	require.Equal(t, 1, writes2, "第二个客户端会话应仅使用第二条上游连接发送一次请求")
+	require.True(t, closed1, "首个客户端会话结束后应关闭对应上游连接")
+	require.True(t, closed2, "第二个客户端会话结束后应关闭对应上游连接")
 	require.Equal(t, int64(0), svc.SnapshotOpenAIWSPoolMetrics().AcquireTotal, "ctx_pool 模式不应走普通 ws 连接池")
 }
 

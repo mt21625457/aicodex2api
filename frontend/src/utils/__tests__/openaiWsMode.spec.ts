@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_DEDICATED,
   OPENAI_WS_MODE_OFF,
   OPENAI_WS_MODE_SHARED,
@@ -14,6 +15,7 @@ describe('openaiWsMode utils', () => {
     expect(normalizeOpenAIWSMode('off')).toBe(OPENAI_WS_MODE_OFF)
     expect(normalizeOpenAIWSMode(' Shared ')).toBe(OPENAI_WS_MODE_SHARED)
     expect(normalizeOpenAIWSMode('DEDICATED')).toBe(OPENAI_WS_MODE_DEDICATED)
+    expect(normalizeOpenAIWSMode('CTX_POOL')).toBe(OPENAI_WS_MODE_CTX_POOL)
     expect(normalizeOpenAIWSMode('invalid')).toBeNull()
   })
 
@@ -47,9 +49,10 @@ describe('openaiWsMode utils', () => {
     expect(mode).toBe(OPENAI_WS_MODE_OFF)
   })
 
-  it('treats off as disabled and shared/dedicated as enabled', () => {
+  it('treats off as disabled and shared/dedicated/ctx_pool as enabled', () => {
     expect(isOpenAIWSModeEnabled(OPENAI_WS_MODE_OFF)).toBe(false)
     expect(isOpenAIWSModeEnabled(OPENAI_WS_MODE_SHARED)).toBe(true)
     expect(isOpenAIWSModeEnabled(OPENAI_WS_MODE_DEDICATED)).toBe(true)
+    expect(isOpenAIWSModeEnabled(OPENAI_WS_MODE_CTX_POOL)).toBe(true)
   })
 })
