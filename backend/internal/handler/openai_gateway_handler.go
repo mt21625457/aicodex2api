@@ -32,6 +32,7 @@ type OpenAIGatewayHandler struct {
 	usageRecordWorkerPool   *service.UsageRecordWorkerPool
 	errorPassthroughService *service.ErrorPassthroughService
 	concurrencyHelper       *ConcurrencyHelper
+	cfg                     *config.Config
 	maxAccountSwitches      int
 }
 
@@ -60,6 +61,7 @@ func NewOpenAIGatewayHandler(
 		usageRecordWorkerPool:   usageRecordWorkerPool,
 		errorPassthroughService: errorPassthroughService,
 		concurrencyHelper:       NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
+		cfg:                     cfg,
 		maxAccountSwitches:      maxAccountSwitches,
 	}
 }
@@ -552,7 +554,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	userAgent := strings.TrimSpace(c.GetHeader("User-Agent"))
 
 	wsConn, err := coderws.Accept(c.Writer, c.Request, &coderws.AcceptOptions{
-		CompressionMode: coderws.CompressionContextTakeover,
+		CompressionMode: coderws.CompressionNoContextTakeover,
 	})
 	if err != nil {
 		reqLog.Warn("openai.websocket_accept_failed",
@@ -670,6 +672,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 
 	account := selection.Account
+	wsIngressMode, wsDedicatedMode, wsModeRouterV2Enabled := h.resolveOpenAIWSIngressMode(account)
+	reqLog = reqLog.With(
+		zap.Bool("openai_ws_mode_router_v2_enabled", wsModeRouterV2Enabled),
+		zap.String("openai_ws_ingress_mode", wsIngressMode),
+		zap.Bool("openai_ws_dedicated_mode", wsDedicatedMode),
+	)
 	accountMaxConcurrency := account.Concurrency
 	if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
 		accountMaxConcurrency = selection.WaitPlan.MaxConcurrency
@@ -713,6 +721,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.String("account_name", account.Name),
 		zap.String("schedule_layer", scheduleDecision.Layer),
 		zap.Int("candidate_count", scheduleDecision.CandidateCount),
+		zap.Bool("openai_ws_mode_router_v2_enabled", wsModeRouterV2Enabled),
+		zap.String("openai_ws_ingress_mode", wsIngressMode),
+		zap.Bool("openai_ws_dedicated_mode", wsDedicatedMode),
 	)
 
 	hooks := &service.OpenAIWSIngressHooks{
@@ -1016,6 +1027,32 @@ func setOpenAIClientTransportHTTP(c *gin.Context) {
 
 func setOpenAIClientTransportWS(c *gin.Context) {
 	service.SetOpenAIClientTransport(c, service.OpenAIClientTransportWS)
+}
+
+func openAIWSIngressFallbackSessionSeed(userID, apiKeyID int64, groupID *int64) string {
+	gid := int64(0)
+	if groupID != nil {
+		gid = *groupID
+	}
+	return fmt.Sprintf("openai_ws_ingress:%d:%d:%d", gid, userID, apiKeyID)
+}
+
+func (h *OpenAIGatewayHandler) resolveOpenAIWSIngressMode(account *service.Account) (mode string, dedicated bool, modeRouterV2Enabled bool) {
+	if account == nil {
+		return "account_missing", false, false
+	}
+	if h == nil || h.cfg == nil {
+		return "config_missing", false, false
+	}
+	modeRouterV2Enabled = h.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
+	if !modeRouterV2Enabled {
+		return "legacy", false, false
+	}
+	resolvedMode := account.ResolveOpenAIResponsesWebSocketV2Mode(h.cfg.Gateway.OpenAIWS.IngressModeDefault)
+	if resolvedMode == "" {
+		resolvedMode = service.OpenAIWSIngressModeShared
+	}
+	return resolvedMode, resolvedMode == service.OpenAIWSIngressModeDedicated, true
 }
 
 func isOpenAIWSUpgradeRequest(r *http.Request) bool {
