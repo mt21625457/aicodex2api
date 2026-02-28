@@ -2,190 +2,35 @@ package service
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"path/filepath"
 	"testing"
-	"time"
 
-	backupv1 "github.com/Wei-Shaw/sub2api/internal/backup/proto/backup/v1"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	grpcstatus "google.golang.org/grpc/status"
 )
 
-func TestMapDataManagementGRPCError(t *testing.T) {
+func TestDataManagementService_DeprecatedRPCMethods(t *testing.T) {
 	t.Parallel()
 
-	socketPath := "/tmp/sub2api-datamanagement.sock"
-	testCases := []struct {
-		name       string
-		err        error
-		wantCode   int
-		wantReason string
-	}{
-		{
-			name:       "invalid argument",
-			err:        grpcstatus.Error(codes.InvalidArgument, "bad request"),
-			wantCode:   400,
-			wantReason: dataManagementInvalidArgumentReason,
-		},
-		{
-			name:       "not found",
-			err:        grpcstatus.Error(codes.NotFound, "not found"),
-			wantCode:   404,
-			wantReason: dataManagementResourceNotFoundReason,
-		},
-		{
-			name:       "already exists",
-			err:        grpcstatus.Error(codes.AlreadyExists, "exists"),
-			wantCode:   409,
-			wantReason: dataManagementResourceConflictReason,
-		},
-		{
-			name:       "failed precondition",
-			err:        grpcstatus.Error(codes.FailedPrecondition, "precondition failed"),
-			wantCode:   412,
-			wantReason: dataManagementFailedPrecondition,
-		},
-		{
-			name:       "unavailable",
-			err:        grpcstatus.Error(codes.Unavailable, "agent unavailable"),
-			wantCode:   503,
-			wantReason: BackupAgentUnavailableReason,
-		},
-		{
-			name:       "deadline exceeded",
-			err:        grpcstatus.Error(codes.DeadlineExceeded, "timeout"),
-			wantCode:   504,
-			wantReason: dataManagementAgentTimeoutReason,
-		},
-		{
-			name:       "internal fallback",
-			err:        grpcstatus.Error(codes.Internal, "internal"),
-			wantCode:   500,
-			wantReason: dataManagementAgentInternalReason,
-		},
-		{
-			name:       "non grpc error",
-			err:        errors.New("plain error"),
-			wantCode:   500,
-			wantReason: dataManagementAgentInternalReason,
-		},
-	}
+	socketPath := filepath.Join(t.TempDir(), "datamanagement.sock")
+	svc := NewDataManagementServiceWithOptions(socketPath, 0)
 
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	_, err := svc.GetConfig(context.Background())
+	assertDeprecatedDataManagementError(t, err, socketPath)
 
-			mapped := mapDataManagementGRPCError(tc.err, socketPath)
-			statusCode, body := infraerrors.ToHTTP(mapped)
+	_, err = svc.CreateBackupJob(context.Background(), DataManagementCreateBackupJobInput{BackupType: "full"})
+	assertDeprecatedDataManagementError(t, err, socketPath)
 
-			require.Equal(t, tc.wantCode, statusCode)
-			require.Equal(t, tc.wantReason, body.Reason)
-
-			if tc.wantCode == 503 || tc.wantCode == 500 {
-				require.Equal(t, socketPath, body.Metadata["socket_path"])
-			}
-		})
-	}
+	err = svc.DeleteS3Profile(context.Background(), "s3-default")
+	assertDeprecatedDataManagementError(t, err, socketPath)
 }
 
-func TestValidateDataManagementConfig(t *testing.T) {
-	t.Parallel()
+func assertDeprecatedDataManagementError(t *testing.T, err error, socketPath string) {
+	t.Helper()
 
-	valid := DataManagementConfig{
-		SourceMode:    "direct",
-		BackupRoot:    "/var/lib/sub2api/datamanagement",
-		RetentionDays: 7,
-		KeepLast:      30,
-		Postgres: DataManagementPostgresConfig{
-			Host:     "127.0.0.1",
-			Port:     5432,
-			Database: "sub2api",
-		},
-		Redis: DataManagementRedisConfig{
-			Addr: "127.0.0.1:6379",
-			DB:   0,
-		},
-		S3: DataManagementS3Config{
-			Enabled: false,
-		},
-	}
-
-	require.NoError(t, validateDataManagementConfig(valid))
-
-	invalidMode := valid
-	invalidMode.SourceMode = "invalid"
-	require.Error(t, validateDataManagementConfig(invalidMode))
-
-	dockerMissingContainer := valid
-	dockerMissingContainer.SourceMode = "docker_exec"
-	require.Error(t, validateDataManagementConfig(dockerMissingContainer))
-
-	s3EnabledMissingBucket := valid
-	s3EnabledMissingBucket.S3.Enabled = true
-	s3EnabledMissingBucket.S3.Region = "us-east-1"
-	s3EnabledMissingBucket.S3.Bucket = ""
-	require.Error(t, validateDataManagementConfig(s3EnabledMissingBucket))
-}
-
-func TestDataManagementService_DialDataManagementAgent_TimeoutDisabled(t *testing.T) {
-	t.Parallel()
-
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("s2dm0-%d.sock", time.Now().UnixNano()))
-	startTestBackupHealthServer(t, socketPath)
-
-	svc := &DataManagementService{
-		socketPath:  socketPath,
-		dialTimeout: 0,
-	}
-
-	conn, err := svc.dialDataManagementAgent(context.Background(), socketPath)
-	require.NoError(t, err)
-	require.NotNil(t, conn)
-	require.NoError(t, conn.Close())
-}
-
-func TestDataManagementService_DialDataManagementAgent_TimeoutExceeded(t *testing.T) {
-	t.Parallel()
-
-	socketPath := filepath.Join(t.TempDir(), "missing.sock")
-	svc := &DataManagementService{
-		socketPath:  socketPath,
-		dialTimeout: 30 * time.Millisecond,
-	}
-
-	conn, err := svc.dialDataManagementAgent(context.Background(), socketPath)
-	require.Nil(t, conn)
 	require.Error(t, err)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-}
-
-func TestDataManagementService_WithClient_PassesRequestID(t *testing.T) {
-	t.Parallel()
-
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("s2dm1-%d.sock", time.Now().UnixNano()))
-	startTestBackupHealthServer(t, socketPath)
-
-	svc := &DataManagementService{
-		socketPath:  socketPath,
-		dialTimeout: 200 * time.Millisecond,
-	}
-
-	ctx := context.WithValue(context.Background(), ctxkey.RequestID, "req-data-management-1")
-	called := false
-	err := svc.withClient(ctx, func(callCtx context.Context, _ backupv1.BackupServiceClient) error {
-		called = true
-		md, ok := metadata.FromOutgoingContext(callCtx)
-		require.True(t, ok)
-		require.Equal(t, []string{"req-data-management-1"}, md.Get("x-request-id"))
-		return nil
-	})
-	require.NoError(t, err)
-	require.True(t, called)
+	statusCode, status := infraerrors.ToHTTP(err)
+	require.Equal(t, 503, statusCode)
+	require.Equal(t, DataManagementDeprecatedReason, status.Reason)
+	require.Equal(t, socketPath, status.Metadata["socket_path"])
 }

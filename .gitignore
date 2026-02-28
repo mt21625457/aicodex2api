@@ -131,4 +131,5 @@ docs/*
 .codex/
 frontend/coverage/
 aicodex
+output/
 
