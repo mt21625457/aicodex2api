@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -219,17 +220,18 @@ type UpdateAccountInput struct {
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
 type BulkUpdateAccountsInput struct {
-	AccountIDs     []int64
-	Name           string
-	ProxyID        *int64
-	Concurrency    *int
-	Priority       *int
-	RateMultiplier *float64 // 账号计费倍率（>=0，允许 0）
-	Status         string
-	Schedulable    *bool
-	GroupIDs       *[]int64
-	Credentials    map[string]any
-	Extra          map[string]any
+	AccountIDs         []int64
+	Name               string
+	ProxyID            *int64
+	Concurrency        *int
+	Priority           *int
+	RateMultiplier     *float64 // 账号计费倍率（>=0，允许 0）
+	Status             string
+	Schedulable        *bool
+	AutoPauseOnExpired *bool
+	GroupIDs           *[]int64
+	Credentials        map[string]any
+	Extra              map[string]any
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
@@ -1406,6 +1408,70 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	return updated, nil
 }
 
+var openAIBulkScopedExtraKeys = map[string]struct{}{
+	"openai_passthrough":                            {},
+	"openai_oauth_passthrough":                      {},
+	"openai_oauth_responses_websockets_v2_mode":     {},
+	"openai_oauth_responses_websockets_v2_enabled":  {},
+	"openai_apikey_responses_websockets_v2_mode":    {},
+	"openai_apikey_responses_websockets_v2_enabled": {},
+	"codex_cli_only":                                {},
+}
+
+func hasOpenAIBulkScopedExtraField(extra map[string]any) bool {
+	if len(extra) == 0 {
+		return false
+	}
+	for key := range extra {
+		if _, ok := openAIBulkScopedExtraKeys[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func validateOpenAIBulkScopedAccounts(accountsByID map[int64]*Account, accountIDs []int64) error {
+	var expectedType string
+
+	for _, accountID := range accountIDs {
+		account := accountsByID[accountID]
+		if account == nil {
+			return infraerrors.BadRequest(
+				"BULK_OPENAI_SCOPE_ACCOUNT_MISSING",
+				fmt.Sprintf("account %d not found for OpenAI scoped bulk update", accountID),
+			)
+		}
+
+		if account.Platform != PlatformOpenAI {
+			return infraerrors.BadRequest(
+				"BULK_OPENAI_SCOPE_PLATFORM_MISMATCH",
+				"OpenAI scoped bulk fields require all selected accounts to be OpenAI",
+			)
+		}
+
+		if account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey {
+			return infraerrors.BadRequest(
+				"BULK_OPENAI_SCOPE_TYPE_UNSUPPORTED",
+				"OpenAI scoped bulk fields only support oauth or apikey account types",
+			)
+		}
+
+		if expectedType == "" {
+			expectedType = account.Type
+			continue
+		}
+
+		if account.Type != expectedType {
+			return infraerrors.BadRequest(
+				"BULK_OPENAI_SCOPE_TYPE_MISMATCH",
+				"OpenAI scoped bulk fields require all selected accounts to have the same type",
+			)
+		}
+	}
+
+	return nil
+}
+
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
@@ -1425,25 +1491,35 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
+	needOpenAIScopeCheck := hasOpenAIBulkScopedExtraField(input.Extra)
+	needAccountSnapshot := needMixedChannelCheck || needOpenAIScopeCheck
 
 	// 预加载账号平台信息（混合渠道检查或 Sora 同步需要）。
 	platformByID := map[int64]string{}
+	accountByID := map[int64]*Account{}
 	groupAccountsByID := map[int64][]Account{}
 	groupNameByID := map[int64]string{}
-	if needMixedChannelCheck {
+	if needAccountSnapshot {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
-			if needMixedChannelCheck {
-				return nil, err
-			}
+			return nil, err
 		} else {
 			for _, account := range accounts {
 				if account != nil {
+					accountByID[account.ID] = account
 					platformByID[account.ID] = account.Platform
 				}
 			}
 		}
+	}
 
+	if needOpenAIScopeCheck {
+		if err := validateOpenAIBulkScopedAccounts(accountByID, input.AccountIDs); err != nil {
+			return nil, err
+		}
+	}
+
+	if needMixedChannelCheck {
 		loadedAccounts, loadedNames, err := s.preloadMixedChannelRiskData(ctx, *input.GroupIDs)
 		if err != nil {
 			return nil, err
@@ -1483,6 +1559,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 	if input.Schedulable != nil {
 		repoUpdates.Schedulable = input.Schedulable
+	}
+	if input.AutoPauseOnExpired != nil {
+		repoUpdates.AutoPauseOnExpired = input.AutoPauseOnExpired
 	}
 
 	// Run bulk update for column/jsonb fields first.
