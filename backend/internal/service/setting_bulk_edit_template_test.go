@@ -368,9 +368,8 @@ func TestSettingServiceBulkEditTemplate_LoadPersistBranches(t *testing.T) {
 
 	repo.values[SettingKeyBulkEditTemplateLibrary] = "{bad-json"
 	store, err := svc.loadBulkEditTemplateLibrary(context.Background())
-	require.NoError(t, err)
-	require.NotNil(t, store)
-	require.Empty(t, store.Items)
+	require.Error(t, err)
+	require.Nil(t, store)
 
 	delete(repo.values, SettingKeyBulkEditTemplateLibrary)
 	store, err = svc.loadBulkEditTemplateLibrary(context.Background())
@@ -409,6 +408,80 @@ func TestSettingServiceBulkEditTemplate_UpsertByMismatchedID(t *testing.T) {
 	err = svc.DeleteBulkEditTemplate(context.Background(), "", 1)
 	require.Error(t, err)
 	require.True(t, infraerrors.IsBadRequest(err))
+}
+
+func TestSettingServiceBulkEditTemplate_PrivateTemplateIsolationAcrossUsers(t *testing.T) {
+	repo := newBulkTemplateSettingRepoStub()
+	svc := NewSettingService(repo, nil)
+
+	ownerTemplate, err := svc.UpsertBulkEditTemplate(context.Background(), BulkEditTemplateUpsertInput{
+		Name:            "Private Scoped Template",
+		ScopePlatform:   PlatformOpenAI,
+		ScopeType:       AccountTypeOAuth,
+		ShareScope:      BulkEditTemplateShareScopePrivate,
+		State:           map[string]any{"priority": 1},
+		RequesterUserID: 101,
+	})
+	require.NoError(t, err)
+
+	otherTemplate, err := svc.UpsertBulkEditTemplate(context.Background(), BulkEditTemplateUpsertInput{
+		Name:            "Private Scoped Template",
+		ScopePlatform:   PlatformOpenAI,
+		ScopeType:       AccountTypeOAuth,
+		ShareScope:      BulkEditTemplateShareScopePrivate,
+		State:           map[string]any{"priority": 9},
+		RequesterUserID: 202,
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, ownerTemplate.ID, otherTemplate.ID, "不同用户的私有同名模板不应互相覆盖")
+
+	ownerVisible, err := svc.ListBulkEditTemplates(context.Background(), BulkEditTemplateQuery{
+		ScopePlatform:   PlatformOpenAI,
+		ScopeType:       AccountTypeOAuth,
+		RequesterUserID: 101,
+	})
+	require.NoError(t, err)
+	require.Len(t, ownerVisible, 1)
+	require.Equal(t, ownerTemplate.ID, ownerVisible[0].ID)
+	require.EqualValues(t, 1, ownerVisible[0].State["priority"])
+
+	otherVisible, err := svc.ListBulkEditTemplates(context.Background(), BulkEditTemplateQuery{
+		ScopePlatform:   PlatformOpenAI,
+		ScopeType:       AccountTypeOAuth,
+		RequesterUserID: 202,
+	})
+	require.NoError(t, err)
+	require.Len(t, otherVisible, 1)
+	require.Equal(t, otherTemplate.ID, otherVisible[0].ID)
+	require.EqualValues(t, 9, otherVisible[0].State["priority"])
+
+	_, err = svc.UpsertBulkEditTemplate(context.Background(), BulkEditTemplateUpsertInput{
+		ID:              ownerTemplate.ID,
+		Name:            ownerTemplate.Name,
+		ScopePlatform:   ownerTemplate.ScopePlatform,
+		ScopeType:       ownerTemplate.ScopeType,
+		ShareScope:      BulkEditTemplateShareScopePrivate,
+		State:           map[string]any{"priority": 99},
+		RequesterUserID: 202,
+	})
+	require.Error(t, err)
+	require.True(t, infraerrors.IsForbidden(err), "非 owner 不允许通过 template ID 修改私有模板")
+}
+
+func TestSettingServiceBulkEditTemplate_UpsertFailsWhenStoredLibraryCorrupted(t *testing.T) {
+	repo := newBulkTemplateSettingRepoStub()
+	repo.values[SettingKeyBulkEditTemplateLibrary] = "{bad-json"
+	svc := NewSettingService(repo, nil)
+
+	_, err := svc.UpsertBulkEditTemplate(context.Background(), BulkEditTemplateUpsertInput{
+		Name:            "Should Fail",
+		ScopePlatform:   PlatformOpenAI,
+		ScopeType:       AccountTypeOAuth,
+		ShareScope:      BulkEditTemplateShareScopePrivate,
+		State:           map[string]any{"ok": true},
+		RequesterUserID: 1,
+	})
+	require.Error(t, err)
 }
 
 func TestSettingServiceBulkEditTemplate_ListFilteringAndSorting(t *testing.T) {

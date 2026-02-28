@@ -75,6 +75,8 @@ type openAIWSIngressContext struct {
 	sessionKey  string
 
 	mu               sync.Mutex
+	dialing          bool
+	dialDone         chan struct{}
 	ownerID          string
 	ownerLeaseAt     time.Time
 	lastUsedAt       time.Time
@@ -227,6 +229,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 		selected      *openAIWSIngressContext
 		reusedContext bool
 		newlyCreated  bool
+		ownerAssigned bool
 		migrationUsed bool
 		scheduleLayer string
 		oldUpstream   openAIWSClientConn
@@ -243,8 +246,16 @@ func (p *openAIWSIngressContextPool) Acquire(
 		if existing := ap.contexts[existingID]; existing != nil {
 			existing.mu.Lock()
 			switch existing.ownerID {
-			case "", ownerID:
+			case "":
 				existing.ownerID = ownerID
+				ownerAssigned = true
+				existing.ownerLeaseAt = now
+				existing.lastUsedAt = now
+				existing.expiresAt = now.Add(p.idleTTL)
+				selected = existing
+				reusedContext = true
+				scheduleLayer = openAIWSIngressScheduleLayerExact
+			case ownerID:
 				existing.ownerLeaseAt = now
 				existing.lastUsedAt = now
 				existing.expiresAt = now.Add(p.idleTTL)
@@ -342,6 +353,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 		ap.bySession[sessionKey] = ctxID
 		selected = created
 		newlyCreated = true
+		ownerAssigned = true
 		scheduleLayer = openAIWSIngressScheduleLayerNew
 	}
 	p.mu.Unlock()
@@ -357,7 +369,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 				}
 			}
 			p.mu.Unlock()
-		} else {
+		} else if ownerAssigned {
 			p.releaseContext(selected, ownerID)
 		}
 		return nil, ensureErr
@@ -544,52 +556,97 @@ func (p *openAIWSIngressContextPool) ensureContextUpstream(
 	if p == nil || c == nil {
 		return false, errOpenAIWSConnClosed
 	}
-	c.mu.Lock()
-	if c.upstream != nil && !c.broken {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		c.mu.Lock()
+		if c.upstream != nil && !c.broken {
+			now := time.Now()
+			c.lastUsedAt = now
+			c.ownerLeaseAt = now
+			c.expiresAt = now.Add(p.idleTTL)
+			c.mu.Unlock()
+			return true, nil
+		}
+		if c.dialing {
+			dialDone := c.dialDone
+			c.mu.Unlock()
+			if dialDone == nil {
+				if err := ctx.Err(); err != nil {
+					return false, err
+				}
+				continue
+			}
+			select {
+			case <-dialDone:
+				continue
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
+		}
+		oldUpstream := c.upstream
+		c.upstream = nil
+		c.handshakeHeaders = nil
+		c.upstreamConnID = ""
+		c.broken = false
+		c.dialing = true
+		dialDone := make(chan struct{})
+		c.dialDone = dialDone
+		c.mu.Unlock()
+
+		if oldUpstream != nil {
+			_ = oldUpstream.Close()
+		}
+
+		dialer := p.dialer
+		if dialer == nil {
+			c.mu.Lock()
+			c.broken = true
+			c.failureStreak++
+			c.lastFailureAt = time.Now()
+			c.dialing = false
+			if c.dialDone == dialDone {
+				c.dialDone = nil
+			}
+			close(dialDone)
+			c.mu.Unlock()
+			return false, errors.New("openai ws ingress context dialer is nil")
+		}
+		conn, _, handshakeHeaders, err := dialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
+		if err != nil {
+			c.mu.Lock()
+			c.broken = true
+			c.failureStreak++
+			c.lastFailureAt = time.Now()
+			c.dialing = false
+			if c.dialDone == dialDone {
+				c.dialDone = nil
+			}
+			close(dialDone)
+			c.mu.Unlock()
+			return false, err
+		}
+
+		c.mu.Lock()
 		now := time.Now()
+		c.upstream = conn
+		c.upstreamConnID = fmt.Sprintf("ctxws_%d_%d", c.accountID, p.seq.Add(1))
+		c.handshakeHeaders = cloneHeader(handshakeHeaders)
 		c.lastUsedAt = now
 		c.ownerLeaseAt = now
 		c.expiresAt = now.Add(p.idleTTL)
+		c.broken = false
+		c.failureStreak = 0
+		c.lastFailureAt = time.Time{}
+		c.dialing = false
+		if c.dialDone == dialDone {
+			c.dialDone = nil
+		}
+		close(dialDone)
 		c.mu.Unlock()
-		return true, nil
+		return false, nil
 	}
-	oldUpstream := c.upstream
-	c.upstream = nil
-	c.handshakeHeaders = nil
-	c.upstreamConnID = ""
-	c.broken = false
-	c.mu.Unlock()
-
-	if oldUpstream != nil {
-		_ = oldUpstream.Close()
-	}
-
-	if p.dialer == nil {
-		return false, errors.New("openai ws ingress context dialer is nil")
-	}
-	conn, _, handshakeHeaders, err := p.dialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
-	if err != nil {
-		c.mu.Lock()
-		c.broken = true
-		c.failureStreak++
-		c.lastFailureAt = time.Now()
-		c.mu.Unlock()
-		return false, err
-	}
-
-	c.mu.Lock()
-	now := time.Now()
-	c.upstream = conn
-	c.upstreamConnID = fmt.Sprintf("ctxws_%d_%d", c.accountID, p.seq.Add(1))
-	c.handshakeHeaders = cloneHeader(handshakeHeaders)
-	c.lastUsedAt = now
-	c.ownerLeaseAt = now
-	c.expiresAt = now.Add(p.idleTTL)
-	c.broken = false
-	c.failureStreak = 0
-	c.lastFailureAt = time.Time{}
-	c.mu.Unlock()
-	return false, nil
 }
 
 func (p *openAIWSIngressContextPool) releaseContext(c *openAIWSIngressContext, ownerID string) {
