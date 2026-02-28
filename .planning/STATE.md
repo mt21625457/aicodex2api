@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Template Collaboration & Versioning
 status: completed
-last_updated: "2026-02-28T16:20:00+08:00"
+last_updated: "2026-03-01T07:39:56+08:00"
 progress:
   total_phases: 3
   completed_phases: 3
@@ -40,7 +40,7 @@ Progress: [██████████] 100%
 
 ## Pending Todos
 
-- None
+- 2026-02-28: Refactor ctx_pool WSv2 normalization invariants (`.planning/todos/pending/2026-02-28-refactor-ctx-pool-wsv2-normalization-invariants.md`)
 
 ## Blockers/Concerns
 
