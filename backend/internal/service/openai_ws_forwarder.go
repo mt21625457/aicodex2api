@@ -2558,7 +2558,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	dedicatedMode := ingressMode == OpenAIWSIngressModeDedicated
-	ctxPoolMode := ingressMode == OpenAIWSIngressModeCtxPool && isCodexCLI
+	// Ingress ws_v2 请求天然是 Codex 会话语义，ctx_pool 是否启用仅由账号 mode 决定。
+	ctxPoolMode := ingressMode == OpenAIWSIngressModeCtxPool
 	wsHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
 	baseAcquireReq := openAIWSAcquireRequest{
 		Account: account,
