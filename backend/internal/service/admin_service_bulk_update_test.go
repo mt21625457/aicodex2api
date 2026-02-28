@@ -12,23 +12,25 @@ import (
 
 type accountRepoStubForBulkUpdate struct {
 	accountRepoStub
-	bulkUpdateErr    error
-	bulkUpdateIDs    []int64
-	bindGroupErrByID map[int64]error
-	bindGroupsCalls  []int64
-	getByIDsAccounts []*Account
-	getByIDsErr      error
-	getByIDsCalled   bool
-	getByIDsIDs      []int64
-	getByIDAccounts  map[int64]*Account
-	getByIDErrByID   map[int64]error
-	getByIDCalled    []int64
-	listByGroupData  map[int64][]Account
-	listByGroupErr   map[int64]error
+	bulkUpdateErr     error
+	bulkUpdateIDs     []int64
+	bulkUpdatePayload AccountBulkUpdate
+	bindGroupErrByID  map[int64]error
+	bindGroupsCalls   []int64
+	getByIDsAccounts  []*Account
+	getByIDsErr       error
+	getByIDsCalled    bool
+	getByIDsIDs       []int64
+	getByIDAccounts   map[int64]*Account
+	getByIDErrByID    map[int64]error
+	getByIDCalled     []int64
+	listByGroupData   map[int64][]Account
+	listByGroupErr    map[int64]error
 }
 
-func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, _ AccountBulkUpdate) (int64, error) {
+func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	s.bulkUpdateIDs = append([]int64{}, ids...)
+	s.bulkUpdatePayload = updates
 	if s.bulkUpdateErr != nil {
 		return 0, s.bulkUpdateErr
 	}
@@ -169,4 +171,104 @@ func TestAdminService_BulkUpdateAccounts_MixedChannelCheckUsesUpdatedSnapshot(t 
 	require.Len(t, result.Results, 2)
 	require.Contains(t, result.Results[1].Error, "mixed channel")
 	require.Equal(t, []int64{1}, repo.bindGroupsCalls)
+}
+
+func TestAdminService_BulkUpdateAccounts_ForwardsAutoPauseOnExpired(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	autoPause := true
+	input := &BulkUpdateAccountsInput{
+		AccountIDs:         []int64{101},
+		AutoPauseOnExpired: &autoPause,
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.NotNil(t, repo.bulkUpdatePayload.AutoPauseOnExpired)
+	require.True(t, *repo.bulkUpdatePayload.AutoPauseOnExpired)
+}
+
+func TestAdminService_BulkUpdateAccounts_OpenAIScopedExtraRejectsMixedTypes(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+			{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	input := &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Extra:      map[string]any{"openai_passthrough": true},
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "same type")
+	require.Empty(t, repo.bulkUpdateIDs)
+	require.True(t, repo.getByIDsCalled)
+}
+
+func TestAdminService_BulkUpdateAccounts_OpenAIScopedExtraRejectsNonOpenAIPlatform(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+			{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeOAuth},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	input := &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Extra:      map[string]any{"openai_oauth_responses_websockets_v2_mode": "shared"},
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "OpenAI")
+	require.Empty(t, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_OpenAIScopedExtraAllowsSameTypeOpenAI(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+			{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	input := &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Extra:      map[string]any{"codex_cli_only": true},
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Success)
+	require.ElementsMatch(t, []int64{1, 2}, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_OpenAIScopedExtraRejectsMissingAccount(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	input := &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Extra:      map[string]any{"openai_passthrough": true},
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found")
+	require.Empty(t, repo.bulkUpdateIDs)
 }
