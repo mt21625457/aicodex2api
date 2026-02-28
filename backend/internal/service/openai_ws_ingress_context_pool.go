@@ -82,7 +82,6 @@ type openAIWSIngressContext struct {
 	dialing          bool
 	dialDone         chan struct{}
 	ownerID          string
-	ownerLeaseAtUnix atomic.Int64
 	lastUsedAtUnix   atomic.Int64
 	expiresAtUnix    atomic.Int64
 	broken           bool
@@ -122,20 +121,6 @@ func openAIWSUnixNanoToTime(ns int64) time.Time {
 	return time.Unix(0, ns)
 }
 
-func (c *openAIWSIngressContext) setOwnerLeaseAt(ts time.Time) {
-	if c == nil {
-		return
-	}
-	c.ownerLeaseAtUnix.Store(openAIWSTimeToUnixNano(ts))
-}
-
-func (c *openAIWSIngressContext) ownerLeaseAt() time.Time {
-	if c == nil {
-		return time.Time{}
-	}
-	return openAIWSUnixNanoToTime(c.ownerLeaseAtUnix.Load())
-}
-
 func (c *openAIWSIngressContext) setLastUsedAt(ts time.Time) {
 	if c == nil {
 		return
@@ -170,7 +155,6 @@ func (c *openAIWSIngressContext) touchLease(now time.Time, ttl time.Duration) {
 	}
 	nowUnix := openAIWSTimeToUnixNano(now)
 	c.lastUsedAtUnix.Store(nowUnix)
-	c.ownerLeaseAtUnix.Store(nowUnix)
 	c.expiresAtUnix.Store(openAIWSTimeToUnixNano(now.Add(ttl)))
 }
 
@@ -748,7 +732,6 @@ func (p *openAIWSIngressContextPool) releaseContext(c *openAIWSIngressContext, o
 		c.upstreamConnID = ""
 		c.ownerID = ""
 		now := time.Now()
-		c.setOwnerLeaseAt(time.Time{})
 		c.setLastUsedAt(now)
 		c.setExpiresAt(now.Add(p.idleTTL))
 		c.broken = false
@@ -796,7 +779,7 @@ func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(
 	if ap == nil {
 		return nil
 	}
-	toClose := make([]openAIWSClientConn, 0)
+	var toClose []openAIWSClientConn
 	for id, ctx := range ap.contexts {
 		if ctx == nil {
 			delete(ap.contexts, id)
@@ -835,7 +818,7 @@ func (p *openAIWSIngressContextPool) evictExpiredIdleLocked(
 	if ap == nil {
 		return nil
 	}
-	toClose := make([]openAIWSClientConn, 0)
+	var toClose []openAIWSClientConn
 	for id, ctx := range ap.contexts {
 		if ctx == nil {
 			delete(ap.contexts, id)
