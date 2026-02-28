@@ -226,10 +226,10 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 	require.LessOrEqual(t, probe2.getDeadlineDelta, 3*time.Second)
 }
 
-func TestWithOpenAIWSStateStoreRedisTimeout_NilContext(t *testing.T) {
-	ctx, cancel := withOpenAIWSStateStoreRedisTimeout(nil)
+func TestWithOpenAIWSStateStoreRedisTimeout_WithParentContext(t *testing.T) {
+	ctx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
 	defer cancel()
 	require.NotNil(t, ctx)
 	_, ok := ctx.Deadline()
-	require.True(t, ok, "nil 上下文应回退到 background 并附加短超时")
+	require.True(t, ok, "应附加短超时")
 }

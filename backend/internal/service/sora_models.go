@@ -264,10 +264,10 @@ var (
 	imageSuffixRe = regexp.MustCompile(`-(landscape|portrait)$`)
 
 	soraFamilyNames = map[string]string{
-		"sora2":        "Sora 2",
-		"sora2pro":     "Sora 2 Pro",
-		"sora2pro-hd":  "Sora 2 Pro HD",
-		"gpt-image":    "GPT Image",
+		"sora2":       "Sora 2",
+		"sora2pro":    "Sora 2 Pro",
+		"sora2pro-hd": "Sora 2 Pro HD",
+		"gpt-image":   "GPT Image",
 	}
 )
 

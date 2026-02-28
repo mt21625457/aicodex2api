@@ -287,7 +287,11 @@ func (s *BillingCacheService) GetUserBalance(ctx context.Context, userID int64) 
 	if err != nil {
 		return 0, err
 	}
-	return value.(float64), nil
+	balance, ok := value.(float64)
+	if !ok {
+		return 0, fmt.Errorf("unexpected balance type: %T", value)
+	}
+	return balance, nil
 }
 
 // getUserBalanceFromDB 从数据库获取用户余额

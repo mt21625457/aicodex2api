@@ -3529,20 +3529,6 @@ func payloadAsJSONBytes(payload map[string]any) []byte {
 	return body
 }
 
-func extractOpenAIWSResponseID(message []byte) string {
-	if len(message) == 0 {
-		return ""
-	}
-	values := gjson.GetManyBytes(message, "response.id", "id")
-	if id := strings.TrimSpace(values[0].String()); id != "" {
-		return id
-	}
-	if id := strings.TrimSpace(values[1].String()); id != "" {
-		return id
-	}
-	return ""
-}
-
 func isOpenAIWSTerminalEvent(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
 	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
@@ -3699,18 +3685,15 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 
 	cfg := s.schedulingConfig()
 	if s.concurrencyService != nil {
-		waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-		if waitingCount < cfg.StickySessionMaxWaiting {
-			return &AccountSelectionResult{
-				Account: account,
-				WaitPlan: &AccountWaitPlan{
-					AccountID:      accountID,
-					MaxConcurrency: account.Concurrency,
-					Timeout:        cfg.StickySessionWaitTimeout,
-					MaxWaiting:     cfg.StickySessionMaxWaiting,
-				},
-			}, nil
-		}
+		return &AccountSelectionResult{
+			Account: account,
+			WaitPlan: &AccountWaitPlan{
+				AccountID:      accountID,
+				MaxConcurrency: account.Concurrency,
+				Timeout:        cfg.StickySessionWaitTimeout,
+				MaxWaiting:     cfg.StickySessionMaxWaiting,
+			},
+		}, nil
 	}
 	return nil, nil
 }

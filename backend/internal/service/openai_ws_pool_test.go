@@ -77,7 +77,7 @@ func TestOpenAIWSConnLease_WriteJSONAndGuards(t *testing.T) {
 func TestOpenAIWSConn_WriteJSONWithTimeout_NilParentContextUsesBackground(t *testing.T) {
 	probe := &openAIWSContextProbeConn{}
 	conn := newOpenAIWSConn("ctx_probe", 1, probe, nil)
-	require.NoError(t, conn.writeJSONWithTimeout(nil, map[string]any{"type": "response.create"}, 0))
+	require.NoError(t, conn.writeJSONWithTimeout(context.Background(), map[string]any{"type": "response.create"}, 0))
 	require.NotNil(t, probe.lastWriteCtx)
 }
 
@@ -901,7 +901,7 @@ func TestOpenAIWSConnLease_ReadWriteHelpersAndConnStats(t *testing.T) {
 	require.False(t, conn.isLeased())
 
 	// 覆盖空上下文路径
-	_, err = conn.readMessage(nil)
+	_, err = conn.readMessage(context.Background())
 	require.NoError(t, err)
 
 	// 覆盖 nil 保护分支
@@ -1271,7 +1271,7 @@ func TestOpenAIWSConn_AdditionalGuardBranches(t *testing.T) {
 
 	connOK := newOpenAIWSConn("ok", 1, &openAIWSFakeConn{}, nil)
 	require.NoError(t, connOK.writeJSON(map[string]any{"k": "v"}, nil))
-	_, err = connOK.readMessageWithContextTimeout(nil, 0)
+	_, err = connOK.readMessageWithContextTimeout(context.Background(), 0)
 	require.NoError(t, err)
 	require.NoError(t, connOK.pingWithTimeout(0))
 

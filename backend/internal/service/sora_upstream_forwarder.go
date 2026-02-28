@@ -76,7 +76,9 @@ func (s *SoraGatewayService) forwardToUpstream(
 			StatusCode: http.StatusBadGateway,
 		}
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	// 错误响应处理
 	if resp.StatusCode >= 400 {
@@ -97,7 +99,9 @@ func (s *SoraGatewayService) forwardToUpstream(
 				c.Writer.Header().Add(key, v)
 			}
 		}
-		c.Writer.Write(respBody)
+		if _, err := c.Writer.Write(respBody); err != nil {
+			return nil, fmt.Errorf("write upstream error response: %w", err)
+		}
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
 	}
 
@@ -120,7 +124,9 @@ func (s *SoraGatewayService) forwardToUpstream(
 		for {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
-				c.Writer.Write(buf[:n])
+				if _, err := c.Writer.Write(buf[:n]); err != nil {
+					return nil, fmt.Errorf("stream upstream response write: %w", err)
+				}
 				flusher.Flush()
 			}
 			if readErr != nil {
@@ -128,7 +134,9 @@ func (s *SoraGatewayService) forwardToUpstream(
 			}
 		}
 	} else {
-		io.Copy(c.Writer, resp.Body)
+		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+			return nil, fmt.Errorf("copy upstream response: %w", err)
+		}
 	}
 
 	duration := time.Since(startTime)

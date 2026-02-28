@@ -229,7 +229,9 @@ func (s *SoraS3Storage) UploadFromURL(ctx context.Context, userID int64, sourceU
 	if err != nil {
 		return "", 0, fmt.Errorf("download from upstream: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", 0, &UpstreamDownloadError{StatusCode: resp.StatusCode}
@@ -331,8 +333,8 @@ func (s *SoraS3Storage) DeleteObjects(ctx context.Context, objectKeys []string) 
 	for _, key := range objectKeys {
 		k := key
 		_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket:      &cfg.Bucket,
-			Key:         &k,
+			Bucket: &cfg.Bucket,
+			Key:    &k,
 		})
 		if err != nil {
 			logger.LegacyPrintf("service.sora_s3", "[SoraS3] 删除失败 key=%s err=%v", key, err)
