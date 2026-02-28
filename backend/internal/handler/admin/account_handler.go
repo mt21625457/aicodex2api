@@ -1083,6 +1083,8 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	// base_rpm 输入校验：负值归零，超过 10000 截断
+	sanitizeExtraBaseRPM(req.Extra)
 
 	// 确定是否跳过混合渠道检查
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
@@ -1754,7 +1756,7 @@ func sanitizeExtraBaseRPM(extra map[string]any) {
 	if !ok {
 		return
 	}
-	v := parseExtraIntForValidation(raw)
+	v := service.ParseExtraInt(raw)
 	if v < 0 {
 		v = 0
 	} else if v > 10000 {
@@ -1763,24 +1765,3 @@ func sanitizeExtraBaseRPM(extra map[string]any) {
 	extra["base_rpm"] = v
 }
 
-// parseExtraIntForValidation 从 extra 字段的 any 值解析为 int，用于输入校验。
-// 支持 int, int64, float64, json.Number, string 类型。
-func parseExtraIntForValidation(value any) int {
-	switch v := value.(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case float64:
-		return int(v)
-	case json.Number:
-		if i, err := v.Int64(); err == nil {
-			return int(i)
-		}
-	case string:
-		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return i
-		}
-	}
-	return 0
-}
