@@ -1017,6 +1017,17 @@
       </div>
     </template>
   </BaseDialog>
+
+  <ConfirmDialog
+    :show="showMixedChannelWarning"
+    :title="t('admin.accounts.mixedChannelWarningTitle')"
+    :message="mixedChannelWarningMessage"
+    :confirm-text="t('common.confirm')"
+    :cancel-text="t('common.cancel')"
+    :danger="true"
+    @confirm="handleMixedChannelConfirm"
+    @cancel="handleMixedChannelCancel"
+  />
 </template>
 
 <script setup lang="ts">
@@ -1026,6 +1037,7 @@ import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import type { Proxy as ProxyConfig, AdminGroup, AccountPlatform, AccountType } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -1147,6 +1159,9 @@ const enableRpmLimit = ref(false)
 
 // State - field values
 const submitting = ref(false)
+const showMixedChannelWarning = ref(false)
+const mixedChannelWarningMessage = ref('')
+const pendingUpdatesForConfirm = ref<Record<string, unknown> | null>(null)
 const baseUrl = ref('')
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
@@ -1937,10 +1952,13 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 }
 
 const handleClose = () => {
+  showMixedChannelWarning.value = false
+  mixedChannelWarningMessage.value = ''
+  pendingUpdatesForConfirm.value = null
   emit('close')
 }
 
-const handleSubmit = async () => {
+const handleSubmit = async (confirmMixedChannel = false) => {
   if (props.accountIds.length === 0) {
     appStore.showError(t('admin.accounts.bulkEdit.noSelection'))
     return
@@ -1964,10 +1982,16 @@ const handleSubmit = async () => {
     return
   }
 
-  const updates = buildUpdatePayload()
-  if (!updates) {
-    appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
-    return
+  let updates: Record<string, unknown>
+  if (confirmMixedChannel && pendingUpdatesForConfirm.value) {
+    updates = { ...pendingUpdatesForConfirm.value, confirm_mixed_channel_risk: true }
+  } else {
+    const built = buildUpdatePayload()
+    if (!built) {
+      appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
+      return
+    }
+    updates = built
   }
 
   submitting.value = true
@@ -1986,52 +2010,33 @@ const handleSubmit = async () => {
     }
 
     if (success > 0) {
+      pendingUpdatesForConfirm.value = null
       emit('updated')
       handleClose()
     }
   } catch (error: any) {
-    appStore.showError(error.response?.data?.detail || t('admin.accounts.bulkEdit.failed'))
-    console.error('Error bulk updating accounts:', error)
+    if (error.response?.status === 409 && error.response?.data?.error === 'mixed_channel_warning') {
+      pendingUpdatesForConfirm.value = updates
+      mixedChannelWarningMessage.value = error.response.data.message
+      showMixedChannelWarning.value = true
+    } else {
+      appStore.showError(error.response?.data?.detail || t('admin.accounts.bulkEdit.failed'))
+      console.error('Error bulk updating accounts:', error)
+    }
   } finally {
     submitting.value = false
   }
 }
 
-watch(
-  scopedTemplateRecords,
-  () => {
-    syncSelectedTemplate()
-  },
-  { immediate: true }
-)
+const handleMixedChannelConfirm = async () => {
+  showMixedChannelWarning.value = false
+  await handleSubmit(true)
+}
 
-watch(selectedTemplateId, (id) => {
-  if (!id) {
-    templateVersionRecords.value = []
-    return
-  }
-  const selected = scopedTemplateRecords.value.find((item) => item.id === id)
-  if (selected) {
-    templateName.value = selected.name
-    templateShareScope.value = selected.shareScope
-    templateShareGroupIds.value = [...selected.groupIds]
-    void loadTemplateVersionRecordsFromServer()
-  }
-})
-
-watch(templateShareScope, (scope) => {
-  if (scope !== 'groups') {
-    templateShareGroupIds.value = []
-  }
-})
-
-watch(
-  () => normalizedScopeGroupIDs.value.join(','),
-  () => {
-    if (!props.show) return
-    void loadTemplateRecordsFromServer()
-  }
-)
+const handleMixedChannelCancel = () => {
+  showMixedChannelWarning.value = false
+  pendingUpdatesForConfirm.value = null
+}
 
 // Reset form when modal closes
 watch(
@@ -2065,10 +2070,11 @@ watch(
       rateMultiplier.value = 1
       status.value = 'active'
       groupIds.value = []
-      rpmLimitEnabled.value = false
-      bulkBaseRpm.value = null
-      bulkRpmStrategy.value = 'tiered'
-      bulkRpmStickyBuffer.value = null
+
+      // Reset mixed channel warning state
+      showMixedChannelWarning.value = false
+      mixedChannelWarningMessage.value = ''
+      pendingUpdatesForConfirm.value = null
     }
     resetFormState()
   }
