@@ -164,7 +164,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 	require.Len(t, captureConn.writes, 2, "应向同一上游连接发送两轮 response.create")
 }
 
-func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_DedicatedModeReusesConnAcrossSessionsWhenHealthy(t *testing.T) {
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_DedicatedModeDoesNotReuseConnAcrossSessions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	cfg := &config.Config{}
@@ -184,13 +184,19 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_DedicatedModeReu
 	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 
-	captureConn := &openAIWSCaptureConn{
+	upstreamConn1 := &openAIWSCaptureConn{
 		events: [][]byte{
 			[]byte(`{"type":"response.completed","response":{"id":"resp_dedicated_1","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+	}
+	upstreamConn2 := &openAIWSCaptureConn{
+		events: [][]byte{
 			[]byte(`{"type":"response.completed","response":{"id":"resp_dedicated_2","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`),
 		},
 	}
-	dialer := &openAIWSCaptureDialer{conn: captureConn}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{upstreamConn1, upstreamConn2},
+	}
 	pool := newOpenAIWSConnPool(cfg)
 	pool.setClientDialerForTest(dialer)
 
@@ -289,8 +295,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_DedicatedModeReu
 	runSingleTurnSession("resp_dedicated_1")
 	runSingleTurnSession("resp_dedicated_2")
 
-	require.Equal(t, 1, dialer.DialCount(), "客户端会话断开后应将上游连接归还池中，供后续会话复用")
-	require.Len(t, captureConn.writes, 2, "两次客户端会话应复用同一上游连接完成两轮请求")
+	require.Equal(t, 2, dialer.DialCount(), "dedicated 模式下跨客户端会话必须新建上游连接，不允许复用")
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CtxPoolModeBindsPerCodexSession(t *testing.T) {
