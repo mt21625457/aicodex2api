@@ -342,11 +342,11 @@ func TestOpenAIWSIngressContextPool_CleanupAccountExpiredLocked_ClosesUpstream(t
 		accountID:        1201,
 		sessionHash:      "session_expired",
 		sessionKey:       openAIWSIngressContextSessionKey(21, "session_expired"),
-		expiresAt:        time.Now().Add(-2 * time.Second),
 		upstream:         upstreamConn,
 		upstreamConnID:   "ctxws_1201_1",
 		handshakeHeaders: map[string][]string{"x-test": []string{"ok"}},
 	}
+	expiredCtx.setExpiresAt(time.Now().Add(-2 * time.Second))
 	ap.contexts[expiredCtx.id] = expiredCtx
 	ap.bySession[expiredCtx.sessionKey] = expiredCtx.id
 
@@ -390,8 +390,10 @@ func TestOpenAIWSIngressContextPool_ScoreAndStickinessHelpers(t *testing.T) {
 	_, _, ok := scoreOpenAIWSIngressMigrationCandidate(busyCtx, now)
 	require.False(t, ok, "owner 占用中的 context 不应作为迁移候选")
 
-	oldIdle := &openAIWSIngressContext{lastUsedAt: now.Add(-5 * time.Minute)}
-	recentIdle := &openAIWSIngressContext{lastUsedAt: now.Add(-10 * time.Second)}
+	oldIdle := &openAIWSIngressContext{}
+	oldIdle.setLastUsedAt(now.Add(-5 * time.Minute))
+	recentIdle := &openAIWSIngressContext{}
+	recentIdle.setLastUsedAt(now.Add(-10 * time.Second))
 	scoreOld, _, okOld := scoreOpenAIWSIngressMigrationCandidate(oldIdle, now)
 	scoreRecent, _, okRecent := scoreOpenAIWSIngressMigrationCandidate(recentIdle, now)
 	require.True(t, okOld)
@@ -399,13 +401,13 @@ func TestOpenAIWSIngressContextPool_ScoreAndStickinessHelpers(t *testing.T) {
 	require.Greater(t, scoreOld, scoreRecent, "更久未使用的空闲 context 应该更易被迁移")
 
 	penalized := &openAIWSIngressContext{
-		lastUsedAt:      now.Add(-5 * time.Minute),
 		broken:          true,
 		failureStreak:   2,
 		lastFailureAt:   now.Add(-30 * time.Second),
 		migrationCount:  2,
 		lastMigrationAt: now.Add(-10 * time.Second),
 	}
+	penalized.setLastUsedAt(now.Add(-5 * time.Minute))
 	scorePenalized, _, okPenalized := scoreOpenAIWSIngressMigrationCandidate(penalized, now)
 	require.True(t, okPenalized)
 	require.Less(t, scorePenalized, scoreOld, "近期失败和频繁迁移应降低迁移分数")
@@ -420,29 +422,35 @@ func TestOpenAIWSIngressContextPool_EvictPickAndSweep(t *testing.T) {
 
 	now := time.Now()
 	expiredConn := &openAIWSCaptureConn{}
+	expiredCtx := &openAIWSIngressContext{
+		id:             "ctx_expired",
+		sessionKey:     "1:expired",
+		upstream:       expiredConn,
+		upstreamConnID: "ctxws_expired",
+	}
+	expiredCtx.setLastUsedAt(now.Add(-20 * time.Minute))
+	expiredCtx.setExpiresAt(now.Add(-time.Minute))
+
+	idleNewCtx := &openAIWSIngressContext{
+		id:         "ctx_idle_new",
+		sessionKey: "1:idle_new",
+	}
+	idleNewCtx.setLastUsedAt(now.Add(-30 * time.Second))
+	idleNewCtx.setExpiresAt(now.Add(time.Minute))
+
+	busyCtx := &openAIWSIngressContext{
+		id:         "ctx_busy",
+		sessionKey: "1:busy",
+		ownerID:    "active_owner",
+	}
+	busyCtx.setLastUsedAt(now.Add(-40 * time.Minute))
+	busyCtx.setExpiresAt(now.Add(-time.Minute))
+
 	ap := &openAIWSIngressAccountPool{
 		contexts: map[string]*openAIWSIngressContext{
-			"ctx_expired": {
-				id:             "ctx_expired",
-				sessionKey:     "1:expired",
-				lastUsedAt:     now.Add(-20 * time.Minute),
-				expiresAt:      now.Add(-time.Minute),
-				upstream:       expiredConn,
-				upstreamConnID: "ctxws_expired",
-			},
-			"ctx_idle_new": {
-				id:         "ctx_idle_new",
-				sessionKey: "1:idle_new",
-				lastUsedAt: now.Add(-30 * time.Second),
-				expiresAt:  now.Add(time.Minute),
-			},
-			"ctx_busy": {
-				id:         "ctx_busy",
-				sessionKey: "1:busy",
-				ownerID:    "active_owner",
-				lastUsedAt: now.Add(-40 * time.Minute),
-				expiresAt:  now.Add(-time.Minute),
-			},
+			"ctx_expired":  expiredCtx,
+			"ctx_idle_new": idleNewCtx,
+			"ctx_busy":     busyCtx,
 		},
 		bySession: map[string]string{
 			"1:expired":  "ctx_expired",
@@ -472,14 +480,15 @@ func TestOpenAIWSIngressContextPool_EvictPickAndSweep(t *testing.T) {
 	expiredInPoolConn := &openAIWSCaptureConn{}
 	pool.mu.Lock()
 	pool.accounts[5001] = ap
+	poolExpiredCtx := &openAIWSIngressContext{
+		id:         "ctx_pool_expired",
+		sessionKey: "2:expired",
+		upstream:   expiredInPoolConn,
+	}
+	poolExpiredCtx.setExpiresAt(now.Add(-time.Minute))
 	pool.accounts[5002] = &openAIWSIngressAccountPool{
 		contexts: map[string]*openAIWSIngressContext{
-			"ctx_pool_expired": {
-				id:         "ctx_pool_expired",
-				sessionKey: "2:expired",
-				expiresAt:  now.Add(-time.Minute),
-				upstream:   expiredInPoolConn,
-			},
+			"ctx_pool_expired": poolExpiredCtx,
 		},
 		bySession: map[string]string{
 			"2:expired": "ctx_pool_expired",

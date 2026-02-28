@@ -82,9 +82,9 @@ type openAIWSIngressContext struct {
 	dialing          bool
 	dialDone         chan struct{}
 	ownerID          string
-	ownerLeaseAt     time.Time
-	lastUsedAt       time.Time
-	expiresAt        time.Time
+	ownerLeaseAtUnix atomic.Int64
+	lastUsedAtUnix   atomic.Int64
+	expiresAtUnix    atomic.Int64
 	broken           bool
 	failureStreak    int
 	lastFailureAt    time.Time
@@ -106,6 +106,72 @@ type openAIWSIngressContextLease struct {
 	stickiness    string
 	migrationUsed bool
 	released      atomic.Bool
+}
+
+func openAIWSTimeToUnixNano(ts time.Time) int64 {
+	if ts.IsZero() {
+		return 0
+	}
+	return ts.UnixNano()
+}
+
+func openAIWSUnixNanoToTime(ns int64) time.Time {
+	if ns <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+func (c *openAIWSIngressContext) setOwnerLeaseAt(ts time.Time) {
+	if c == nil {
+		return
+	}
+	c.ownerLeaseAtUnix.Store(openAIWSTimeToUnixNano(ts))
+}
+
+func (c *openAIWSIngressContext) ownerLeaseAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	return openAIWSUnixNanoToTime(c.ownerLeaseAtUnix.Load())
+}
+
+func (c *openAIWSIngressContext) setLastUsedAt(ts time.Time) {
+	if c == nil {
+		return
+	}
+	c.lastUsedAtUnix.Store(openAIWSTimeToUnixNano(ts))
+}
+
+func (c *openAIWSIngressContext) lastUsedAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	return openAIWSUnixNanoToTime(c.lastUsedAtUnix.Load())
+}
+
+func (c *openAIWSIngressContext) setExpiresAt(ts time.Time) {
+	if c == nil {
+		return
+	}
+	c.expiresAtUnix.Store(openAIWSTimeToUnixNano(ts))
+}
+
+func (c *openAIWSIngressContext) expiresAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	return openAIWSUnixNanoToTime(c.expiresAtUnix.Load())
+}
+
+func (c *openAIWSIngressContext) touchLease(now time.Time, ttl time.Duration) {
+	if c == nil {
+		return
+	}
+	nowUnix := openAIWSTimeToUnixNano(now)
+	c.lastUsedAtUnix.Store(nowUnix)
+	c.ownerLeaseAtUnix.Store(nowUnix)
+	c.expiresAtUnix.Store(openAIWSTimeToUnixNano(now.Add(ttl)))
 }
 
 func newOpenAIWSIngressContextPool(cfg *config.Config) *openAIWSIngressContextPool {
@@ -266,16 +332,12 @@ func (p *openAIWSIngressContextPool) Acquire(
 			case "":
 				existing.ownerID = ownerID
 				ownerAssigned = true
-				existing.ownerLeaseAt = now
-				existing.lastUsedAt = now
-				existing.expiresAt = now.Add(p.idleTTL)
+				existing.touchLease(now, p.idleTTL)
 				selected = existing
 				reusedContext = true
 				scheduleLayer = openAIWSIngressScheduleLayerExact
 			case ownerID:
-				existing.ownerLeaseAt = now
-				existing.lastUsedAt = now
-				existing.expiresAt = now.Add(p.idleTTL)
+				existing.touchLease(now, p.idleTTL)
 				selected = existing
 				reusedContext = true
 				scheduleLayer = openAIWSIngressScheduleLayerExact
@@ -310,9 +372,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 			recycle.sessionKey = sessionKey
 			recycle.groupID = req.GroupID
 			recycle.ownerID = ownerID
-			recycle.ownerLeaseAt = now
-			recycle.lastUsedAt = now
-			recycle.expiresAt = now.Add(p.idleTTL)
+			recycle.touchLease(now, p.idleTTL)
 			// 会话被回收复用时关闭旧上游，避免跨会话污染。
 			recycle.upstream = nil
 			recycle.upstreamConnID = ""
@@ -356,16 +416,14 @@ func (p *openAIWSIngressContextPool) Acquire(
 
 		ctxID := fmt.Sprintf("ctx_%d_%d", accountID, p.seq.Add(1))
 		created := &openAIWSIngressContext{
-			id:           ctxID,
-			groupID:      req.GroupID,
-			accountID:    accountID,
-			sessionHash:  sessionHash,
-			sessionKey:   sessionKey,
-			ownerID:      ownerID,
-			ownerLeaseAt: now,
-			lastUsedAt:   now,
-			expiresAt:    now.Add(p.idleTTL),
+			id:          ctxID,
+			groupID:     req.GroupID,
+			accountID:   accountID,
+			sessionHash: sessionHash,
+			sessionKey:  sessionKey,
+			ownerID:     ownerID,
 		}
+		created.touchLease(now, p.idleTTL)
 		ap.contexts[ctxID] = created
 		ap.bySession[sessionKey] = ctxID
 		selected = created
@@ -437,7 +495,7 @@ func (p *openAIWSIngressContextPool) resolveStickinessLevelLocked(
 	broken := existing.broken
 	failureStreak := existing.failureStreak
 	lastFailureAt := existing.lastFailureAt
-	lastUsedAt := existing.lastUsedAt
+	lastUsedAt := existing.lastUsedAt()
 	existing.mu.Unlock()
 
 	recentFailure := failureStreak > 0 && !lastFailureAt.IsZero() && now.Sub(lastFailureAt) <= 2*time.Minute
@@ -543,7 +601,8 @@ func scoreOpenAIWSIngressMigrationCandidate(c *openAIWSIngressContext, now time.
 		score -= float64(minInt(c.migrationCount*4, 20))
 	}
 
-	idleDuration := now.Sub(c.lastUsedAt)
+	lastUsedAt := c.lastUsedAt()
+	idleDuration := now.Sub(lastUsedAt)
 	switch {
 	case idleDuration <= 15*time.Second:
 		score -= 15
@@ -553,7 +612,7 @@ func scoreOpenAIWSIngressMigrationCandidate(c *openAIWSIngressContext, now time.
 		score += idleDuration.Seconds() / 12.0
 	}
 
-	return score, c.lastUsedAt, true
+	return score, lastUsedAt, true
 }
 
 func minInt(a, b int) int {
@@ -578,9 +637,7 @@ func (p *openAIWSIngressContextPool) ensureContextUpstream(
 		c.mu.Lock()
 		if c.upstream != nil && !c.broken {
 			now := time.Now()
-			c.lastUsedAt = now
-			c.ownerLeaseAt = now
-			c.expiresAt = now.Add(p.idleTTL)
+			c.touchLease(now, p.idleTTL)
 			c.mu.Unlock()
 			return true, nil
 		}
@@ -648,9 +705,7 @@ func (p *openAIWSIngressContextPool) ensureContextUpstream(
 		c.upstream = conn
 		c.upstreamConnID = fmt.Sprintf("ctxws_%d_%d", c.accountID, p.seq.Add(1))
 		c.handshakeHeaders = cloneHeader(handshakeHeaders)
-		c.lastUsedAt = now
-		c.ownerLeaseAt = now
-		c.expiresAt = now.Add(p.idleTTL)
+		c.touchLease(now, p.idleTTL)
 		c.broken = false
 		c.failureStreak = 0
 		c.lastFailureAt = time.Time{}
@@ -678,9 +733,10 @@ func (p *openAIWSIngressContextPool) releaseContext(c *openAIWSIngressContext, o
 		c.handshakeHeaders = nil
 		c.upstreamConnID = ""
 		c.ownerID = ""
-		c.ownerLeaseAt = time.Time{}
-		c.lastUsedAt = time.Now()
-		c.expiresAt = time.Now().Add(p.idleTTL)
+		now := time.Now()
+		c.setOwnerLeaseAt(time.Time{})
+		c.setLastUsedAt(now)
+		c.setExpiresAt(now.Add(p.idleTTL))
 		c.broken = false
 	}
 	c.mu.Unlock()
@@ -729,7 +785,8 @@ func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(ap *openAIWSIng
 			continue
 		}
 		ctx.mu.Lock()
-		expired := ctx.ownerID == "" && !ctx.expiresAt.IsZero() && now.After(ctx.expiresAt)
+		expiresAt := ctx.expiresAt()
+		expired := ctx.ownerID == "" && !expiresAt.IsZero() && now.After(expiresAt)
 		ctx.mu.Unlock()
 		if !expired {
 			continue
@@ -762,7 +819,8 @@ func (p *openAIWSIngressContextPool) evictExpiredIdleLocked(ap *openAIWSIngressA
 			continue
 		}
 		ctx.mu.Lock()
-		expired := ctx.ownerID == "" && !ctx.expiresAt.IsZero() && now.After(ctx.expiresAt)
+		expiresAt := ctx.expiresAt()
+		expired := ctx.ownerID == "" && !expiresAt.IsZero() && now.After(expiresAt)
 		upstream := ctx.upstream
 		if expired {
 			ctx.upstream = nil
@@ -797,7 +855,7 @@ func (p *openAIWSIngressContextPool) pickOldestIdleContextLocked(ap *openAIWSIng
 		}
 		ctx.mu.Lock()
 		idle := strings.TrimSpace(ctx.ownerID) == ""
-		lastUsed := ctx.lastUsedAt
+		lastUsed := ctx.lastUsedAt()
 		ctx.mu.Unlock()
 		if !idle {
 			continue
@@ -961,12 +1019,7 @@ func (l *openAIWSIngressContextLease) WriteJSONWithContextTimeout(ctx context.Co
 	if err := conn.WriteJSON(writeCtx, value); err != nil {
 		return err
 	}
-	l.context.mu.Lock()
-	now := time.Now()
-	l.context.lastUsedAt = now
-	l.context.ownerLeaseAt = now
-	l.context.expiresAt = now.Add(l.pool.idleTTL)
-	l.context.mu.Unlock()
+	l.context.touchLease(time.Now(), l.pool.idleTTL)
 	return nil
 }
 
@@ -988,12 +1041,7 @@ func (l *openAIWSIngressContextLease) ReadMessageWithContextTimeout(ctx context.
 	if err != nil {
 		return nil, err
 	}
-	l.context.mu.Lock()
-	now := time.Now()
-	l.context.lastUsedAt = now
-	l.context.ownerLeaseAt = now
-	l.context.expiresAt = now.Add(l.pool.idleTTL)
-	l.context.mu.Unlock()
+	l.context.touchLease(time.Now(), l.pool.idleTTL)
 	return payload, nil
 }
 
@@ -1011,12 +1059,7 @@ func (l *openAIWSIngressContextLease) PingWithTimeout(timeout time.Duration) err
 	if err := conn.Ping(pingCtx); err != nil {
 		return err
 	}
-	l.context.mu.Lock()
-	now := time.Now()
-	l.context.lastUsedAt = now
-	l.context.ownerLeaseAt = now
-	l.context.expiresAt = now.Add(l.pool.idleTTL)
-	l.context.mu.Unlock()
+	l.context.touchLease(time.Now(), l.pool.idleTTL)
 	return nil
 }
 
