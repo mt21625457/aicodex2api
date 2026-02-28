@@ -169,6 +169,36 @@ func TestOpenAIEnsureForwardErrorResponse_DoesNotOverrideWrittenResponse(t *test
 	assert.Equal(t, "already written", w.Body.String())
 }
 
+func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("fallback_written_should_not_downgrade", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+		require.False(t, shouldLogOpenAIForwardFailureAsWarn(c, true))
+	})
+
+	t.Run("context_nil_should_not_downgrade", func(t *testing.T) {
+		require.False(t, shouldLogOpenAIForwardFailureAsWarn(nil, false))
+	})
+
+	t.Run("response_not_written_should_not_downgrade", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+		require.False(t, shouldLogOpenAIForwardFailureAsWarn(c, false))
+	})
+
+	t.Run("response_already_written_should_downgrade", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+		c.String(http.StatusForbidden, "already written")
+		require.True(t, shouldLogOpenAIForwardFailureAsWarn(c, false))
+	})
+}
+
 func TestOpenAIRecoverResponsesPanic_WritesFallbackResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
