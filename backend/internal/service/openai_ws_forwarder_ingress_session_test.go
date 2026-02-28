@@ -444,6 +444,11 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CtxPoolModeBinds
 	require.True(t, closed1, "首个客户端会话结束后应关闭对应上游连接")
 	require.True(t, closed2, "第二个客户端会话结束后应关闭对应上游连接")
 	require.Equal(t, int64(0), svc.SnapshotOpenAIWSPoolMetrics().AcquireTotal, "ctx_pool 模式不应走普通 ws 连接池")
+	stateStore := svc.getOpenAIWSStateStore()
+	_, hasConn := stateStore.GetResponseConn("resp_ctx_pool_1")
+	require.False(t, hasConn, "ctx_pool 响应不应污染普通池 response->conn 粘连")
+	_, hasConn = stateStore.GetResponseConn("resp_ctx_pool_2")
+	require.False(t, hasConn, "ctx_pool 响应不应污染普通池 response->conn 粘连")
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CtxPoolModeDoesNotRequireCodexUA(t *testing.T) {

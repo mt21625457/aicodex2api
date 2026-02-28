@@ -181,6 +181,17 @@ func requestToJSONString(payload map[string]any) string {
 	return string(b)
 }
 
+func TestOpenAIWSPoolPreferredConnIDFromResponse(t *testing.T) {
+	store := NewOpenAIWSStateStore(nil)
+	ttl := time.Minute
+	store.BindResponseConn("resp_ctx", "ctxws_22_1", ttl)
+	store.BindResponseConn("resp_oa", "oa_ws_22_1", ttl)
+
+	require.Equal(t, "", openAIWSPoolPreferredConnIDFromResponse(store, "resp_ctx"))
+	require.Equal(t, "oa_ws_22_1", openAIWSPoolPreferredConnIDFromResponse(store, "resp_oa"))
+	require.Equal(t, "", openAIWSPoolPreferredConnIDFromResponse(store, "resp_missing"))
+}
+
 func TestLogOpenAIWSBindResponseAccountWarn(t *testing.T) {
 	require.NotPanics(t, func() {
 		logOpenAIWSBindResponseAccountWarn(1, 2, "resp_ok", nil)

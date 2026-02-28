@@ -26,8 +26,9 @@ import (
 )
 
 const (
-	openAIWSBetaV1Value = "responses_websockets=2026-02-04"
-	openAIWSBetaV2Value = "responses_websockets=2026-02-06"
+	openAIWSBetaV1Value      = "responses_websockets=2026-02-04"
+	openAIWSBetaV2Value      = "responses_websockets=2026-02-06"
+	openAIWSPoolConnIDPrefix = "oa_ws_"
 
 	openAIWSTurnStateHeader    = "x-codex-turn-state"
 	openAIWSTurnMetadataHeader = "x-codex-turn-metadata"
@@ -1803,9 +1804,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 	preferredConnID := ""
 	if stateStore != nil && previousResponseID != "" {
-		if connID, ok := stateStore.GetResponseConn(previousResponseID); ok {
-			preferredConnID = connID
-		}
+		preferredConnID = openAIWSPoolPreferredConnIDFromResponse(stateStore, previousResponseID)
 	}
 	storeDisabled := s.isOpenAIWSStoreDisabledInRequest(reqBody, account)
 	if stateStore != nil && storeDisabled && previousResponseID == "" && sessionHash != "" {
@@ -2305,7 +2304,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if responseID != "" && stateStore != nil {
 		ttl := s.openAIWSResponseStickyTTL()
 		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
-		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
+		if connID, ok := normalizeOpenAIWSPoolPreferredConnID(lease.ConnID()); ok {
+			stateStore.BindResponseConn(responseID, connID, ttl)
+		}
 		if sessionHash != "" {
 			stateStore.BindSessionLastResponseID(groupID, sessionHash, responseID, s.openAIWSSessionStickyTTL())
 		}
@@ -2543,9 +2544,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	preferredConnID := ""
 	if stateStore != nil && firstPayload.previousResponseID != "" {
-		if connID, ok := stateStore.GetResponseConn(firstPayload.previousResponseID); ok {
-			preferredConnID = connID
-		}
+		preferredConnID = openAIWSPoolPreferredConnIDFromResponse(stateStore, firstPayload.previousResponseID)
 	}
 
 	storeDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(firstPayload.payloadRaw, account)
@@ -3380,7 +3379,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 		if stateStore != nil && nextPayload.previousResponseID != "" {
-			if stickyConnID, ok := stateStore.GetResponseConn(nextPayload.previousResponseID); ok {
+			if stickyConnID := openAIWSPoolPreferredConnIDFromResponse(stateStore, nextPayload.previousResponseID); stickyConnID != "" {
 				if sessionConnID != "" && stickyConnID != "" && stickyConnID != sessionConnID {
 					logOpenAIWSModeInfo(
 						"ingress_ws_keep_session_conn account_id=%d turn=%d conn_id=%s sticky_conn_id=%s previous_response_id=%s",
@@ -3616,8 +3615,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if acquireErr != nil {
 				if forcePreferredConn && currentPreviousResponseID != "" && isOpenAIWSContinuationUnavailableCloseError(acquireErr) {
 					if !turnPreferredRehydrateTried && stateStore != nil && strings.TrimSpace(preferredConnID) == "" {
-						if stickyConnID, ok := stateStore.GetResponseConn(currentPreviousResponseID); ok {
-							preferredConnID = strings.TrimSpace(stickyConnID)
+						if stickyConnID := openAIWSPoolPreferredConnIDFromResponse(stateStore, currentPreviousResponseID); stickyConnID != "" {
+							preferredConnID = stickyConnID
 							turnPreferredRehydrateTried = true
 							if preferredConnID != "" {
 								logOpenAIWSModeInfo(
@@ -3902,7 +3901,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if responseID != "" && stateStore != nil {
 			ttl := s.openAIWSResponseStickyTTL()
 			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
-			stateStore.BindResponseConn(responseID, connID, ttl)
+			if poolConnID, ok := normalizeOpenAIWSPoolPreferredConnID(connID); ok {
+				stateStore.BindResponseConn(responseID, poolConnID, ttl)
+			}
 			if sessionHash != "" {
 				stateStore.BindSessionLastResponseID(groupID, sessionHash, responseID, s.openAIWSSessionStickyTTL())
 			}
@@ -4076,7 +4077,9 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	if prewarmResponseID != "" && stateStore != nil {
 		ttl := s.openAIWSResponseStickyTTL()
 		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, prewarmResponseID, stateStore.BindResponseAccount(ctx, groupID, prewarmResponseID, account.ID, ttl))
-		stateStore.BindResponseConn(prewarmResponseID, lease.ConnID(), ttl)
+		if connID, ok := normalizeOpenAIWSPoolPreferredConnID(lease.ConnID()); ok {
+			stateStore.BindResponseConn(prewarmResponseID, connID, ttl)
+		}
 	}
 	logOpenAIWSModeInfo(
 		"prewarm_done account_id=%d conn_id=%s response_id=%s events=%d terminal_events=%d duration_ms=%d",
@@ -4092,6 +4095,33 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 
 func payloadAsJSON(payload map[string]any) string {
 	return string(payloadAsJSONBytes(payload))
+}
+
+func normalizeOpenAIWSPoolPreferredConnID(connID string) (string, bool) {
+	trimmed := strings.TrimSpace(connID)
+	if !strings.HasPrefix(trimmed, openAIWSPoolConnIDPrefix) {
+		return "", false
+	}
+	return trimmed, true
+}
+
+func openAIWSPoolPreferredConnIDFromResponse(stateStore OpenAIWSStateStore, responseID string) string {
+	if stateStore == nil {
+		return ""
+	}
+	normalizedResponseID := strings.TrimSpace(responseID)
+	if normalizedResponseID == "" {
+		return ""
+	}
+	connID, ok := stateStore.GetResponseConn(normalizedResponseID)
+	if !ok {
+		return ""
+	}
+	normalizedConnID, ok := normalizeOpenAIWSPoolPreferredConnID(connID)
+	if !ok {
+		return ""
+	}
+	return normalizedConnID
 }
 
 func payloadAsJSONBytes(payload map[string]any) []byte {
