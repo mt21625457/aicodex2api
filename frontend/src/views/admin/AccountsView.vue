@@ -271,94 +271,7 @@
     <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @reauth="handleReAuth" @refresh-token="handleRefresh" @reset-status="handleResetStatus" @clear-rate-limit="handleClearRateLimit" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
-    <BaseDialog
-      :show="showBulkEditScope"
-      :title="t('admin.accounts.bulkEdit.scopeTitle')"
-      width="wide"
-      @close="closeBulkEditScopeSelector"
-    >
-      <div class="space-y-4">
-        <div class="rounded-lg bg-blue-50 p-4 dark:bg-blue-900/20">
-          <p class="text-sm text-blue-700 dark:text-blue-400">
-            {{ t('admin.accounts.bulkEdit.scopeInfo', { count: selIds.length }) }}
-          </p>
-          <p class="mt-1 text-xs text-blue-600 dark:text-blue-300">
-            {{ t('admin.accounts.bulkEdit.onlySameTypeHint') }}
-          </p>
-        </div>
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div>
-            <label class="input-label mb-2">{{ t('admin.accounts.filters.platform') }}</label>
-            <Select v-model="bulkEditPlatform" :options="bulkEditPlatformOptions" />
-          </div>
-          <div>
-            <label class="input-label mb-2">{{ t('admin.accounts.filters.type') }}</label>
-            <Select v-model="bulkEditType" :options="bulkEditTypeOptions" :disabled="!bulkEditPlatform" />
-          </div>
-        </div>
-        <div class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300">
-          {{ t('admin.accounts.bulkEdit.scopeMatched', { count: bulkEditMatchedCount }) }}
-        </div>
-        <div class="rounded-lg border border-gray-200 bg-white px-3 py-3 dark:border-dark-600 dark:bg-dark-800">
-          <p class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            {{ t('admin.accounts.bulkEdit.scopeSummaryTitle') }}
-          </p>
-          <div class="space-y-1">
-            <div
-              v-for="stat in bulkEditScopeGroupedStats"
-              :key="stat.key"
-              class="flex items-center justify-between text-sm"
-            >
-              <span class="text-gray-700 dark:text-gray-300">
-                {{ resolvePlatformLabel(stat.platform) }} · {{ resolveAccountTypeLabel(stat.type) }}
-              </span>
-              <span class="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
-                {{ stat.count }}
-              </span>
-            </div>
-          </div>
-          <p class="mt-3 text-sm text-gray-700 dark:text-gray-300">
-            {{
-              t('admin.accounts.bulkEdit.scopeTargetPreview', {
-                matched: bulkEditMatchedCount,
-                selected: bulkEditScopeTotalCount
-              })
-            }}
-          </p>
-          <p
-            v-if="bulkEditExcludedCount > 0"
-            class="mt-1 text-xs text-amber-600 dark:text-amber-400"
-          >
-            {{ t('admin.accounts.bulkEdit.scopeExcludedHint', { count: bulkEditExcludedCount }) }}
-          </p>
-        </div>
-      </div>
-      <template #footer>
-        <div class="flex justify-end gap-3">
-          <button class="btn btn-secondary" @click="closeBulkEditScopeSelector">
-            {{ t('common.cancel') }}
-          </button>
-          <button
-            class="btn btn-primary"
-            :disabled="!canConfirmBulkEditScope"
-            @click="confirmBulkEditScopeSelection"
-          >
-            {{ t('admin.accounts.bulkEdit.openScopedEditor') }}
-          </button>
-        </div>
-      </template>
-    </BaseDialog>
-    <BulkEditAccountScopedModal
-      :show="showBulkEdit"
-      :account-ids="bulkEditScopedIds"
-      :scope-platform="bulkEditScopedPlatform"
-      :scope-type="bulkEditScopedType"
-      :scope-group-ids="bulkEditScopedGroupIds"
-      :proxies="proxies"
-      :groups="groups"
-      @close="closeBulkEditModal"
-      @updated="handleBulkUpdated"
-    />
+    <BulkEditAccountModal :show="showBulkEdit" :account-ids="selIds" :selected-platforms="selPlatforms" :selected-types="selTypes" :proxies="proxies" :groups="groups" @close="showBulkEdit = false" @updated="handleBulkUpdated" />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
     <ConfirmDialog :show="showExportDataDialog" :title="t('admin.accounts.dataExport')" :message="t('admin.accounts.dataExportConfirmMessage')" :confirm-text="t('admin.accounts.dataExportConfirm')" :cancel-text="t('common.cancel')" @confirm="handleExportData" @cancel="showExportDataDialog = false">
@@ -404,7 +317,7 @@ import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import type { Account, AccountPlatform, Proxy, AdminGroup, WindowStats } from '@/types'
+import type { Account, AccountPlatform, AccountType, Proxy, AdminGroup, WindowStats } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -420,6 +333,14 @@ const selPlatforms = computed<AccountPlatform[]>(() => {
       .map(a => a.platform)
   )
   return [...platforms]
+})
+const selTypes = computed<AccountType[]>(() => {
+  const types = new Set(
+    accounts.value
+      .filter(a => selIds.value.includes(a.id))
+      .map(a => a.type)
+  )
+  return [...types]
 })
 const showCreate = ref(false)
 const showEdit = ref(false)
