@@ -90,16 +90,16 @@ type openAIWSIngressContext struct {
 }
 
 type openAIWSIngressContextLease struct {
-	pool      *openAIWSIngressContextPool
-	context   *openAIWSIngressContext
-	ownerID   string
-	queueWait time.Duration
-	connPick  time.Duration
-	reused    bool
-	scheduleLayer  string
-	stickiness     string
-	migrationUsed  bool
-	released  atomic.Bool
+	pool          *openAIWSIngressContextPool
+	context       *openAIWSIngressContext
+	ownerID       string
+	queueWait     time.Duration
+	connPick      time.Duration
+	reused        bool
+	scheduleLayer string
+	stickiness    string
+	migrationUsed bool
+	released      atomic.Bool
 }
 
 func newOpenAIWSIngressContextPool(cfg *config.Config) *openAIWSIngressContextPool {
@@ -311,6 +311,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 			connPick := time.Since(start)
 			reusedConn, ensureErr := p.ensureContextUpstream(ctx, selected, req)
 			if ensureErr != nil {
+				p.releaseContext(selected, ownerID)
 				return nil, ensureErr
 			}
 			return &openAIWSIngressContextLease{
@@ -356,6 +357,8 @@ func (p *openAIWSIngressContextPool) Acquire(
 				}
 			}
 			p.mu.Unlock()
+		} else {
+			p.releaseContext(selected, ownerID)
 		}
 		return nil, ensureErr
 	}
@@ -593,14 +596,25 @@ func (p *openAIWSIngressContextPool) releaseContext(c *openAIWSIngressContext, o
 	if p == nil || c == nil {
 		return
 	}
+	var upstream openAIWSClientConn
 	c.mu.Lock()
 	if c.ownerID == ownerID {
+		// ctx_pool 模式下每次客户端会话结束都关闭上游连接，
+		// 下一次同会话重新获取时必须新建上游 ws。
+		upstream = c.upstream
+		c.upstream = nil
+		c.handshakeHeaders = nil
+		c.upstreamConnID = ""
 		c.ownerID = ""
 		c.ownerLeaseAt = time.Time{}
 		c.lastUsedAt = time.Now()
 		c.expiresAt = time.Now().Add(p.idleTTL)
+		c.broken = false
 	}
 	c.mu.Unlock()
+	if upstream != nil {
+		_ = upstream.Close()
+	}
 }
 
 func (p *openAIWSIngressContextPool) markContextBroken(c *openAIWSIngressContext) {
@@ -648,9 +662,20 @@ func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(ap *openAIWSIng
 		if !expired {
 			continue
 		}
+		ctx.mu.Lock()
+		upstream := ctx.upstream
+		if expired {
+			ctx.upstream = nil
+			ctx.handshakeHeaders = nil
+			ctx.upstreamConnID = ""
+		}
+		ctx.mu.Unlock()
 		delete(ap.contexts, id)
 		if mappedID, ok := ap.bySession[ctx.sessionKey]; ok && mappedID == id {
 			delete(ap.bySession, ctx.sessionKey)
+		}
+		if upstream != nil {
+			_ = upstream.Close()
 		}
 	}
 }

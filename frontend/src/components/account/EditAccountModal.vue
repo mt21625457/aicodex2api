@@ -1160,6 +1160,7 @@ import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import {
+  OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_DEDICATED,
   OPENAI_WS_MODE_OFF,
   OPENAI_WS_MODE_SHARED,
@@ -1265,7 +1266,8 @@ const anthropicPassthroughEnabled = ref(false)
 const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
   { value: OPENAI_WS_MODE_SHARED, label: t('admin.accounts.openai.wsModeShared') },
-  { value: OPENAI_WS_MODE_DEDICATED, label: t('admin.accounts.openai.wsModeDedicated') }
+  { value: OPENAI_WS_MODE_DEDICATED, label: t('admin.accounts.openai.wsModeDedicated') },
+  { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') }
 ])
 const openaiResponsesWebSocketV2Mode = computed({
   get: () => {

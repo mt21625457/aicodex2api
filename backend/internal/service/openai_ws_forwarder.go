@@ -2548,6 +2548,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	dedicatedMode := ingressMode == OpenAIWSIngressModeDedicated
 	ctxPoolMode := ingressMode == OpenAIWSIngressModeCtxPool && isCodexCLI
 	wsHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
 	baseAcquireReq := openAIWSAcquireRequest{
@@ -2665,9 +2666,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
 			req.PreferredConnID = strings.TrimSpace(preferred)
 			req.ForcePreferredConn = forcePreferredConn
-			// ingress 会话级强绑定由 sessionLease 保障；会话结束后连接回池，
-			// 让同实例后续会话可以命中 response_id -> conn_id 续链。
-			req.ForceNewConn = false
+			// dedicated 模式要求每个客户端会话独占上游连接：
+			// 会话首轮获取必须新建连接，避免命中池内旧连接造成跨会话复用。
+			req.ForceNewConn = dedicatedMode
 			lease, acquireErr = pool.Acquire(acquireCtx, req)
 		}
 		if acquireErr != nil {
@@ -3043,6 +3044,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	releaseSessionLease := func() {
 		if sessionLease == nil {
 			return
+		}
+		if dedicatedMode {
+			// dedicated 语义：客户端会话结束后连接不可复用，主动标记 broken。
+			sessionLease.MarkBroken()
 		}
 		unpinSessionConn(sessionConnID)
 		sessionLease.Release()
