@@ -193,6 +193,125 @@ func TestAlignStoreDisabledPreviousResponseID(t *testing.T) {
 	})
 }
 
+func TestSetPreviousResponseIDToRawPayload(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_payload", func(t *testing.T) {
+		updated, err := setPreviousResponseIDToRawPayload(nil, "resp_target")
+		require.NoError(t, err)
+		require.Empty(t, updated)
+	})
+
+	t.Run("empty_previous_response_id", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.1"}`)
+		updated, err := setPreviousResponseIDToRawPayload(payload, "")
+		require.NoError(t, err)
+		require.Equal(t, string(payload), string(updated))
+	})
+
+	t.Run("set_previous_response_id_when_missing", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.1"}`)
+		updated, err := setPreviousResponseIDToRawPayload(payload, "resp_target")
+		require.NoError(t, err)
+		require.Equal(t, "resp_target", gjson.GetBytes(updated, "previous_response_id").String())
+		require.Equal(t, "gpt-5.1", gjson.GetBytes(updated, "model").String())
+	})
+
+	t.Run("overwrite_existing_previous_response_id", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.1","previous_response_id":"resp_old"}`)
+		updated, err := setPreviousResponseIDToRawPayload(payload, "resp_new")
+		require.NoError(t, err)
+		require.Equal(t, "resp_new", gjson.GetBytes(updated, "previous_response_id").String())
+	})
+}
+
+func TestShouldInferIngressFunctionCallOutputPreviousResponseID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                    string
+		storeDisabled           bool
+		turn                    int
+		hasFunctionCallOutput   bool
+		currentPreviousResponse string
+		expectedPrevious        string
+		want                    bool
+	}{
+		{
+			name:                  "infer_when_all_conditions_match",
+			storeDisabled:         true,
+			turn:                  2,
+			hasFunctionCallOutput: true,
+			expectedPrevious:      "resp_1",
+			want:                  true,
+		},
+		{
+			name:                  "skip_when_store_enabled",
+			storeDisabled:         false,
+			turn:                  2,
+			hasFunctionCallOutput: true,
+			expectedPrevious:      "resp_1",
+			want:                  false,
+		},
+		{
+			name:                  "skip_on_first_turn",
+			storeDisabled:         true,
+			turn:                  1,
+			hasFunctionCallOutput: true,
+			expectedPrevious:      "resp_1",
+			want:                  false,
+		},
+		{
+			name:                  "skip_without_function_call_output",
+			storeDisabled:         true,
+			turn:                  2,
+			hasFunctionCallOutput: false,
+			expectedPrevious:      "resp_1",
+			want:                  false,
+		},
+		{
+			name:                    "skip_when_request_already_has_previous_response_id",
+			storeDisabled:           true,
+			turn:                    2,
+			hasFunctionCallOutput:   true,
+			currentPreviousResponse: "resp_client",
+			expectedPrevious:        "resp_1",
+			want:                    false,
+		},
+		{
+			name:                  "skip_when_last_turn_response_id_missing",
+			storeDisabled:         true,
+			turn:                  2,
+			hasFunctionCallOutput: true,
+			expectedPrevious:      "",
+			want:                  false,
+		},
+		{
+			name:                  "trim_whitespace_before_judgement",
+			storeDisabled:         true,
+			turn:                  2,
+			hasFunctionCallOutput: true,
+			expectedPrevious:      "   resp_2   ",
+			want:                  true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := shouldInferIngressFunctionCallOutputPreviousResponseID(
+				tt.storeDisabled,
+				tt.turn,
+				tt.hasFunctionCallOutput,
+				tt.currentPreviousResponse,
+				tt.expectedPrevious,
+			)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestOpenAIWSInputIsPrefixExtended(t *testing.T) {
 	t.Parallel()
 
