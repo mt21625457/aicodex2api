@@ -254,12 +254,12 @@ func TestShouldInferIngressFunctionCallOutputPreviousResponseID(t *testing.T) {
 			want:                  false,
 		},
 		{
-			name:                  "skip_on_first_turn",
+			name:                  "infer_on_first_turn_when_expected_previous_exists",
 			storeDisabled:         true,
 			turn:                  1,
 			hasFunctionCallOutput: true,
 			expectedPrevious:      "resp_1",
-			want:                  false,
+			want:                  true,
 		},
 		{
 			name:                  "skip_without_function_call_output",

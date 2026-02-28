@@ -1394,7 +1394,7 @@ func shouldInferIngressFunctionCallOutputPreviousResponseID(
 	currentPreviousResponseID string,
 	expectedPreviousResponseID string,
 ) bool {
-	if !storeDisabled || turn <= 1 || !hasFunctionCallOutput {
+	if !storeDisabled || turn <= 0 || !hasFunctionCallOutput {
 		return false
 	}
 	if strings.TrimSpace(currentPreviousResponseID) != "" {
@@ -2772,7 +2772,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return payload, nil
 	}
 
-	sendAndRelay := func(turn int, lease openAIWSIngressUpstreamLease, payload []byte, payloadBytes int, originalModel string) (*OpenAIForwardResult, error) {
+	sendAndRelay := func(turn int, lease openAIWSIngressUpstreamLease, payload []byte, payloadBytes int, originalModel string, expectedPreviousResponseID string) (*OpenAIForwardResult, error) {
 		if lease == nil {
 			return nil, errors.New("upstream websocket lease is nil")
 		}
@@ -2801,6 +2801,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		reqStream := openAIWSPayloadBoolFromRaw(payload, "stream", true)
 		turnPreviousResponseID := openAIWSPayloadStringFromRaw(payload, "previous_response_id")
 		turnPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(turnPreviousResponseID)
+		turnExpectedPreviousResponseID := strings.TrimSpace(expectedPreviousResponseID)
 		turnPromptCacheKey := openAIWSPayloadStringFromRaw(payload, "prompt_cache_key")
 		turnStoreDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(payload, account)
 		turnHasFunctionCallOutput := gjson.GetBytes(payload, `input.#(type=="function_call_output")`).Exists()
@@ -2853,8 +2854,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				errCode, errType, errMessage := summarizeOpenAIWSErrorEventFieldsFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
 				recoveryEnabled := s.openAIWSIngressPreviousResponseRecoveryEnabled()
 				recoverablePrevNotFound := fallbackReason == openAIWSIngressStagePreviousResponseNotFound &&
-					turnPreviousResponseID != "" &&
 					recoveryEnabled &&
+					(turnPreviousResponseID != "" || (turnHasFunctionCallOutput && turnExpectedPreviousResponseID != "")) &&
 					!wroteDownstream
 				if recoverablePrevNotFound {
 					// 可恢复场景使用非 error 关键字日志，避免被 LegacyPrintf 误判为 ERROR 级别。
@@ -3321,6 +3322,39 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if parseErr != nil {
 			return false, parseErr
 		}
+		nextStoreDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(nextPayload.payloadRaw, account)
+		nextSessionHash := s.GenerateSessionHash(c, nextPayload.rawForHash)
+		if sessionHash == "" && nextSessionHash != "" {
+			sessionHash = nextSessionHash
+			if stateStore != nil {
+				if turnState == "" {
+					if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+						turnState = savedTurnState
+					}
+				}
+				if lastTurnResponseID == "" {
+					if savedResponseID, ok := stateStore.GetSessionLastResponseID(groupID, sessionHash); ok {
+						lastTurnResponseID = strings.TrimSpace(savedResponseID)
+					}
+				}
+				if nextStoreDisabled && nextPayload.previousResponseID == "" {
+					if stickyConnID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
+						preferredConnID = stickyConnID
+					}
+				}
+			}
+			logOpenAIWSModeInfo(
+				"ingress_ws_session_hash_backfill account_id=%d turn=%d next_turn=%d conn_id=%s session_hash=%s has_turn_state=%v has_last_response_id=%v store_disabled=%v",
+				account.ID,
+				turn,
+				turn+1,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(sessionHash, 12),
+				turnState != "",
+				strings.TrimSpace(lastTurnResponseID) != "",
+				nextStoreDisabled,
+			)
+		}
 		if nextPayload.promptCacheKey != "" {
 			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
 			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
@@ -3364,7 +3398,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentPayload = nextPayload.payloadRaw
 		currentOriginalModel = nextPayload.originalModel
 		currentPayloadBytes = nextPayload.payloadBytes
-		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(currentPayload, account)
+		storeDisabled = nextStoreDisabled
 		if !storeDisabled {
 			unpinSessionConn(sessionConnID)
 		}
@@ -3388,6 +3422,21 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		hasFunctionCallOutput := gjson.GetBytes(currentPayload, `input.#(type=="function_call_output")`).Exists()
+		if currentPreviousResponseID == "" && !hasFunctionCallOutput && expectedPrev != "" {
+			logOpenAIWSModeInfo(
+				"ingress_ws_prev_response_anchor_reset account_id=%d turn=%d conn_id=%s action=clear_session_last_response_id previous_response_id=%s expected_previous_response_id=%s",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+			)
+			lastTurnResponseID = ""
+			expectedPrev = ""
+			if stateStore != nil && sessionHash != "" {
+				stateStore.DeleteSessionLastResponseID(groupID, sessionHash)
+			}
+		}
 		// store=false + function_call_output 场景必须有续链锚点。
 		// 若客户端未传 previous_response_id，优先回填上一轮响应 ID，避免上游报 call_id 无法关联。
 		if shouldInferIngressFunctionCallOutputPreviousResponseID(
@@ -3786,7 +3835,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
-		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel)
+		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, expectedPrev)
 		if relayErr != nil {
 			if recoverIngressPrevResponseNotFound(relayErr, turn, connID) {
 				continue

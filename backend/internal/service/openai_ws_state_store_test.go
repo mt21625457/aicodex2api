@@ -92,6 +92,77 @@ func TestOpenAIWSStateStore_SessionLastResponseIDTTL(t *testing.T) {
 	require.False(t, ok)
 }
 
+type openAIWSSessionLastResponseProbeCache struct {
+	sessionData map[string]string
+	setCalled   bool
+	getCalled   bool
+	delCalled   bool
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) GetSessionAccountID(context.Context, int64, string) (int64, error) {
+	return 0, nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) SetSessionAccountID(context.Context, int64, string, int64, time.Duration) error {
+	return nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) RefreshSessionTTL(context.Context, int64, string, time.Duration) error {
+	return nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) DeleteSessionAccountID(context.Context, int64, string) error {
+	return nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) SetOpenAIWSSessionLastResponseID(_ context.Context, groupID int64, sessionHash, responseID string, _ time.Duration) error {
+	if c.sessionData == nil {
+		c.sessionData = make(map[string]string)
+	}
+	c.setCalled = true
+	c.sessionData[fmt.Sprintf("%d:%s", groupID, sessionHash)] = responseID
+	return nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) GetOpenAIWSSessionLastResponseID(_ context.Context, groupID int64, sessionHash string) (string, error) {
+	c.getCalled = true
+	return c.sessionData[fmt.Sprintf("%d:%s", groupID, sessionHash)], nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) DeleteOpenAIWSSessionLastResponseID(_ context.Context, groupID int64, sessionHash string) error {
+	c.delCalled = true
+	delete(c.sessionData, fmt.Sprintf("%d:%s", groupID, sessionHash))
+	return nil
+}
+
+func TestOpenAIWSStateStore_SessionLastResponseID_UsesOptionalCacheFallback(t *testing.T) {
+	probe := &openAIWSSessionLastResponseProbeCache{sessionData: make(map[string]string)}
+	raw := NewOpenAIWSStateStore(probe)
+	store, ok := raw.(*defaultOpenAIWSStateStore)
+	require.True(t, ok)
+
+	groupID := int64(9)
+	sessionHash := "session_hash_resp_cache_1"
+	responseID := "resp_cache_1"
+	store.BindSessionLastResponseID(groupID, sessionHash, responseID, time.Minute)
+	require.True(t, probe.setCalled, "绑定 session last_response_id 时应写入可选缓存")
+
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	store.sessionToLastRespMu.Lock()
+	delete(store.sessionToLastResp, key)
+	store.sessionToLastRespMu.Unlock()
+
+	gotResponseID, found := store.GetSessionLastResponseID(groupID, sessionHash)
+	require.True(t, found, "本地缓存缺失时应降级读取可选缓存")
+	require.Equal(t, responseID, gotResponseID)
+	require.True(t, probe.getCalled)
+
+	store.DeleteSessionLastResponseID(groupID, sessionHash)
+	require.True(t, probe.delCalled, "删除 session last_response_id 时应同步删除可选缓存")
+	_, found = store.GetSessionLastResponseID(groupID, sessionHash)
+	require.False(t, found)
+}
+
 func TestOpenAIWSStateStore_GetResponseAccount_NoStaleAfterCacheMiss(t *testing.T) {
 	cache := &stubGatewayCache{sessionBindings: map[string]int64{}}
 	store := NewOpenAIWSStateStore(cache)
