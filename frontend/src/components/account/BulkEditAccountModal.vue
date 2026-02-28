@@ -1942,22 +1942,18 @@ const handleSubmit = async () => {
     return
   }
 
-  const hasAnyFieldEnabled = hasAnyBulkEditFieldEnabled({
-    enableBaseUrl: enableBaseUrl.value,
-    enableModelRestriction: enableModelRestriction.value,
-    enableCustomErrorCodes: enableCustomErrorCodes.value,
-    enableInterceptWarmup: enableInterceptWarmup.value,
-    enableOpenAIPassthrough: enableOpenAIPassthrough.value,
-    enableOpenAIWSMode: enableOpenAIWSMode.value,
-    enableCodexCLIOnly: enableCodexCLIOnly.value,
-    enableAnthropicPassthrough: enableAnthropicPassthrough.value,
-    enableProxy: enableProxy.value,
-    enableConcurrency: enableConcurrency.value,
-    enablePriority: enablePriority.value,
-    enableRateMultiplier: enableRateMultiplier.value,
-    enableStatus: enableStatus.value,
-    enableGroups: enableGroups.value
-  })
+  const hasAnyFieldEnabled =
+    enableBaseUrl.value ||
+    enableModelRestriction.value ||
+    enableCustomErrorCodes.value ||
+    enableInterceptWarmup.value ||
+    enableProxy.value ||
+    enableConcurrency.value ||
+    enablePriority.value ||
+    enableRateMultiplier.value ||
+    enableStatus.value ||
+    enableGroups.value ||
+    enableRpmLimit.value
 
   if (!hasAnyFieldEnabled) {
     appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
