@@ -2666,9 +2666,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
 			req.PreferredConnID = strings.TrimSpace(preferred)
 			req.ForcePreferredConn = forcePreferredConn
-			// dedicated 模式要求每个客户端会话独占上游连接：
-			// 会话首轮获取必须新建连接，避免命中池内旧连接造成跨会话复用。
-			req.ForceNewConn = dedicatedMode
+			// dedicated 模式默认要求每个客户端会话独占上游连接；
+			// 但 strict 续链 turn 需保留 PreferredConn 亲和，避免 ForceNewConn 覆盖续链语义。
+			req.ForceNewConn = dedicatedMode && !forcePreferredConn
 			lease, acquireErr = pool.Acquire(acquireCtx, req)
 		}
 		if acquireErr != nil {
@@ -3286,6 +3286,33 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 			}
 		}
+		// store=false + function_call_output 场景若客户端显式传入了过期 previous_response_id，
+		// 优先对齐到上一轮 response.id，避免把 stale 锚点直接送到上游触发 previous_response_not_found。
+		if storeDisabled && turn > 1 && hasFunctionCallOutput {
+			alignedPayload, aligned, alignErr := alignStoreDisabledPreviousResponseID(currentPayload, expectedPrev)
+			switch {
+			case alignErr != nil:
+				logOpenAIWSModeInfo(
+					"ingress_ws_function_call_output_prev_align_skip account_id=%d turn=%d conn_id=%s reason=align_previous_response_id_error cause=%s expected_previous_response_id=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(alignErr.Error(), openAIWSLogValueMaxLen),
+					truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+				)
+			case aligned:
+				currentPayload = alignedPayload
+				currentPayloadBytes = len(alignedPayload)
+				currentPreviousResponseID = expectedPrev
+				logOpenAIWSModeInfo(
+					"ingress_ws_function_call_output_prev_align account_id=%d turn=%d conn_id=%s action=align_previous_response_id previous_response_id=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+				)
+			}
+		}
 		nextReplayInput, nextReplayInputExists, replayInputErr := buildOpenAIWSReplayInputSequence(
 			lastTurnReplayInput,
 			lastTurnReplayInputExists,
@@ -3464,6 +3491,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 								continue
 							}
 						}
+					}
+					if dedicatedMode {
+						logOpenAIWSModeInfo(
+							"ingress_ws_preferred_conn_recovery account_id=%d turn=%d action=retry_without_strict_affinity previous_response_id=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+						)
+						resetSessionLease(true)
+						strictAffinityBypassOnce = true
+						skipBeforeTurn = true
+						continue
 					}
 				}
 				return fmt.Errorf("acquire upstream websocket: %w", acquireErr)

@@ -63,6 +63,10 @@ type openAIWSIngressContextPool struct {
 }
 
 type openAIWSIngressAccountPool struct {
+	mu sync.Mutex
+
+	refs atomic.Int64
+
 	contexts  map[string]*openAIWSIngressContext
 	bySession map[string]string
 }
@@ -139,10 +143,17 @@ func (p *openAIWSIngressContextPool) Close() {
 
 		var toClose []openAIWSClientConn
 		p.mu.Lock()
+		accountPools := make([]*openAIWSIngressAccountPool, 0, len(p.accounts))
 		for _, ap := range p.accounts {
-			if ap == nil {
-				continue
+			if ap != nil {
+				accountPools = append(accountPools, ap)
 			}
+		}
+		p.accounts = make(map[int64]*openAIWSIngressAccountPool)
+		p.mu.Unlock()
+
+		for _, ap := range accountPools {
+			ap.mu.Lock()
 			for _, ctx := range ap.contexts {
 				if ctx == nil {
 					continue
@@ -157,9 +168,10 @@ func (p *openAIWSIngressContextPool) Close() {
 				ctx.handshakeHeaders = nil
 				ctx.mu.Unlock()
 			}
+			ap.contexts = make(map[string]*openAIWSIngressContext)
+			ap.bySession = make(map[string]string)
+			ap.mu.Unlock()
 		}
-		p.accounts = make(map[int64]*openAIWSIngressAccountPool)
-		p.mu.Unlock()
 
 		for _, conn := range toClose {
 			if conn != nil {
@@ -237,6 +249,11 @@ func (p *openAIWSIngressContextPool) Acquire(
 
 	p.mu.Lock()
 	ap := p.getOrCreateAccountPoolLocked(accountID)
+	ap.refs.Add(1)
+	p.mu.Unlock()
+	defer ap.refs.Add(-1)
+
+	ap.mu.Lock()
 	p.cleanupAccountExpiredLocked(ap, now)
 
 	stickiness := p.resolveStickinessLevelLocked(ap, sessionKey, req, now)
@@ -264,7 +281,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 				scheduleLayer = openAIWSIngressScheduleLayerExact
 			default:
 				existing.mu.Unlock()
-				p.mu.Unlock()
+				ap.mu.Unlock()
 				return nil, errOpenAIWSIngressContextBusy
 			}
 			existing.mu.Unlock()
@@ -277,13 +294,13 @@ func (p *openAIWSIngressContextPool) Acquire(
 		}
 		if len(ap.contexts) >= capacity {
 			if !allowMigration {
-				p.mu.Unlock()
+				ap.mu.Unlock()
 				return nil, errOpenAIWSConnQueueFull
 			}
 
 			recycle := p.pickMigrationCandidateLocked(ap, minMigrationScore, now)
 			if recycle == nil {
-				p.mu.Unlock()
+				ap.mu.Unlock()
 				return nil, errOpenAIWSConnQueueFull
 			}
 			recycle.mu.Lock()
@@ -315,7 +332,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 			reusedContext = true
 			migrationUsed = true
 			scheduleLayer = openAIWSIngressScheduleLayerMigration
-			p.mu.Unlock()
+			ap.mu.Unlock()
 			if oldUpstream != nil {
 				_ = oldUpstream.Close()
 			}
@@ -356,19 +373,17 @@ func (p *openAIWSIngressContextPool) Acquire(
 		ownerAssigned = true
 		scheduleLayer = openAIWSIngressScheduleLayerNew
 	}
-	p.mu.Unlock()
+	ap.mu.Unlock()
 
 	reusedConn, ensureErr := p.ensureContextUpstream(ctx, selected, req)
 	if ensureErr != nil {
 		if newlyCreated {
-			p.mu.Lock()
-			if ap := p.accounts[accountID]; ap != nil {
-				delete(ap.contexts, selected.id)
-				if mapped, ok := ap.bySession[sessionKey]; ok && mapped == selected.id {
-					delete(ap.bySession, sessionKey)
-				}
+			ap.mu.Lock()
+			delete(ap.contexts, selected.id)
+			if mapped, ok := ap.bySession[sessionKey]; ok && mapped == selected.id {
+				delete(ap.bySession, sessionKey)
 			}
-			p.mu.Unlock()
+			ap.mu.Unlock()
 		} else if ownerAssigned {
 			p.releaseContext(selected, ownerID)
 		}
@@ -800,13 +815,49 @@ func (p *openAIWSIngressContextPool) sweepExpiredIdleContexts() {
 		return
 	}
 	now := time.Now()
+
+	type accountSnapshot struct {
+		accountID int64
+		ap        *openAIWSIngressAccountPool
+	}
+
+	snapshots := make([]accountSnapshot, 0, len(p.accounts))
 	p.mu.Lock()
 	for accountID, ap := range p.accounts {
-		p.evictExpiredIdleLocked(ap, now)
-		if ap == nil || len(ap.contexts) > 0 {
+		if ap == nil {
+			delete(p.accounts, accountID)
 			continue
 		}
-		delete(p.accounts, accountID)
+		snapshots = append(snapshots, accountSnapshot{accountID: accountID, ap: ap})
+	}
+	p.mu.Unlock()
+
+	removable := make([]accountSnapshot, 0)
+	for _, item := range snapshots {
+		ap := item.ap
+		ap.mu.Lock()
+		p.evictExpiredIdleLocked(ap, now)
+		empty := len(ap.contexts) == 0
+		ap.mu.Unlock()
+		if empty && ap.refs.Load() == 0 {
+			removable = append(removable, item)
+		}
+	}
+
+	if len(removable) == 0 {
+		return
+	}
+
+	p.mu.Lock()
+	for _, item := range removable {
+		existing := p.accounts[item.accountID]
+		if existing != item.ap || existing == nil {
+			continue
+		}
+		if existing.refs.Load() != 0 {
+			continue
+		}
+		delete(p.accounts, item.accountID)
 	}
 	p.mu.Unlock()
 }
