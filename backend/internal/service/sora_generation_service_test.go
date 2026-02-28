@@ -363,7 +363,7 @@ func TestMarkCancelled_Completed(t *testing.T) {
 
 	err := svc.MarkCancelled(context.Background(), 1)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "只能取消")
+	require.ErrorIs(t, err, ErrSoraGenerationNotActive)
 }
 
 func TestMarkCancelled_Failed(t *testing.T) {
