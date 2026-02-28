@@ -800,6 +800,7 @@ func TestOpenAIWSConnPool_RunBackgroundCleanupSweep_SkipsInvalidAndUsesAccountCa
 	ap := &openAIWSAccountPool{
 		conns: make(map[string]*openAIWSConn),
 	}
+	ap.conns["nil_conn"] = nil
 	stale := newOpenAIWSConn("stale_bg_cleanup", accountID, &openAIWSFakeConn{}, nil)
 	stale.createdAtNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
 	stale.lastUsedNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
@@ -815,13 +816,17 @@ func TestOpenAIWSConnPool_RunBackgroundCleanupSweep_SkipsInvalidAndUsesAccountCa
 	pool.accounts.Store(accountID, ap)
 
 	now := time.Now()
-	pool.runBackgroundCleanupSweep(now)
+	require.NotPanics(t, func() {
+		pool.runBackgroundCleanupSweep(now)
+	})
 
 	ap.mu.Lock()
+	_, nilConnExists := ap.conns["nil_conn"]
 	_, exists := ap.conns[stale.id]
 	lastCleanupAt := ap.lastCleanupAt
 	ap.mu.Unlock()
 
+	require.False(t, nilConnExists, "后台清理应移除无效 nil 连接条目")
 	require.False(t, exists, "后台清理应清理过期连接")
 	require.Equal(t, now, lastCleanupAt)
 }
