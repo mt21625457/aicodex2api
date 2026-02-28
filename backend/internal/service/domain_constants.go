@@ -126,6 +126,9 @@ const (
 	// Gemini 配额策略（JSON）
 	SettingKeyGeminiQuotaPolicy = "gemini_quota_policy"
 
+	// Bulk edit template library（JSON）
+	SettingKeyBulkEditTemplateLibrary = "bulk_edit_template_library_v1"
+
 	// Model fallback settings
 	SettingKeyEnableModelFallback      = "enable_model_fallback"
 	SettingKeyFallbackModelAnthropic   = "fallback_model_anthropic"

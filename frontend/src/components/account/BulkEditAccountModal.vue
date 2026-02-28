@@ -1,7 +1,7 @@
 <template>
   <BaseDialog
     :show="show"
-    :title="t('admin.accounts.bulkEdit.title')"
+    :title="scopedDialogTitle"
     width="wide"
     @close="handleClose"
   >
@@ -21,18 +21,279 @@
         </p>
       </div>
 
-      <!-- Mixed platform warning -->
-      <div v-if="isMixedPlatform" class="rounded-lg bg-amber-50 p-4 dark:bg-amber-900/20">
-        <p class="text-sm text-amber-700 dark:text-amber-400">
-          <svg class="mr-1.5 inline h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
-          {{ t('admin.accounts.bulkEdit.mixedPlatformWarning', { platforms: selectedPlatforms.join(', ') }) }}
-        </p>
+      <div class="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300">
+        {{ t('admin.accounts.filters.platform') }}: {{ scopePlatformLabel }} /
+        {{ t('admin.accounts.filters.type') }}: {{ scopeTypeLabel }}
+      </div>
+
+      <div v-if="hasTemplateScope" class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-600 dark:bg-dark-800">
+        <div class="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {{ t('admin.accounts.bulkEdit.templateTitle') }}
+            </p>
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              {{
+                t('admin.accounts.bulkEdit.templateScopeHint', {
+                  platform: scopePlatformLabel,
+                  type: scopeTypeLabel
+                })
+              }}
+            </p>
+            <p v-if="templateLoading" class="mt-1 text-xs text-primary-600 dark:text-primary-400">
+              {{ t('admin.accounts.bulkEdit.templateLoading') }}
+            </p>
+          </div>
+          <span
+            class="inline-flex min-w-[1.5rem] items-center justify-center rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-gray-300"
+          >
+            {{ scopedTemplateRecords.length }}
+          </span>
+        </div>
+
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+          <div>
+            <label class="input-label mb-2">{{ t('admin.accounts.bulkEdit.templateSelectLabel') }}</label>
+            <Select
+              v-model="selectedTemplateId"
+              :options="templateOptions"
+              :placeholder="t('admin.accounts.bulkEdit.templateEmpty')"
+            />
+          </div>
+          <button
+            type="button"
+            class="btn btn-secondary mt-auto"
+            :disabled="!canApplySelectedTemplate"
+            @click="applySelectedTemplate"
+          >
+            {{ t('admin.accounts.bulkEdit.templateApply') }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary mt-auto"
+            :disabled="!canDeleteSelectedTemplate"
+            @click="removeSelectedTemplate"
+          >
+            {{ t('admin.accounts.bulkEdit.templateDelete') }}
+          </button>
+        </div>
+
+        <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+          <div>
+            <label class="input-label mb-2">{{ t('admin.accounts.bulkEdit.templateNameLabel') }}</label>
+            <input
+              v-model="templateName"
+              type="text"
+              class="input"
+              :placeholder="t('admin.accounts.bulkEdit.templateNamePlaceholder')"
+              @keyup.enter="saveTemplate"
+            />
+          </div>
+          <button
+            type="button"
+            class="btn btn-primary mt-auto"
+            :disabled="!canSaveTemplate || templateLoading"
+            @click="saveTemplate"
+          >
+            {{ t('admin.accounts.bulkEdit.templateSave') }}
+          </button>
+        </div>
+
+        <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div>
+            <label class="input-label mb-2">
+              {{ t('admin.accounts.bulkEdit.templateShareScopeLabel') }}
+            </label>
+            <Select v-model="templateShareScope" :options="templateShareScopeOptions" />
+          </div>
+          <div v-if="templateShareScope === 'groups'" class="md:col-span-2">
+            <label class="input-label mb-2">
+              {{ t('admin.accounts.bulkEdit.templateShareGroupsLabel') }}
+            </label>
+            <GroupSelector v-model="templateShareGroupIds" :groups="groups" />
+            <p class="input-hint">
+              {{ t('admin.accounts.bulkEdit.templateShareGroupsHint') }}
+            </p>
+          </div>
+        </div>
+
+        <div v-if="selectedTemplateRecord" class="mt-4 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+          <div class="mb-2 flex items-start justify-between gap-2">
+            <div>
+              <p class="text-sm font-medium text-gray-900 dark:text-gray-100">
+                {{ t('admin.accounts.bulkEdit.templateVersionTitle') }}
+              </p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.bulkEdit.templateVersionHint') }}
+              </p>
+            </div>
+            <span
+              class="inline-flex min-w-[1.5rem] items-center justify-center rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-gray-300"
+            >
+              {{ templateVersionRecords.length }}
+            </span>
+          </div>
+
+          <p v-if="templateVersionLoading" class="text-xs text-primary-600 dark:text-primary-400">
+            {{ t('admin.accounts.bulkEdit.templateVersionLoading') }}
+          </p>
+
+          <p
+            v-else-if="templateVersionRecords.length === 0"
+            class="rounded bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-dark-700 dark:text-gray-400"
+          >
+            {{ t('admin.accounts.bulkEdit.templateVersionEmpty') }}
+          </p>
+
+          <ul v-else class="space-y-2">
+            <li
+              v-for="version in templateVersionRecords"
+              :key="version.versionID"
+              class="flex items-center justify-between gap-2 rounded bg-gray-50 px-3 py-2 dark:bg-dark-700"
+            >
+              <div class="min-w-0">
+                <p class="truncate text-xs font-medium text-gray-700 dark:text-gray-200">
+                  {{ formatTemplateVersionUpdatedAt(version.updatedAt) }}
+                </p>
+                <p class="truncate text-[11px] text-gray-500 dark:text-gray-400">
+                  {{ resolveTemplateShareScopeLabel(version.shareScope) }}
+                  <span v-if="version.groupIDs.length > 0"> · {{ version.groupIDs.join(', ') }}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                class="btn btn-secondary btn-xs"
+                :disabled="templateRollbackingVersionID === version.versionID"
+                @click="rollbackTemplateVersion(version.versionID)"
+              >
+                {{
+                  templateRollbackingVersionID === version.versionID
+                    ? t('admin.accounts.bulkEdit.templateRollbacking')
+                    : t('admin.accounts.bulkEdit.templateRollback')
+                }}
+              </button>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div
+        v-if="supportsOpenAIPassthrough || supportsOpenAIWSMode || supportsCodexCLIOnly || supportsAnthropicPassthrough"
+        class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div v-if="supportsOpenAIPassthrough" class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+          <div class="mb-3 flex items-center justify-between">
+            <label class="input-label mb-0" for="bulk-edit-openai-passthrough-enabled">
+              {{ t('admin.accounts.openai.oauthPassthrough') }}
+            </label>
+            <input
+              v-model="enableOpenAIPassthrough"
+              id="bulk-edit-openai-passthrough-enabled"
+              type="checkbox"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+          </div>
+          <div :class="!enableOpenAIPassthrough && 'pointer-events-none opacity-50'">
+            <button
+              type="button"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                openAIPassthroughEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+              @click="openAIPassthroughEnabled = !openAIPassthroughEnabled"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  openAIPassthroughEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+        </div>
+
+        <div v-if="supportsOpenAIWSMode" class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+          <div class="mb-3 flex items-center justify-between">
+            <label class="input-label mb-0" for="bulk-edit-openai-ws-mode-enabled">
+              {{ t('admin.accounts.openai.wsMode') }}
+            </label>
+            <input
+              v-model="enableOpenAIWSMode"
+              id="bulk-edit-openai-ws-mode-enabled"
+              type="checkbox"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+          </div>
+          <div :class="!enableOpenAIWSMode && 'pointer-events-none opacity-50'">
+            <Select v-model="openAIWSMode" :options="openAIWSModeOptions" />
+          </div>
+        </div>
+
+        <div v-if="supportsCodexCLIOnly" class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+          <div class="mb-3 flex items-center justify-between">
+            <label class="input-label mb-0" for="bulk-edit-codex-cli-only-enabled">
+              {{ t('admin.accounts.openai.codexCLIOnly') }}
+            </label>
+            <input
+              v-model="enableCodexCLIOnly"
+              id="bulk-edit-codex-cli-only-enabled"
+              type="checkbox"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+          </div>
+          <div :class="!enableCodexCLIOnly && 'pointer-events-none opacity-50'">
+            <button
+              type="button"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                codexCLIOnlyEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+              @click="codexCLIOnlyEnabled = !codexCLIOnlyEnabled"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  codexCLIOnlyEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+        </div>
+
+        <div v-if="supportsAnthropicPassthrough" class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+          <div class="mb-3 flex items-center justify-between">
+            <label class="input-label mb-0" for="bulk-edit-anthropic-passthrough-enabled">
+              {{ t('admin.accounts.anthropic.apiKeyPassthrough') }}
+            </label>
+            <input
+              v-model="enableAnthropicPassthrough"
+              id="bulk-edit-anthropic-passthrough-enabled"
+              type="checkbox"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+          </div>
+          <div :class="!enableAnthropicPassthrough && 'pointer-events-none opacity-50'">
+            <button
+              type="button"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                anthropicPassthroughEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+              @click="anthropicPassthroughEnabled = !anthropicPassthroughEnabled"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  anthropicPassthroughEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Base URL (API Key only) -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="supportsBaseUrl" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-base-url-label"
@@ -65,7 +326,7 @@
       </div>
 
       <!-- Model restriction -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="supportsModelRestriction" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-model-restriction-label"
@@ -302,7 +563,7 @@
       </div>
 
       <!-- Custom error codes -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="supportsCustomErrorCodes" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <div>
             <label
@@ -400,7 +661,7 @@
       </div>
 
       <!-- Intercept warmup requests (Anthropic only) -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="supportsInterceptWarmup" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="flex items-center justify-between">
           <div class="flex-1 pr-4">
             <label
@@ -658,19 +919,61 @@ import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
-import type { Proxy as ProxyConfig, AdminGroup, AccountPlatform } from '@/types'
+import type { BulkEditTemplateVersionRecord as BulkEditTemplateVersionRemoteRecord } from '@/api/admin/bulkEditTemplates'
+import type { Proxy, AdminGroup, AccountPlatform, AccountType } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { buildModelMappingObject as buildModelMappingPayload } from '@/composables/useModelWhitelist'
+import {
+  OPENAI_WS_MODE_DEDICATED,
+  OPENAI_WS_MODE_OFF,
+  OPENAI_WS_MODE_SHARED
+} from '@/utils/openaiWsMode'
+import type { OpenAIWSMode } from '@/utils/openaiWsMode'
+import { resolveBulkEditScopeCapabilities } from './bulkEditScopeProfile'
+import {
+  buildBulkEditUpdatePayload,
+  hasAnyBulkEditFieldEnabled,
+  type BulkEditModelMapping
+} from './bulkEditPayload'
+import {
+  filterBulkEditTemplateRecordsByScope,
+  removeBulkEditTemplateRecord,
+  normalizeBulkEditTemplateGroupIDs,
+  normalizeBulkEditTemplateShareScope,
+  upsertBulkEditTemplateRecord,
+  type BulkEditTemplateShareScope,
+  type BulkEditTemplateRecord
+} from './bulkEditTemplateStore'
+import {
+  createBulkEditTemplateStateSnapshot,
+  createDefaultBulkEditTemplateState,
+  normalizeBulkEditTemplateState,
+  type BulkEditTemplateState
+} from './bulkEditTemplateState'
+import {
+  mapBulkEditTemplateFromRemote,
+  mapBulkEditTemplateToUpsertRequest
+} from './bulkEditTemplateRemoteMapper'
+
+interface BulkEditTemplateVersionRecord {
+  versionID: string
+  shareScope: BulkEditTemplateShareScope
+  groupIDs: number[]
+  state: BulkEditTemplateState
+  updatedBy: number
+  updatedAt: number
+}
 
 interface Props {
   show: boolean
   accountIds: number[]
-  selectedPlatforms: AccountPlatform[]
-  proxies: ProxyConfig[]
+  scopePlatform?: AccountPlatform | ''
+  scopeType?: AccountType | ''
+  scopeGroupIds?: number[]
+  proxies: Proxy[]
   groups: AdminGroup[]
 }
 
@@ -683,9 +986,6 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const appStore = useAppStore()
 
-// Platform awareness
-const isMixedPlatform = computed(() => props.selectedPlatforms.length > 1)
-
 const platformModelPrefix: Record<string, string[]> = {
   anthropic: ['claude-'],
   antigravity: ['claude-', 'gemini-', 'gpt-oss-', 'tab_'],
@@ -694,31 +994,34 @@ const platformModelPrefix: Record<string, string[]> = {
   sora: []
 }
 
+const scopedModelPrefixes = computed(() => {
+  if (!props.scopePlatform) return []
+  const prefixes = platformModelPrefix[props.scopePlatform] ?? []
+  return [...new Set(prefixes)]
+})
+
 const filteredModels = computed(() => {
-  if (props.selectedPlatforms.length === 0) return allModels
-  const prefixes = [...new Set(props.selectedPlatforms.flatMap(p => platformModelPrefix[p] || []))]
-  if (prefixes.length === 0) return allModels
-  return allModels.filter(m => prefixes.some(prefix => m.value.startsWith(prefix)))
+  if (scopedModelPrefixes.value.length === 0) return allModels
+  return allModels.filter((model) =>
+    scopedModelPrefixes.value.some(prefix => model.value.startsWith(prefix))
+  )
 })
 
 const filteredPresets = computed(() => {
-  if (props.selectedPlatforms.length === 0) return presetMappings
-  const prefixes = [...new Set(props.selectedPlatforms.flatMap(p => platformModelPrefix[p] || []))]
-  if (prefixes.length === 0) return presetMappings
-  return presetMappings.filter(m => prefixes.some(prefix => m.from.startsWith(prefix)))
+  if (scopedModelPrefixes.value.length === 0) return presetMappings
+  return presetMappings.filter((preset) =>
+    scopedModelPrefixes.value.some(prefix => preset.from.startsWith(prefix))
+  )
 })
-
-// Model mapping type
-interface ModelMapping {
-  from: string
-  to: string
-}
-
 // State - field enable flags
 const enableBaseUrl = ref(false)
 const enableModelRestriction = ref(false)
 const enableCustomErrorCodes = ref(false)
 const enableInterceptWarmup = ref(false)
+const enableOpenAIPassthrough = ref(false)
+const enableOpenAIWSMode = ref(false)
+const enableCodexCLIOnly = ref(false)
+const enableAnthropicPassthrough = ref(false)
 const enableProxy = ref(false)
 const enableConcurrency = ref(false)
 const enablePriority = ref(false)
@@ -731,16 +1034,29 @@ const submitting = ref(false)
 const baseUrl = ref('')
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
-const modelMappings = ref<ModelMapping[]>([])
+const modelMappings = ref<BulkEditModelMapping[]>([])
 const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
+const openAIPassthroughEnabled = ref(false)
+const openAIWSMode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const codexCLIOnlyEnabled = ref(false)
+const anthropicPassthroughEnabled = ref(false)
 const proxyId = ref<number | null>(null)
 const concurrency = ref(1)
 const priority = ref(1)
 const rateMultiplier = ref(1)
 const status = ref<'active' | 'inactive'>('active')
 const groupIds = ref<number[]>([])
+const templateLoading = ref(false)
+const templateName = ref('')
+const templateShareScope = ref<BulkEditTemplateShareScope>('private')
+const templateShareGroupIds = ref<number[]>([])
+const selectedTemplateId = ref<string | null>(null)
+const templateRecords = ref<BulkEditTemplateRecord<BulkEditTemplateState>[]>([])
+const templateVersionLoading = ref(false)
+const templateRollbackingVersionID = ref<string | null>(null)
+const templateVersionRecords = ref<BulkEditTemplateVersionRecord[]>([])
 
 // All models list (combined Anthropic + OpenAI + Gemini)
 const allModels = [
@@ -942,6 +1258,407 @@ const statusOptions = computed(() => [
   { value: 'inactive', label: t('common.inactive') }
 ])
 
+const openAIWSModeOptions = computed(() => [
+  { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
+  { value: OPENAI_WS_MODE_SHARED, label: t('admin.accounts.openai.wsModeShared') },
+  { value: OPENAI_WS_MODE_DEDICATED, label: t('admin.accounts.openai.wsModeDedicated') }
+])
+
+const scopePlatformLabel = computed(() => {
+  if (props.scopePlatform === 'anthropic') return t('admin.accounts.platforms.anthropic')
+  if (props.scopePlatform === 'openai') return t('admin.accounts.platforms.openai')
+  if (props.scopePlatform === 'gemini') return t('admin.accounts.platforms.gemini')
+  if (props.scopePlatform === 'antigravity') return t('admin.accounts.platforms.antigravity')
+  if (props.scopePlatform === 'sora') return t('admin.accounts.platforms.sora')
+  return '-'
+})
+
+const scopeTypeLabel = computed(() => {
+  if (props.scopeType === 'oauth') return t('admin.accounts.oauthType')
+  if (props.scopeType === 'setup-token') return t('admin.accounts.setupToken')
+  if (props.scopeType === 'apikey') return t('admin.accounts.apiKey')
+  if (props.scopeType === 'upstream') return t('admin.accounts.types.upstream')
+  return '-'
+})
+
+const scopedDialogTitle = computed(() => {
+  if (!props.scopePlatform || !props.scopeType) return t('admin.accounts.bulkEdit.title')
+  return `${t('admin.accounts.bulkEdit.title')} · ${scopePlatformLabel.value} / ${scopeTypeLabel.value}`
+})
+
+const scopeCapabilities = computed(() =>
+  resolveBulkEditScopeCapabilities(props.scopePlatform, props.scopeType)
+)
+
+const supportsBaseUrl = computed(() => scopeCapabilities.value.supportsBaseUrl)
+const supportsModelRestriction = computed(() => scopeCapabilities.value.supportsModelRestriction)
+const supportsCustomErrorCodes = computed(() => scopeCapabilities.value.supportsCustomErrorCodes)
+const supportsInterceptWarmup = computed(() => scopeCapabilities.value.supportsInterceptWarmup)
+const supportsOpenAIPassthrough = computed(() => scopeCapabilities.value.supportsOpenAIPassthrough)
+const supportsOpenAIWSMode = computed(() => scopeCapabilities.value.supportsOpenAIWSMode)
+const supportsCodexCLIOnly = computed(() => scopeCapabilities.value.supportsCodexCLIOnly)
+const supportsAnthropicPassthrough = computed(() => scopeCapabilities.value.supportsAnthropicPassthrough)
+const hasTemplateScope = computed(() => Boolean(props.scopePlatform && props.scopeType))
+const normalizedScopeGroupIDs = computed(() =>
+  normalizeBulkEditTemplateGroupIDs(props.scopeGroupIds ?? [])
+)
+
+const scopedTemplateRecords = computed(() =>
+  filterBulkEditTemplateRecordsByScope(
+    templateRecords.value,
+    props.scopePlatform ?? '',
+    props.scopeType ?? ''
+  )
+)
+
+const templateOptions = computed(() =>
+  scopedTemplateRecords.value.map((template) => ({
+    value: template.id,
+    label: template.name
+  }))
+)
+
+const selectedTemplateRecord = computed(() =>
+  scopedTemplateRecords.value.find((template) => template.id === selectedTemplateId.value) ?? null
+)
+
+const canApplySelectedTemplate = computed(() => Boolean(selectedTemplateRecord.value))
+const canDeleteSelectedTemplate = computed(() => Boolean(selectedTemplateRecord.value))
+const templateShareScopeOptions = computed(() => [
+  {
+    value: 'private',
+    label: t('admin.accounts.bulkEdit.templateShareScopePrivate')
+  },
+  {
+    value: 'team',
+    label: t('admin.accounts.bulkEdit.templateShareScopeTeam')
+  },
+  {
+    value: 'groups',
+    label: t('admin.accounts.bulkEdit.templateShareScopeGroups')
+  }
+])
+const canSaveTemplate = computed(() => {
+  if (!hasTemplateScope.value || templateName.value.trim().length === 0) return false
+  if (templateShareScope.value === 'groups' && templateShareGroupIds.value.length === 0) {
+    return false
+  }
+  return true
+})
+
+const resolveTemplateShareScopeLabel = (scope: BulkEditTemplateShareScope): string => {
+  if (scope === 'team') return t('admin.accounts.bulkEdit.templateShareScopeTeam')
+  if (scope === 'groups') return t('admin.accounts.bulkEdit.templateShareScopeGroups')
+  return t('admin.accounts.bulkEdit.templateShareScopePrivate')
+}
+
+const formatTemplateVersionUpdatedAt = (value: number): string => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return t('admin.accounts.bulkEdit.templateVersionUnknownTime')
+  }
+  return new Date(value).toLocaleString()
+}
+
+const mapTemplateVersionFromRemote = (
+  record: BulkEditTemplateVersionRemoteRecord<BulkEditTemplateState>
+): BulkEditTemplateVersionRecord => ({
+  versionID: typeof record.version_id === 'string' ? record.version_id : '',
+  shareScope: normalizeBulkEditTemplateShareScope(record.share_scope),
+  groupIDs: normalizeBulkEditTemplateGroupIDs(record.group_ids),
+  state: normalizeBulkEditTemplateState(record.state),
+  updatedBy:
+    typeof record.updated_by === 'number' && Number.isFinite(record.updated_by)
+      ? Math.floor(record.updated_by)
+      : 0,
+  updatedAt:
+    typeof record.updated_at === 'number' && Number.isFinite(record.updated_at) && record.updated_at > 0
+      ? Math.floor(record.updated_at)
+      : Date.now()
+})
+
+const collectTemplateState = (): BulkEditTemplateState => {
+  return createBulkEditTemplateStateSnapshot({
+    enableBaseUrl: enableBaseUrl.value,
+    enableModelRestriction: enableModelRestriction.value,
+    enableCustomErrorCodes: enableCustomErrorCodes.value,
+    enableInterceptWarmup: enableInterceptWarmup.value,
+    enableOpenAIPassthrough: enableOpenAIPassthrough.value,
+    enableOpenAIWSMode: enableOpenAIWSMode.value,
+    enableCodexCLIOnly: enableCodexCLIOnly.value,
+    enableAnthropicPassthrough: enableAnthropicPassthrough.value,
+    enableProxy: enableProxy.value,
+    enableConcurrency: enableConcurrency.value,
+    enablePriority: enablePriority.value,
+    enableRateMultiplier: enableRateMultiplier.value,
+    enableStatus: enableStatus.value,
+    enableGroups: enableGroups.value,
+    baseUrl: baseUrl.value,
+    modelRestrictionMode: modelRestrictionMode.value,
+    allowedModels: allowedModels.value,
+    modelMappings: modelMappings.value,
+    selectedErrorCodes: selectedErrorCodes.value,
+    interceptWarmupRequests: interceptWarmupRequests.value,
+    openAIPassthroughEnabled: openAIPassthroughEnabled.value,
+    openAIWSMode: openAIWSMode.value,
+    codexCLIOnlyEnabled: codexCLIOnlyEnabled.value,
+    anthropicPassthroughEnabled: anthropicPassthroughEnabled.value,
+    proxyId: proxyId.value,
+    concurrency: concurrency.value,
+    priority: priority.value,
+    rateMultiplier: rateMultiplier.value,
+    status: status.value,
+    groupIds: groupIds.value
+  })
+}
+
+const applyTemplateState = (value: unknown) => {
+  const normalized = normalizeBulkEditTemplateState(value)
+
+  enableBaseUrl.value = normalized.enableBaseUrl
+  enableModelRestriction.value = normalized.enableModelRestriction
+  enableCustomErrorCodes.value = normalized.enableCustomErrorCodes
+  enableInterceptWarmup.value = normalized.enableInterceptWarmup
+  enableOpenAIPassthrough.value = normalized.enableOpenAIPassthrough
+  enableOpenAIWSMode.value = normalized.enableOpenAIWSMode
+  enableCodexCLIOnly.value = normalized.enableCodexCLIOnly
+  enableAnthropicPassthrough.value = normalized.enableAnthropicPassthrough
+  enableProxy.value = normalized.enableProxy
+  enableConcurrency.value = normalized.enableConcurrency
+  enablePriority.value = normalized.enablePriority
+  enableRateMultiplier.value = normalized.enableRateMultiplier
+  enableStatus.value = normalized.enableStatus
+  enableGroups.value = normalized.enableGroups
+
+  baseUrl.value = normalized.baseUrl
+  modelRestrictionMode.value = normalized.modelRestrictionMode
+  allowedModels.value = [...normalized.allowedModels]
+  modelMappings.value = normalized.modelMappings.map((item) => ({
+    from: item.from,
+    to: item.to
+  }))
+  selectedErrorCodes.value = [...normalized.selectedErrorCodes]
+  customErrorCodeInput.value = null
+  interceptWarmupRequests.value = normalized.interceptWarmupRequests
+  openAIPassthroughEnabled.value = normalized.openAIPassthroughEnabled
+  openAIWSMode.value = normalized.openAIWSMode
+  codexCLIOnlyEnabled.value = normalized.codexCLIOnlyEnabled
+  anthropicPassthroughEnabled.value = normalized.anthropicPassthroughEnabled
+  proxyId.value = normalized.proxyId
+  concurrency.value = normalized.concurrency
+  priority.value = normalized.priority
+  rateMultiplier.value = normalized.rateMultiplier
+  status.value = normalized.status
+  groupIds.value = [...normalized.groupIds]
+}
+
+const resetFormState = () => {
+  applyTemplateState(createDefaultBulkEditTemplateState())
+  templateName.value = ''
+  templateShareScope.value = 'private'
+  templateShareGroupIds.value = []
+  selectedTemplateId.value = null
+  templateVersionRecords.value = []
+  templateRollbackingVersionID.value = null
+  templateVersionLoading.value = false
+}
+
+const syncSelectedTemplate = () => {
+  if (scopedTemplateRecords.value.length === 0) {
+    selectedTemplateId.value = null
+    return
+  }
+  if (
+    !selectedTemplateId.value ||
+    !scopedTemplateRecords.value.some((item) => item.id === selectedTemplateId.value)
+  ) {
+    selectedTemplateId.value = scopedTemplateRecords.value[0].id
+  }
+}
+
+const loadTemplateRecordsFromServer = async () => {
+  if (!props.scopePlatform || !props.scopeType) {
+    templateRecords.value = []
+    templateVersionRecords.value = []
+    return
+  }
+
+  templateLoading.value = true
+  try {
+    const remoteRecords = await adminAPI.bulkEditTemplates.getBulkEditTemplates<BulkEditTemplateState>({
+      scope_platform: props.scopePlatform,
+      scope_type: props.scopeType,
+      scope_group_ids: normalizedScopeGroupIDs.value
+    })
+
+    templateRecords.value = remoteRecords.map((record) => {
+      const mapped = mapBulkEditTemplateFromRemote<BulkEditTemplateState>(record)
+      return {
+        ...mapped,
+        state: normalizeBulkEditTemplateState(mapped.state)
+      }
+    })
+  } catch (error) {
+    templateRecords.value = []
+    appStore.showError(t('admin.accounts.bulkEdit.templateLoadFailed'))
+    console.error('Failed to load bulk edit templates:', error)
+  } finally {
+    templateLoading.value = false
+  }
+}
+
+const loadTemplateVersionRecordsFromServer = async () => {
+  const selected = selectedTemplateRecord.value
+  if (!selected) {
+    templateVersionRecords.value = []
+    return
+  }
+
+  templateVersionLoading.value = true
+  try {
+    const remoteRecords = await adminAPI.bulkEditTemplates.getBulkEditTemplateVersions<BulkEditTemplateState>(
+      selected.id,
+      {
+        scope_group_ids: normalizedScopeGroupIDs.value
+      }
+    )
+    templateVersionRecords.value = remoteRecords
+      .map(mapTemplateVersionFromRemote)
+      .filter((item) => item.versionID)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  } catch (error) {
+    templateVersionRecords.value = []
+    appStore.showError(t('admin.accounts.bulkEdit.templateVersionLoadFailed'))
+    console.error('Failed to load bulk edit template versions:', error)
+  } finally {
+    templateVersionLoading.value = false
+  }
+}
+
+const saveTemplate = async () => {
+  if (!props.scopePlatform || !props.scopeType) return
+  const name = templateName.value.trim()
+  if (!name) {
+    appStore.showError(t('admin.accounts.bulkEdit.templateNameRequired'))
+    return
+  }
+  if (templateShareScope.value === 'groups' && templateShareGroupIds.value.length === 0) {
+    appStore.showError(t('admin.accounts.bulkEdit.templateShareGroupsRequired'))
+    return
+  }
+
+  const matchedByName = scopedTemplateRecords.value.find(
+    (item) => item.name.trim().toLowerCase() === name.toLowerCase()
+  )
+  const request = mapBulkEditTemplateToUpsertRequest({
+    id: matchedByName?.id,
+    name,
+    scopePlatform: props.scopePlatform,
+    scopeType: props.scopeType,
+    shareScope: normalizeBulkEditTemplateShareScope(templateShareScope.value),
+    groupIds: normalizeBulkEditTemplateGroupIDs(templateShareGroupIds.value),
+    state: collectTemplateState()
+  })
+
+  try {
+    const savedRemote = await adminAPI.bulkEditTemplates.upsertBulkEditTemplate<BulkEditTemplateState>(request)
+    const savedRecord = mapBulkEditTemplateFromRemote(savedRemote)
+    const normalizedRecord: BulkEditTemplateRecord<BulkEditTemplateState> = {
+      ...savedRecord,
+      state: normalizeBulkEditTemplateState(savedRecord.state)
+    }
+    templateRecords.value = upsertBulkEditTemplateRecord(templateRecords.value, normalizedRecord)
+    selectedTemplateId.value = normalizedRecord.id
+    templateName.value = normalizedRecord.name
+    templateShareScope.value = normalizedRecord.shareScope
+    templateShareGroupIds.value = [...normalizedRecord.groupIds]
+    await loadTemplateVersionRecordsFromServer()
+    appStore.showSuccess(t('admin.accounts.bulkEdit.templateSaved', { name: normalizedRecord.name }))
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.accounts.bulkEdit.templateSaveFailed'))
+    console.error('Failed to save bulk edit template:', error)
+  }
+}
+
+const applySelectedTemplate = () => {
+  if (!selectedTemplateRecord.value) return
+  applyTemplateState(selectedTemplateRecord.value.state)
+  templateName.value = selectedTemplateRecord.value.name
+  templateShareScope.value = selectedTemplateRecord.value.shareScope
+  templateShareGroupIds.value = [...selectedTemplateRecord.value.groupIds]
+  appStore.showInfo(
+    t('admin.accounts.bulkEdit.templateApplied', { name: selectedTemplateRecord.value.name })
+  )
+}
+
+const removeSelectedTemplate = async () => {
+  const template = selectedTemplateRecord.value
+  if (!template) return
+
+  const confirmed = confirm(t('admin.accounts.bulkEdit.templateDeleteConfirm', { name: template.name }))
+  if (!confirmed) return
+
+  try {
+    await adminAPI.bulkEditTemplates.deleteBulkEditTemplate(template.id)
+    templateRecords.value = removeBulkEditTemplateRecord(templateRecords.value, template.id)
+    selectedTemplateId.value = null
+    templateName.value = ''
+    templateShareScope.value = 'private'
+    templateShareGroupIds.value = []
+    templateVersionRecords.value = []
+    templateRollbackingVersionID.value = null
+    syncSelectedTemplate()
+    appStore.showSuccess(t('admin.accounts.bulkEdit.templateDeleted', { name: template.name }))
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.accounts.bulkEdit.templateDeleteFailed'))
+    console.error('Failed to delete bulk edit template:', error)
+  }
+}
+
+const rollbackTemplateVersion = async (versionID: string) => {
+  const template = selectedTemplateRecord.value
+  if (!template || !versionID) return
+
+  const targetVersion = templateVersionRecords.value.find((item) => item.versionID === versionID)
+  if (!targetVersion) return
+
+  const confirmed = confirm(
+    t('admin.accounts.bulkEdit.templateRollbackConfirm', {
+      name: template.name,
+      updatedAt: formatTemplateVersionUpdatedAt(targetVersion.updatedAt)
+    })
+  )
+  if (!confirmed) return
+
+  templateRollbackingVersionID.value = versionID
+  try {
+    const rollbackedRemote = await adminAPI.bulkEditTemplates.rollbackBulkEditTemplate<BulkEditTemplateState>(
+      template.id,
+      { version_id: versionID },
+      { scope_group_ids: normalizedScopeGroupIDs.value }
+    )
+    const rollbackedMapped = mapBulkEditTemplateFromRemote<BulkEditTemplateState>(rollbackedRemote)
+    const rollbackedRecord: BulkEditTemplateRecord<BulkEditTemplateState> = {
+      ...rollbackedMapped,
+      state: normalizeBulkEditTemplateState(rollbackedMapped.state)
+    }
+
+    templateRecords.value = upsertBulkEditTemplateRecord(templateRecords.value, rollbackedRecord)
+    selectedTemplateId.value = rollbackedRecord.id
+    applyTemplateState(rollbackedRecord.state)
+    templateName.value = rollbackedRecord.name
+    templateShareScope.value = rollbackedRecord.shareScope
+    templateShareGroupIds.value = [...rollbackedRecord.groupIds]
+
+    await loadTemplateVersionRecordsFromServer()
+    appStore.showSuccess(t('admin.accounts.bulkEdit.templateRollbackSuccess', { name: template.name }))
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.accounts.bulkEdit.templateRollbackFailed'))
+    console.error('Failed to rollback bulk edit template:', error)
+  } finally {
+    templateRollbackingVersionID.value = null
+  }
+}
+
 // Model mapping helpers
 const addModelMapping = () => {
   modelMappings.value.push({ from: '', to: '' })
@@ -1011,90 +1728,40 @@ const removeErrorCode = (code: number) => {
   }
 }
 
-const buildModelMappingObject = (): Record<string, string> | null => {
-  return buildModelMappingPayload(
-    modelRestrictionMode.value,
-    allowedModels.value,
-    modelMappings.value
-  )
-}
-
 const buildUpdatePayload = (): Record<string, unknown> | null => {
-  const updates: Record<string, unknown> = {}
-  const credentials: Record<string, unknown> = {}
-  let credentialsChanged = false
-
-  if (enableProxy.value) {
-    // 后端期望 proxy_id: 0 表示清除代理，而不是 null
-    updates.proxy_id = proxyId.value === null ? 0 : proxyId.value
-  }
-
-  if (enableConcurrency.value) {
-    updates.concurrency = concurrency.value
-  }
-
-  if (enablePriority.value) {
-    updates.priority = priority.value
-  }
-
-  if (enableRateMultiplier.value) {
-    updates.rate_multiplier = rateMultiplier.value
-  }
-
-  if (enableStatus.value) {
-    updates.status = status.value
-  }
-
-  if (enableGroups.value) {
-    updates.group_ids = groupIds.value
-  }
-
-  if (enableBaseUrl.value) {
-    const baseUrlValue = baseUrl.value.trim()
-    if (baseUrlValue) {
-      credentials.base_url = baseUrlValue
-      credentialsChanged = true
-    }
-  }
-
-  if (enableModelRestriction.value) {
-    const modelMapping = buildModelMappingObject()
-
-    // 统一使用 model_mapping 字段
-    if (modelRestrictionMode.value === 'whitelist') {
-      if (allowedModels.value.length > 0) {
-        // 白名单模式：将模型转换为 model_mapping 格式（key=value）
-        const mapping: Record<string, string> = {}
-        for (const m of allowedModels.value) {
-          mapping[m] = m
-        }
-        credentials.model_mapping = mapping
-        credentialsChanged = true
-      }
-    } else {
-      if (modelMapping) {
-        credentials.model_mapping = modelMapping
-        credentialsChanged = true
-      }
-    }
-  }
-
-  if (enableCustomErrorCodes.value) {
-    credentials.custom_error_codes_enabled = true
-    credentials.custom_error_codes = [...selectedErrorCodes.value]
-    credentialsChanged = true
-  }
-
-  if (enableInterceptWarmup.value) {
-    credentials.intercept_warmup_requests = interceptWarmupRequests.value
-    credentialsChanged = true
-  }
-
-  if (credentialsChanged) {
-    updates.credentials = credentials
-  }
-
-  return Object.keys(updates).length > 0 ? updates : null
+  return buildBulkEditUpdatePayload({
+    scopeType: props.scopeType,
+    enableBaseUrl: enableBaseUrl.value,
+    enableModelRestriction: enableModelRestriction.value,
+    enableCustomErrorCodes: enableCustomErrorCodes.value,
+    enableInterceptWarmup: enableInterceptWarmup.value,
+    enableOpenAIPassthrough: enableOpenAIPassthrough.value,
+    enableOpenAIWSMode: enableOpenAIWSMode.value,
+    enableCodexCLIOnly: enableCodexCLIOnly.value,
+    enableAnthropicPassthrough: enableAnthropicPassthrough.value,
+    enableProxy: enableProxy.value,
+    enableConcurrency: enableConcurrency.value,
+    enablePriority: enablePriority.value,
+    enableRateMultiplier: enableRateMultiplier.value,
+    enableStatus: enableStatus.value,
+    enableGroups: enableGroups.value,
+    baseUrl: baseUrl.value,
+    modelRestrictionMode: modelRestrictionMode.value,
+    allowedModels: allowedModels.value,
+    modelMappings: modelMappings.value,
+    selectedErrorCodes: selectedErrorCodes.value,
+    interceptWarmupRequests: interceptWarmupRequests.value,
+    openAIPassthroughEnabled: openAIPassthroughEnabled.value,
+    openAIWSMode: openAIWSMode.value,
+    codexCLIOnlyEnabled: codexCLIOnlyEnabled.value,
+    anthropicPassthroughEnabled: anthropicPassthroughEnabled.value,
+    proxyId: proxyId.value,
+    concurrency: concurrency.value,
+    priority: priority.value,
+    rateMultiplier: rateMultiplier.value,
+    status: status.value,
+    groupIds: groupIds.value
+  })
 }
 
 const handleClose = () => {
@@ -1107,17 +1774,22 @@ const handleSubmit = async () => {
     return
   }
 
-  const hasAnyFieldEnabled =
-    enableBaseUrl.value ||
-    enableModelRestriction.value ||
-    enableCustomErrorCodes.value ||
-    enableInterceptWarmup.value ||
-    enableProxy.value ||
-    enableConcurrency.value ||
-    enablePriority.value ||
-    enableRateMultiplier.value ||
-    enableStatus.value ||
-    enableGroups.value
+  const hasAnyFieldEnabled = hasAnyBulkEditFieldEnabled({
+    enableBaseUrl: enableBaseUrl.value,
+    enableModelRestriction: enableModelRestriction.value,
+    enableCustomErrorCodes: enableCustomErrorCodes.value,
+    enableInterceptWarmup: enableInterceptWarmup.value,
+    enableOpenAIPassthrough: enableOpenAIPassthrough.value,
+    enableOpenAIWSMode: enableOpenAIWSMode.value,
+    enableCodexCLIOnly: enableCodexCLIOnly.value,
+    enableAnthropicPassthrough: enableAnthropicPassthrough.value,
+    enableProxy: enableProxy.value,
+    enableConcurrency: enableConcurrency.value,
+    enablePriority: enablePriority.value,
+    enableRateMultiplier: enableRateMultiplier.value,
+    enableStatus: enableStatus.value,
+    enableGroups: enableGroups.value
+  })
 
   if (!hasAnyFieldEnabled) {
     appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
@@ -1157,38 +1829,51 @@ const handleSubmit = async () => {
   }
 }
 
+watch(
+  scopedTemplateRecords,
+  () => {
+    syncSelectedTemplate()
+  },
+  { immediate: true }
+)
+
+watch(selectedTemplateId, (id) => {
+  if (!id) {
+    templateVersionRecords.value = []
+    return
+  }
+  const selected = scopedTemplateRecords.value.find((item) => item.id === id)
+  if (selected) {
+    templateName.value = selected.name
+    templateShareScope.value = selected.shareScope
+    templateShareGroupIds.value = [...selected.groupIds]
+    void loadTemplateVersionRecordsFromServer()
+  }
+})
+
+watch(templateShareScope, (scope) => {
+  if (scope !== 'groups') {
+    templateShareGroupIds.value = []
+  }
+})
+
+watch(
+  () => normalizedScopeGroupIDs.value.join(','),
+  () => {
+    if (!props.show) return
+    void loadTemplateRecordsFromServer()
+  }
+)
+
 // Reset form when modal closes
 watch(
   () => props.show,
   (newShow) => {
-    if (!newShow) {
-      // Reset all enable flags
-      enableBaseUrl.value = false
-      enableModelRestriction.value = false
-      enableCustomErrorCodes.value = false
-      enableInterceptWarmup.value = false
-      enableProxy.value = false
-      enableConcurrency.value = false
-      enablePriority.value = false
-      enableRateMultiplier.value = false
-      enableStatus.value = false
-      enableGroups.value = false
-
-      // Reset all values
-      baseUrl.value = ''
-      modelRestrictionMode.value = 'whitelist'
-      allowedModels.value = []
-      modelMappings.value = []
-      selectedErrorCodes.value = []
-      customErrorCodeInput.value = null
-      interceptWarmupRequests.value = false
-      proxyId.value = null
-      concurrency.value = 1
-      priority.value = 1
-      rateMultiplier.value = 1
-      status.value = 'active'
-      groupIds.value = []
+    if (newShow) {
+      void loadTemplateRecordsFromServer()
+      return
     }
+    resetFormState()
   }
 )
 </script>

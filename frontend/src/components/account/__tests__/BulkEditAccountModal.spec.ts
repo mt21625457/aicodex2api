@@ -33,7 +33,8 @@ function mountModal() {
     props: {
       show: true,
       accountIds: [1, 2],
-      selectedPlatforms: ['antigravity'],
+      scopePlatform: 'gemini',
+      scopeType: 'apikey',
       proxies: [],
       groups: []
     } as any,
@@ -50,7 +51,7 @@ function mountModal() {
 }
 
 describe('BulkEditAccountModal', () => {
-  it('antigravity 白名单包含 Gemini 图片模型且过滤掉普通 GPT 模型', () => {
+  it('Gemini 范围白名单包含图片模型并过滤 GPT 模型', () => {
     const wrapper = mountModal()
 
     expect(wrapper.text()).toContain('Gemini 3.1 Flash Image')
@@ -58,7 +59,7 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.text()).not.toContain('GPT-5.3 Codex')
   })
 
-  it('antigravity 映射预设包含图片映射并过滤 OpenAI 预设', async () => {
+  it('Gemini 范围映射预设包含图片映射并过滤 OpenAI 预设', async () => {
     const wrapper = mountModal()
 
     const mappingTab = wrapper.findAll('button').find((btn) => btn.text().includes('admin.accounts.modelMapping'))

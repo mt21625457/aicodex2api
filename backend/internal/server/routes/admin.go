@@ -374,6 +374,18 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)
+		// 批量编辑模板库（服务端共享）
+		adminSettings.GET("/bulk-edit-templates", h.Admin.Setting.ListBulkEditTemplates)
+		adminSettings.POST("/bulk-edit-templates", h.Admin.Setting.UpsertBulkEditTemplate)
+		adminSettings.DELETE("/bulk-edit-templates/:template_id", h.Admin.Setting.DeleteBulkEditTemplate)
+		adminSettings.GET(
+			"/bulk-edit-templates/:template_id/versions",
+			h.Admin.Setting.ListBulkEditTemplateVersions,
+		)
+		adminSettings.POST(
+			"/bulk-edit-templates/:template_id/rollback",
+			h.Admin.Setting.RollbackBulkEditTemplate,
+		)
 		// Sora S3 存储配置
 		adminSettings.GET("/sora-s3", h.Admin.Setting.GetSoraS3Settings)
 		adminSettings.PUT("/sora-s3", h.Admin.Setting.UpdateSoraS3Settings)

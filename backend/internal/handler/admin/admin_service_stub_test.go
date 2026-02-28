@@ -30,7 +30,8 @@ type stubAdminService struct {
 		platform  string
 		groupIDs  []int64
 	}
-	mu sync.Mutex
+	lastBulkUpdateInput *service.BulkUpdateAccountsInput
+	mu                  sync.Mutex
 }
 
 func newStubAdminService() *stubAdminService {
@@ -235,6 +236,9 @@ func (s *stubAdminService) SetAccountSchedulable(ctx context.Context, id int64, 
 }
 
 func (s *stubAdminService) BulkUpdateAccounts(ctx context.Context, input *service.BulkUpdateAccountsInput) (*service.BulkUpdateAccountsResult, error) {
+	s.mu.Lock()
+	s.lastBulkUpdateInput = input
+	s.mu.Unlock()
 	return &service.BulkUpdateAccountsResult{Success: 1, Failed: 0, SuccessIDs: []int64{1}}, nil
 }
 
