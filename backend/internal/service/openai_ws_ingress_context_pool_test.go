@@ -350,7 +350,9 @@ func TestOpenAIWSIngressContextPool_CleanupAccountExpiredLocked_ClosesUpstream(t
 	ap.contexts[expiredCtx.id] = expiredCtx
 	ap.bySession[expiredCtx.sessionKey] = expiredCtx.id
 
+	ap.mu.Lock()
 	pool.cleanupAccountExpiredLocked(ap, time.Now())
+	ap.mu.Unlock()
 
 	require.Empty(t, ap.contexts, "过期 idle context 应被清理")
 	require.Empty(t, ap.bySession, "过期 context 的 session 索引应同步清理")
@@ -449,11 +451,15 @@ func TestOpenAIWSIngressContextPool_EvictPickAndSweep(t *testing.T) {
 		},
 	}
 
+	ap.mu.Lock()
 	oldestIdle := pool.pickOldestIdleContextLocked(ap)
+	ap.mu.Unlock()
 	require.NotNil(t, oldestIdle)
 	require.Equal(t, "ctx_expired", oldestIdle.id, "应选择最旧的空闲 context")
 
+	ap.mu.Lock()
 	pool.evictExpiredIdleLocked(ap, now)
+	ap.mu.Unlock()
 	require.NotContains(t, ap.contexts, "ctx_expired")
 	require.NotContains(t, ap.bySession, "1:expired")
 	require.Contains(t, ap.contexts, "ctx_idle_new", "未过期空闲 context 应保留")
