@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -341,15 +342,18 @@ func TestOpenAIWSIngressContextPool_CleanupAccountExpiredLocked_ClosesUpstream(t
 		accountID:        1201,
 		sessionHash:      "session_expired",
 		sessionKey:       openAIWSIngressContextSessionKey(21, "session_expired"),
-		expiresAt:        time.Now().Add(-2 * time.Second),
 		upstream:         upstreamConn,
 		upstreamConnID:   "ctxws_1201_1",
 		handshakeHeaders: map[string][]string{"x-test": []string{"ok"}},
 	}
+	expiredCtx.setExpiresAt(time.Now().Add(-2 * time.Second))
 	ap.contexts[expiredCtx.id] = expiredCtx
 	ap.bySession[expiredCtx.sessionKey] = expiredCtx.id
 
-	pool.cleanupAccountExpiredLocked(ap, time.Now())
+	ap.mu.Lock()
+	toClose := pool.cleanupAccountExpiredLocked(ap, time.Now())
+	ap.mu.Unlock()
+	closeOpenAIWSClientConns(toClose)
 
 	require.Empty(t, ap.contexts, "过期 idle context 应被清理")
 	require.Empty(t, ap.bySession, "过期 context 的 session 索引应同步清理")
@@ -387,8 +391,10 @@ func TestOpenAIWSIngressContextPool_ScoreAndStickinessHelpers(t *testing.T) {
 	_, _, ok := scoreOpenAIWSIngressMigrationCandidate(busyCtx, now)
 	require.False(t, ok, "owner 占用中的 context 不应作为迁移候选")
 
-	oldIdle := &openAIWSIngressContext{lastUsedAt: now.Add(-5 * time.Minute)}
-	recentIdle := &openAIWSIngressContext{lastUsedAt: now.Add(-10 * time.Second)}
+	oldIdle := &openAIWSIngressContext{}
+	oldIdle.setLastUsedAt(now.Add(-5 * time.Minute))
+	recentIdle := &openAIWSIngressContext{}
+	recentIdle.setLastUsedAt(now.Add(-10 * time.Second))
 	scoreOld, _, okOld := scoreOpenAIWSIngressMigrationCandidate(oldIdle, now)
 	scoreRecent, _, okRecent := scoreOpenAIWSIngressMigrationCandidate(recentIdle, now)
 	require.True(t, okOld)
@@ -396,13 +402,13 @@ func TestOpenAIWSIngressContextPool_ScoreAndStickinessHelpers(t *testing.T) {
 	require.Greater(t, scoreOld, scoreRecent, "更久未使用的空闲 context 应该更易被迁移")
 
 	penalized := &openAIWSIngressContext{
-		lastUsedAt:      now.Add(-5 * time.Minute),
 		broken:          true,
 		failureStreak:   2,
 		lastFailureAt:   now.Add(-30 * time.Second),
 		migrationCount:  2,
 		lastMigrationAt: now.Add(-10 * time.Second),
 	}
+	penalized.setLastUsedAt(now.Add(-5 * time.Minute))
 	scorePenalized, _, okPenalized := scoreOpenAIWSIngressMigrationCandidate(penalized, now)
 	require.True(t, okPenalized)
 	require.Less(t, scorePenalized, scoreOld, "近期失败和频繁迁移应降低迁移分数")
@@ -417,29 +423,35 @@ func TestOpenAIWSIngressContextPool_EvictPickAndSweep(t *testing.T) {
 
 	now := time.Now()
 	expiredConn := &openAIWSCaptureConn{}
+	expiredCtx := &openAIWSIngressContext{
+		id:             "ctx_expired",
+		sessionKey:     "1:expired",
+		upstream:       expiredConn,
+		upstreamConnID: "ctxws_expired",
+	}
+	expiredCtx.setLastUsedAt(now.Add(-20 * time.Minute))
+	expiredCtx.setExpiresAt(now.Add(-time.Minute))
+
+	idleNewCtx := &openAIWSIngressContext{
+		id:         "ctx_idle_new",
+		sessionKey: "1:idle_new",
+	}
+	idleNewCtx.setLastUsedAt(now.Add(-30 * time.Second))
+	idleNewCtx.setExpiresAt(now.Add(time.Minute))
+
+	busyCtx := &openAIWSIngressContext{
+		id:         "ctx_busy",
+		sessionKey: "1:busy",
+		ownerID:    "active_owner",
+	}
+	busyCtx.setLastUsedAt(now.Add(-40 * time.Minute))
+	busyCtx.setExpiresAt(now.Add(-time.Minute))
+
 	ap := &openAIWSIngressAccountPool{
 		contexts: map[string]*openAIWSIngressContext{
-			"ctx_expired": {
-				id:             "ctx_expired",
-				sessionKey:     "1:expired",
-				lastUsedAt:     now.Add(-20 * time.Minute),
-				expiresAt:      now.Add(-time.Minute),
-				upstream:       expiredConn,
-				upstreamConnID: "ctxws_expired",
-			},
-			"ctx_idle_new": {
-				id:         "ctx_idle_new",
-				sessionKey: "1:idle_new",
-				lastUsedAt: now.Add(-30 * time.Second),
-				expiresAt:  now.Add(time.Minute),
-			},
-			"ctx_busy": {
-				id:         "ctx_busy",
-				sessionKey: "1:busy",
-				ownerID:    "active_owner",
-				lastUsedAt: now.Add(-40 * time.Minute),
-				expiresAt:  now.Add(-time.Minute),
-			},
+			"ctx_expired":  expiredCtx,
+			"ctx_idle_new": idleNewCtx,
+			"ctx_busy":     busyCtx,
 		},
 		bySession: map[string]string{
 			"1:expired":  "ctx_expired",
@@ -448,11 +460,16 @@ func TestOpenAIWSIngressContextPool_EvictPickAndSweep(t *testing.T) {
 		},
 	}
 
+	ap.mu.Lock()
 	oldestIdle := pool.pickOldestIdleContextLocked(ap)
+	ap.mu.Unlock()
 	require.NotNil(t, oldestIdle)
 	require.Equal(t, "ctx_expired", oldestIdle.id, "应选择最旧的空闲 context")
 
-	pool.evictExpiredIdleLocked(ap, now)
+	ap.mu.Lock()
+	toClose := pool.evictExpiredIdleLocked(ap, now)
+	ap.mu.Unlock()
+	closeOpenAIWSClientConns(toClose)
 	require.NotContains(t, ap.contexts, "ctx_expired")
 	require.NotContains(t, ap.bySession, "1:expired")
 	require.Contains(t, ap.contexts, "ctx_idle_new", "未过期空闲 context 应保留")
@@ -465,14 +482,15 @@ func TestOpenAIWSIngressContextPool_EvictPickAndSweep(t *testing.T) {
 	expiredInPoolConn := &openAIWSCaptureConn{}
 	pool.mu.Lock()
 	pool.accounts[5001] = ap
+	poolExpiredCtx := &openAIWSIngressContext{
+		id:         "ctx_pool_expired",
+		sessionKey: "2:expired",
+		upstream:   expiredInPoolConn,
+	}
+	poolExpiredCtx.setExpiresAt(now.Add(-time.Minute))
 	pool.accounts[5002] = &openAIWSIngressAccountPool{
 		contexts: map[string]*openAIWSIngressContext{
-			"ctx_pool_expired": {
-				id:         "ctx_pool_expired",
-				sessionKey: "2:expired",
-				expiresAt:  now.Add(-time.Minute),
-				upstream:   expiredInPoolConn,
-			},
+			"ctx_pool_expired": poolExpiredCtx,
 		},
 		bySession: map[string]string{
 			"2:expired": "ctx_pool_expired",
@@ -599,4 +617,175 @@ func TestOpenAIWSIngressContextPool_EnsureContextUpstreamBranches(t *testing.T) 
 	ctxItem.mu.Unlock()
 	require.True(t, broken)
 	require.GreaterOrEqual(t, failureStreak, 1, "dial 失败后应累计 failure_streak")
+}
+
+func TestOpenAIWSIngressContextPool_EnsureContextUpstream_SerializesConcurrentDial(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	releaseDial := make(chan struct{})
+	blockingDialer := &openAIWSBlockingDialer{
+		release:     releaseDial,
+		dialStarted: make(chan struct{}, 4),
+	}
+	pool.setClientDialerForTest(blockingDialer)
+
+	account := &Account{ID: 1301, Concurrency: 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	type acquireResult struct {
+		lease *openAIWSIngressContextLease
+		err   error
+	}
+	resultCh := make(chan acquireResult, 2)
+	acquireOnce := func() {
+		lease, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+			Account:     account,
+			GroupID:     23,
+			SessionHash: "session_same_owner",
+			OwnerID:     "owner_same",
+			WSURL:       "ws://test-upstream",
+		})
+		resultCh <- acquireResult{lease: lease, err: err}
+	}
+
+	go acquireOnce()
+	select {
+	case <-blockingDialer.dialStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("首个 dial 未按预期启动")
+	}
+	go acquireOnce()
+
+	select {
+	case <-blockingDialer.dialStarted:
+		t.Fatal("同一 context 并发 acquire 不应触发第二次 dial")
+	case <-time.After(120 * time.Millisecond):
+	}
+
+	close(releaseDial)
+
+	results := make([]acquireResult, 0, 2)
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-resultCh:
+			require.NoError(t, result.err)
+			require.NotNil(t, result.lease)
+			results = append(results, result)
+		case <-time.After(2 * time.Second):
+			t.Fatal("等待并发 acquire 结果超时")
+		}
+	}
+
+	for _, result := range results {
+		result.lease.Release()
+	}
+	require.Equal(t, 1, blockingDialer.DialCount(), "同一 context 并发获取应只发生一次上游拨号")
+}
+
+func TestOpenAIWSIngressContextPool_EnsureContextUpstream_WaiterTimeoutDoesNotReleaseOwner(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	releaseDial := make(chan struct{})
+	blockingDialer := &openAIWSBlockingDialer{
+		release:     releaseDial,
+		dialStarted: make(chan struct{}, 4),
+	}
+	pool.setClientDialerForTest(blockingDialer)
+
+	account := &Account{ID: 1302, Concurrency: 1}
+	baseReq := openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     24,
+		SessionHash: "session_waiter_timeout",
+		OwnerID:     "owner_same",
+		WSURL:       "ws://test-upstream",
+	}
+
+	longCtx, longCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer longCancel()
+	type acquireResult struct {
+		lease *openAIWSIngressContextLease
+		err   error
+	}
+	firstResultCh := make(chan acquireResult, 1)
+	go func() {
+		lease, err := pool.Acquire(longCtx, baseReq)
+		firstResultCh <- acquireResult{lease: lease, err: err}
+	}()
+
+	select {
+	case <-blockingDialer.dialStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("首个 dial 未按预期启动")
+	}
+
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer shortCancel()
+	_, waiterErr := pool.Acquire(shortCtx, baseReq)
+	require.ErrorIs(t, waiterErr, context.DeadlineExceeded, "等待中的 acquire 超时应返回 context deadline exceeded")
+
+	close(releaseDial)
+
+	select {
+	case first := <-firstResultCh:
+		require.NoError(t, first.err)
+		require.NotNil(t, first.lease)
+		require.NoError(t, first.lease.WriteJSONWithContextTimeout(context.Background(), map[string]any{"type": "ping"}, time.Second), "等待方超时不应释放已建连 owner")
+		first.lease.Release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待首个 acquire 结果超时")
+	}
+
+	require.Equal(t, 1, blockingDialer.DialCount())
+}
+
+type openAIWSBlockingDialer struct {
+	mu          sync.Mutex
+	release     <-chan struct{}
+	dialStarted chan struct{}
+	dialCount   int
+}
+
+func (d *openAIWSBlockingDialer) Dial(
+	ctx context.Context,
+	wsURL string,
+	headers http.Header,
+	proxyURL string,
+) (openAIWSClientConn, int, http.Header, error) {
+	_ = wsURL
+	_ = headers
+	_ = proxyURL
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	d.mu.Lock()
+	d.dialCount++
+	d.mu.Unlock()
+	select {
+	case d.dialStarted <- struct{}{}:
+	default:
+	}
+	if d.release != nil {
+		select {
+		case <-d.release:
+		case <-ctx.Done():
+			return nil, 0, nil, ctx.Err()
+		}
+	}
+	return &openAIWSCaptureConn{}, 0, nil, nil
+}
+
+func (d *openAIWSBlockingDialer) DialCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.dialCount
 }

@@ -207,15 +207,21 @@ func (s *SettingService) UpsertBulkEditTemplate(ctx context.Context, input BulkE
 				break
 			}
 		}
+		if matchIndex < 0 {
+			return nil, ErrBulkEditTemplateNotFound
+		}
 	}
 
-	if matchIndex < 0 {
+	if matchIndex < 0 && templateID == "" {
 		for idx := range store.Items {
 			item := store.Items[idx]
 			if item.ScopePlatform != scopePlatform || item.ScopeType != scopeType {
 				continue
 			}
 			if !strings.EqualFold(strings.TrimSpace(item.Name), name) {
+				continue
+			}
+			if !canModifyBulkEditTemplate(item, input.RequesterUserID) {
 				continue
 			}
 			matchIndex = idx
@@ -226,8 +232,8 @@ func (s *SettingService) UpsertBulkEditTemplate(ctx context.Context, input BulkE
 	nowMS := time.Now().UnixMilli()
 	if matchIndex >= 0 {
 		item := store.Items[matchIndex]
-		if templateID != "" && item.ID != templateID {
-			return nil, ErrBulkEditTemplateNotFound
+		if !canModifyBulkEditTemplate(item, input.RequesterUserID) {
+			return nil, ErrBulkEditTemplateForbidden
 		}
 
 		previousVersion := snapshotBulkEditTemplateVersion(item)
@@ -426,7 +432,7 @@ func (s *SettingService) loadBulkEditTemplateLibrary(ctx context.Context) (*bulk
 
 	store := bulkEditTemplateLibraryStore{}
 	if err := json.Unmarshal([]byte(raw), &store); err != nil {
-		return &bulkEditTemplateLibraryStore{}, nil
+		return nil, fmt.Errorf("parse bulk edit template library: %w", err)
 	}
 
 	normalized := normalizeBulkEditTemplateLibraryStore(store)
@@ -678,6 +684,19 @@ func findBulkEditTemplateVersionIndexByID(
 		}
 	}
 	return -1
+}
+
+func canModifyBulkEditTemplate(item bulkEditTemplateStoreItem, requesterUserID int64) bool {
+	if requesterUserID <= 0 {
+		return false
+	}
+	if item.ShareScope != BulkEditTemplateShareScopePrivate {
+		return true
+	}
+	if item.CreatedBy <= 0 {
+		return true
+	}
+	return item.CreatedBy == requesterUserID
 }
 
 func isBulkEditTemplateVisible(

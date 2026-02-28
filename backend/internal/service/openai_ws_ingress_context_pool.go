@@ -63,6 +63,10 @@ type openAIWSIngressContextPool struct {
 }
 
 type openAIWSIngressAccountPool struct {
+	mu sync.Mutex
+
+	refs atomic.Int64
+
 	contexts  map[string]*openAIWSIngressContext
 	bySession map[string]string
 }
@@ -75,10 +79,12 @@ type openAIWSIngressContext struct {
 	sessionKey  string
 
 	mu               sync.Mutex
+	dialing          bool
+	dialDone         chan struct{}
 	ownerID          string
-	ownerLeaseAt     time.Time
-	lastUsedAt       time.Time
-	expiresAt        time.Time
+	ownerLeaseAtUnix atomic.Int64
+	lastUsedAtUnix   atomic.Int64
+	expiresAtUnix    atomic.Int64
 	broken           bool
 	failureStreak    int
 	lastFailureAt    time.Time
@@ -100,6 +106,72 @@ type openAIWSIngressContextLease struct {
 	stickiness    string
 	migrationUsed bool
 	released      atomic.Bool
+}
+
+func openAIWSTimeToUnixNano(ts time.Time) int64 {
+	if ts.IsZero() {
+		return 0
+	}
+	return ts.UnixNano()
+}
+
+func openAIWSUnixNanoToTime(ns int64) time.Time {
+	if ns <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+func (c *openAIWSIngressContext) setOwnerLeaseAt(ts time.Time) {
+	if c == nil {
+		return
+	}
+	c.ownerLeaseAtUnix.Store(openAIWSTimeToUnixNano(ts))
+}
+
+func (c *openAIWSIngressContext) ownerLeaseAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	return openAIWSUnixNanoToTime(c.ownerLeaseAtUnix.Load())
+}
+
+func (c *openAIWSIngressContext) setLastUsedAt(ts time.Time) {
+	if c == nil {
+		return
+	}
+	c.lastUsedAtUnix.Store(openAIWSTimeToUnixNano(ts))
+}
+
+func (c *openAIWSIngressContext) lastUsedAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	return openAIWSUnixNanoToTime(c.lastUsedAtUnix.Load())
+}
+
+func (c *openAIWSIngressContext) setExpiresAt(ts time.Time) {
+	if c == nil {
+		return
+	}
+	c.expiresAtUnix.Store(openAIWSTimeToUnixNano(ts))
+}
+
+func (c *openAIWSIngressContext) expiresAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	return openAIWSUnixNanoToTime(c.expiresAtUnix.Load())
+}
+
+func (c *openAIWSIngressContext) touchLease(now time.Time, ttl time.Duration) {
+	if c == nil {
+		return
+	}
+	nowUnix := openAIWSTimeToUnixNano(now)
+	c.lastUsedAtUnix.Store(nowUnix)
+	c.ownerLeaseAtUnix.Store(nowUnix)
+	c.expiresAtUnix.Store(openAIWSTimeToUnixNano(now.Add(ttl)))
 }
 
 func newOpenAIWSIngressContextPool(cfg *config.Config) *openAIWSIngressContextPool {
@@ -137,10 +209,17 @@ func (p *openAIWSIngressContextPool) Close() {
 
 		var toClose []openAIWSClientConn
 		p.mu.Lock()
+		accountPools := make([]*openAIWSIngressAccountPool, 0, len(p.accounts))
 		for _, ap := range p.accounts {
-			if ap == nil {
-				continue
+			if ap != nil {
+				accountPools = append(accountPools, ap)
 			}
+		}
+		p.accounts = make(map[int64]*openAIWSIngressAccountPool)
+		p.mu.Unlock()
+
+		for _, ap := range accountPools {
+			ap.mu.Lock()
 			for _, ctx := range ap.contexts {
 				if ctx == nil {
 					continue
@@ -155,9 +234,10 @@ func (p *openAIWSIngressContextPool) Close() {
 				ctx.handshakeHeaders = nil
 				ctx.mu.Unlock()
 			}
+			ap.contexts = make(map[string]*openAIWSIngressContext)
+			ap.bySession = make(map[string]string)
+			ap.mu.Unlock()
 		}
-		p.accounts = make(map[int64]*openAIWSIngressAccountPool)
-		p.mu.Unlock()
 
 		for _, conn := range toClose {
 			if conn != nil {
@@ -227,14 +307,21 @@ func (p *openAIWSIngressContextPool) Acquire(
 		selected      *openAIWSIngressContext
 		reusedContext bool
 		newlyCreated  bool
+		ownerAssigned bool
 		migrationUsed bool
 		scheduleLayer string
 		oldUpstream   openAIWSClientConn
+		deferredClose []openAIWSClientConn
 	)
 
 	p.mu.Lock()
 	ap := p.getOrCreateAccountPoolLocked(accountID)
-	p.cleanupAccountExpiredLocked(ap, now)
+	ap.refs.Add(1)
+	p.mu.Unlock()
+	defer ap.refs.Add(-1)
+
+	ap.mu.Lock()
+	deferredClose = append(deferredClose, p.cleanupAccountExpiredLocked(ap, now)...)
 
 	stickiness := p.resolveStickinessLevelLocked(ap, sessionKey, req, now)
 	allowMigration, minMigrationScore := openAIWSIngressMigrationPolicyByStickiness(stickiness)
@@ -243,17 +330,22 @@ func (p *openAIWSIngressContextPool) Acquire(
 		if existing := ap.contexts[existingID]; existing != nil {
 			existing.mu.Lock()
 			switch existing.ownerID {
-			case "", ownerID:
+			case "":
 				existing.ownerID = ownerID
-				existing.ownerLeaseAt = now
-				existing.lastUsedAt = now
-				existing.expiresAt = now.Add(p.idleTTL)
+				ownerAssigned = true
+				existing.touchLease(now, p.idleTTL)
+				selected = existing
+				reusedContext = true
+				scheduleLayer = openAIWSIngressScheduleLayerExact
+			case ownerID:
+				existing.touchLease(now, p.idleTTL)
 				selected = existing
 				reusedContext = true
 				scheduleLayer = openAIWSIngressScheduleLayerExact
 			default:
 				existing.mu.Unlock()
-				p.mu.Unlock()
+				ap.mu.Unlock()
+				closeOpenAIWSClientConns(deferredClose)
 				return nil, errOpenAIWSIngressContextBusy
 			}
 			existing.mu.Unlock()
@@ -262,17 +354,19 @@ func (p *openAIWSIngressContextPool) Acquire(
 
 	if selected == nil {
 		if len(ap.contexts) >= capacity {
-			p.evictExpiredIdleLocked(ap, now)
+			deferredClose = append(deferredClose, p.evictExpiredIdleLocked(ap, now)...)
 		}
 		if len(ap.contexts) >= capacity {
 			if !allowMigration {
-				p.mu.Unlock()
+				ap.mu.Unlock()
+				closeOpenAIWSClientConns(deferredClose)
 				return nil, errOpenAIWSConnQueueFull
 			}
 
 			recycle := p.pickMigrationCandidateLocked(ap, minMigrationScore, now)
 			if recycle == nil {
-				p.mu.Unlock()
+				ap.mu.Unlock()
+				closeOpenAIWSClientConns(deferredClose)
 				return nil, errOpenAIWSConnQueueFull
 			}
 			recycle.mu.Lock()
@@ -282,9 +376,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 			recycle.sessionKey = sessionKey
 			recycle.groupID = req.GroupID
 			recycle.ownerID = ownerID
-			recycle.ownerLeaseAt = now
-			recycle.lastUsedAt = now
-			recycle.expiresAt = now.Add(p.idleTTL)
+			recycle.touchLease(now, p.idleTTL)
 			// 会话被回收复用时关闭旧上游，避免跨会话污染。
 			recycle.upstream = nil
 			recycle.upstreamConnID = ""
@@ -304,7 +396,8 @@ func (p *openAIWSIngressContextPool) Acquire(
 			reusedContext = true
 			migrationUsed = true
 			scheduleLayer = openAIWSIngressScheduleLayerMigration
-			p.mu.Unlock()
+			ap.mu.Unlock()
+			closeOpenAIWSClientConns(deferredClose)
 			if oldUpstream != nil {
 				_ = oldUpstream.Close()
 			}
@@ -328,36 +421,34 @@ func (p *openAIWSIngressContextPool) Acquire(
 
 		ctxID := fmt.Sprintf("ctx_%d_%d", accountID, p.seq.Add(1))
 		created := &openAIWSIngressContext{
-			id:           ctxID,
-			groupID:      req.GroupID,
-			accountID:    accountID,
-			sessionHash:  sessionHash,
-			sessionKey:   sessionKey,
-			ownerID:      ownerID,
-			ownerLeaseAt: now,
-			lastUsedAt:   now,
-			expiresAt:    now.Add(p.idleTTL),
+			id:          ctxID,
+			groupID:     req.GroupID,
+			accountID:   accountID,
+			sessionHash: sessionHash,
+			sessionKey:  sessionKey,
+			ownerID:     ownerID,
 		}
+		created.touchLease(now, p.idleTTL)
 		ap.contexts[ctxID] = created
 		ap.bySession[sessionKey] = ctxID
 		selected = created
 		newlyCreated = true
+		ownerAssigned = true
 		scheduleLayer = openAIWSIngressScheduleLayerNew
 	}
-	p.mu.Unlock()
+	ap.mu.Unlock()
+	closeOpenAIWSClientConns(deferredClose)
 
 	reusedConn, ensureErr := p.ensureContextUpstream(ctx, selected, req)
 	if ensureErr != nil {
 		if newlyCreated {
-			p.mu.Lock()
-			if ap := p.accounts[accountID]; ap != nil {
-				delete(ap.contexts, selected.id)
-				if mapped, ok := ap.bySession[sessionKey]; ok && mapped == selected.id {
-					delete(ap.bySession, sessionKey)
-				}
+			ap.mu.Lock()
+			delete(ap.contexts, selected.id)
+			if mapped, ok := ap.bySession[sessionKey]; ok && mapped == selected.id {
+				delete(ap.bySession, sessionKey)
 			}
-			p.mu.Unlock()
-		} else {
+			ap.mu.Unlock()
+		} else if ownerAssigned {
 			p.releaseContext(selected, ownerID)
 		}
 		return nil, ensureErr
@@ -410,7 +501,7 @@ func (p *openAIWSIngressContextPool) resolveStickinessLevelLocked(
 	broken := existing.broken
 	failureStreak := existing.failureStreak
 	lastFailureAt := existing.lastFailureAt
-	lastUsedAt := existing.lastUsedAt
+	lastUsedAt := existing.lastUsedAt()
 	existing.mu.Unlock()
 
 	recentFailure := failureStreak > 0 && !lastFailureAt.IsZero() && now.Sub(lastFailureAt) <= 2*time.Minute
@@ -516,7 +607,8 @@ func scoreOpenAIWSIngressMigrationCandidate(c *openAIWSIngressContext, now time.
 		score -= float64(minInt(c.migrationCount*4, 20))
 	}
 
-	idleDuration := now.Sub(c.lastUsedAt)
+	lastUsedAt := c.lastUsedAt()
+	idleDuration := now.Sub(lastUsedAt)
 	switch {
 	case idleDuration <= 15*time.Second:
 		score -= 15
@@ -526,7 +618,7 @@ func scoreOpenAIWSIngressMigrationCandidate(c *openAIWSIngressContext, now time.
 		score += idleDuration.Seconds() / 12.0
 	}
 
-	return score, c.lastUsedAt, true
+	return score, lastUsedAt, true
 }
 
 func minInt(a, b int) int {
@@ -534,6 +626,14 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func closeOpenAIWSClientConns(conns []openAIWSClientConn) {
+	for _, conn := range conns {
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}
 }
 
 func (p *openAIWSIngressContextPool) ensureContextUpstream(
@@ -544,52 +644,93 @@ func (p *openAIWSIngressContextPool) ensureContextUpstream(
 	if p == nil || c == nil {
 		return false, errOpenAIWSConnClosed
 	}
-	c.mu.Lock()
-	if c.upstream != nil && !c.broken {
-		now := time.Now()
-		c.lastUsedAt = now
-		c.ownerLeaseAt = now
-		c.expiresAt = now.Add(p.idleTTL)
-		c.mu.Unlock()
-		return true, nil
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	oldUpstream := c.upstream
-	c.upstream = nil
-	c.handshakeHeaders = nil
-	c.upstreamConnID = ""
-	c.broken = false
-	c.mu.Unlock()
-
-	if oldUpstream != nil {
-		_ = oldUpstream.Close()
-	}
-
-	if p.dialer == nil {
-		return false, errors.New("openai ws ingress context dialer is nil")
-	}
-	conn, _, handshakeHeaders, err := p.dialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
-	if err != nil {
+	for {
 		c.mu.Lock()
-		c.broken = true
-		c.failureStreak++
-		c.lastFailureAt = time.Now()
+		if c.upstream != nil && !c.broken {
+			now := time.Now()
+			c.touchLease(now, p.idleTTL)
+			c.mu.Unlock()
+			return true, nil
+		}
+		if c.dialing {
+			dialDone := c.dialDone
+			c.mu.Unlock()
+			if dialDone == nil {
+				if err := ctx.Err(); err != nil {
+					return false, err
+				}
+				continue
+			}
+			select {
+			case <-dialDone:
+				continue
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
+		}
+		oldUpstream := c.upstream
+		c.upstream = nil
+		c.handshakeHeaders = nil
+		c.upstreamConnID = ""
+		c.broken = false
+		c.dialing = true
+		dialDone := make(chan struct{})
+		c.dialDone = dialDone
 		c.mu.Unlock()
-		return false, err
-	}
 
-	c.mu.Lock()
-	now := time.Now()
-	c.upstream = conn
-	c.upstreamConnID = fmt.Sprintf("ctxws_%d_%d", c.accountID, p.seq.Add(1))
-	c.handshakeHeaders = cloneHeader(handshakeHeaders)
-	c.lastUsedAt = now
-	c.ownerLeaseAt = now
-	c.expiresAt = now.Add(p.idleTTL)
-	c.broken = false
-	c.failureStreak = 0
-	c.lastFailureAt = time.Time{}
-	c.mu.Unlock()
-	return false, nil
+		if oldUpstream != nil {
+			_ = oldUpstream.Close()
+		}
+
+		dialer := p.dialer
+		if dialer == nil {
+			c.mu.Lock()
+			c.broken = true
+			c.failureStreak++
+			c.lastFailureAt = time.Now()
+			c.dialing = false
+			if c.dialDone == dialDone {
+				c.dialDone = nil
+			}
+			close(dialDone)
+			c.mu.Unlock()
+			return false, errors.New("openai ws ingress context dialer is nil")
+		}
+		conn, _, handshakeHeaders, err := dialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
+		if err != nil {
+			c.mu.Lock()
+			c.broken = true
+			c.failureStreak++
+			c.lastFailureAt = time.Now()
+			c.dialing = false
+			if c.dialDone == dialDone {
+				c.dialDone = nil
+			}
+			close(dialDone)
+			c.mu.Unlock()
+			return false, err
+		}
+
+		c.mu.Lock()
+		now := time.Now()
+		c.upstream = conn
+		c.upstreamConnID = fmt.Sprintf("ctxws_%d_%d", c.accountID, p.seq.Add(1))
+		c.handshakeHeaders = cloneHeader(handshakeHeaders)
+		c.touchLease(now, p.idleTTL)
+		c.broken = false
+		c.failureStreak = 0
+		c.lastFailureAt = time.Time{}
+		c.dialing = false
+		if c.dialDone == dialDone {
+			c.dialDone = nil
+		}
+		close(dialDone)
+		c.mu.Unlock()
+		return false, nil
+	}
 }
 
 func (p *openAIWSIngressContextPool) releaseContext(c *openAIWSIngressContext, ownerID string) {
@@ -606,9 +747,10 @@ func (p *openAIWSIngressContextPool) releaseContext(c *openAIWSIngressContext, o
 		c.handshakeHeaders = nil
 		c.upstreamConnID = ""
 		c.ownerID = ""
-		c.ownerLeaseAt = time.Time{}
-		c.lastUsedAt = time.Now()
-		c.expiresAt = time.Now().Add(p.idleTTL)
+		now := time.Now()
+		c.setOwnerLeaseAt(time.Time{})
+		c.setLastUsedAt(now)
+		c.setExpiresAt(now.Add(p.idleTTL))
 		c.broken = false
 	}
 	c.mu.Unlock()
@@ -647,17 +789,22 @@ func (p *openAIWSIngressContextPool) getOrCreateAccountPoolLocked(accountID int6
 	return ap
 }
 
-func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(ap *openAIWSIngressAccountPool, now time.Time) {
+func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(
+	ap *openAIWSIngressAccountPool,
+	now time.Time,
+) []openAIWSClientConn {
 	if ap == nil {
-		return
+		return nil
 	}
+	toClose := make([]openAIWSClientConn, 0)
 	for id, ctx := range ap.contexts {
 		if ctx == nil {
 			delete(ap.contexts, id)
 			continue
 		}
 		ctx.mu.Lock()
-		expired := ctx.ownerID == "" && !ctx.expiresAt.IsZero() && now.After(ctx.expiresAt)
+		expiresAt := ctx.expiresAt()
+		expired := ctx.ownerID == "" && !expiresAt.IsZero() && now.After(expiresAt)
 		ctx.mu.Unlock()
 		if !expired {
 			continue
@@ -675,22 +822,28 @@ func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(ap *openAIWSIng
 			delete(ap.bySession, ctx.sessionKey)
 		}
 		if upstream != nil {
-			_ = upstream.Close()
+			toClose = append(toClose, upstream)
 		}
 	}
+	return toClose
 }
 
-func (p *openAIWSIngressContextPool) evictExpiredIdleLocked(ap *openAIWSIngressAccountPool, now time.Time) {
+func (p *openAIWSIngressContextPool) evictExpiredIdleLocked(
+	ap *openAIWSIngressAccountPool,
+	now time.Time,
+) []openAIWSClientConn {
 	if ap == nil {
-		return
+		return nil
 	}
+	toClose := make([]openAIWSClientConn, 0)
 	for id, ctx := range ap.contexts {
 		if ctx == nil {
 			delete(ap.contexts, id)
 			continue
 		}
 		ctx.mu.Lock()
-		expired := ctx.ownerID == "" && !ctx.expiresAt.IsZero() && now.After(ctx.expiresAt)
+		expiresAt := ctx.expiresAt()
+		expired := ctx.ownerID == "" && !expiresAt.IsZero() && now.After(expiresAt)
 		upstream := ctx.upstream
 		if expired {
 			ctx.upstream = nil
@@ -706,9 +859,10 @@ func (p *openAIWSIngressContextPool) evictExpiredIdleLocked(ap *openAIWSIngressA
 			delete(ap.bySession, ctx.sessionKey)
 		}
 		if upstream != nil {
-			_ = upstream.Close()
+			toClose = append(toClose, upstream)
 		}
 	}
+	return toClose
 }
 
 func (p *openAIWSIngressContextPool) pickOldestIdleContextLocked(ap *openAIWSIngressAccountPool) *openAIWSIngressContext {
@@ -725,7 +879,7 @@ func (p *openAIWSIngressContextPool) pickOldestIdleContextLocked(ap *openAIWSIng
 		}
 		ctx.mu.Lock()
 		idle := strings.TrimSpace(ctx.ownerID) == ""
-		lastUsed := ctx.lastUsedAt
+		lastUsed := ctx.lastUsedAt()
 		ctx.mu.Unlock()
 		if !idle {
 			continue
@@ -743,13 +897,50 @@ func (p *openAIWSIngressContextPool) sweepExpiredIdleContexts() {
 		return
 	}
 	now := time.Now()
+
+	type accountSnapshot struct {
+		accountID int64
+		ap        *openAIWSIngressAccountPool
+	}
+
+	snapshots := make([]accountSnapshot, 0, len(p.accounts))
 	p.mu.Lock()
 	for accountID, ap := range p.accounts {
-		p.evictExpiredIdleLocked(ap, now)
-		if ap == nil || len(ap.contexts) > 0 {
+		if ap == nil {
+			delete(p.accounts, accountID)
 			continue
 		}
-		delete(p.accounts, accountID)
+		snapshots = append(snapshots, accountSnapshot{accountID: accountID, ap: ap})
+	}
+	p.mu.Unlock()
+
+	removable := make([]accountSnapshot, 0)
+	for _, item := range snapshots {
+		ap := item.ap
+		ap.mu.Lock()
+		toClose := p.evictExpiredIdleLocked(ap, now)
+		empty := len(ap.contexts) == 0
+		ap.mu.Unlock()
+		closeOpenAIWSClientConns(toClose)
+		if empty && ap.refs.Load() == 0 {
+			removable = append(removable, item)
+		}
+	}
+
+	if len(removable) == 0 {
+		return
+	}
+
+	p.mu.Lock()
+	for _, item := range removable {
+		existing := p.accounts[item.accountID]
+		if existing != item.ap || existing == nil {
+			continue
+		}
+		if existing.refs.Load() != 0 {
+			continue
+		}
+		delete(p.accounts, item.accountID)
 	}
 	p.mu.Unlock()
 }
@@ -853,12 +1044,7 @@ func (l *openAIWSIngressContextLease) WriteJSONWithContextTimeout(ctx context.Co
 	if err := conn.WriteJSON(writeCtx, value); err != nil {
 		return err
 	}
-	l.context.mu.Lock()
-	now := time.Now()
-	l.context.lastUsedAt = now
-	l.context.ownerLeaseAt = now
-	l.context.expiresAt = now.Add(l.pool.idleTTL)
-	l.context.mu.Unlock()
+	l.context.touchLease(time.Now(), l.pool.idleTTL)
 	return nil
 }
 
@@ -880,12 +1066,7 @@ func (l *openAIWSIngressContextLease) ReadMessageWithContextTimeout(ctx context.
 	if err != nil {
 		return nil, err
 	}
-	l.context.mu.Lock()
-	now := time.Now()
-	l.context.lastUsedAt = now
-	l.context.ownerLeaseAt = now
-	l.context.expiresAt = now.Add(l.pool.idleTTL)
-	l.context.mu.Unlock()
+	l.context.touchLease(time.Now(), l.pool.idleTTL)
 	return payload, nil
 }
 
@@ -903,12 +1084,7 @@ func (l *openAIWSIngressContextLease) PingWithTimeout(timeout time.Duration) err
 	if err := conn.Ping(pingCtx); err != nil {
 		return err
 	}
-	l.context.mu.Lock()
-	now := time.Now()
-	l.context.lastUsedAt = now
-	l.context.ownerLeaseAt = now
-	l.context.expiresAt = now.Add(l.pool.idleTTL)
-	l.context.mu.Unlock()
+	l.context.touchLease(time.Now(), l.pool.idleTTL)
 	return nil
 }
 

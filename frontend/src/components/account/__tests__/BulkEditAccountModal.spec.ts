@@ -28,20 +28,26 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
-function mountModal() {
+function mountModal(
+  scope: { scopePlatform: string; scopeType: string } = {
+    scopePlatform: 'gemini',
+    scopeType: 'apikey'
+  },
+  selectStub: boolean | Record<string, unknown> = true
+) {
   return mount(BulkEditAccountModal, {
     props: {
       show: true,
       accountIds: [1, 2],
-      scopePlatform: 'gemini',
-      scopeType: 'apikey',
+      scopePlatform: scope.scopePlatform,
+      scopeType: scope.scopeType,
       proxies: [],
       groups: []
     } as any,
     global: {
       stubs: {
         BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
-        Select: true,
+        Select: selectStub,
         ProxySelector: true,
         GroupSelector: true,
         Icon: true
@@ -69,5 +75,18 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.text()).toContain('Gemini 3.1 Image')
     expect(wrapper.text()).toContain('G3 Image→3.1')
     expect(wrapper.text()).not.toContain('GPT-5.3 Codex')
+  })
+
+  it('OpenAI OAuth 范围 WS mode 选项包含 ctx_pool', () => {
+    const wrapper = mountModal(
+      { scopePlatform: 'openai', scopeType: 'oauth' },
+      {
+        props: ['options'],
+        template:
+          '<div><span v-for="option in options" :key="option.value">{{ option.value }}</span></div>'
+      }
+    )
+
+    expect(wrapper.text()).toContain('ctx_pool')
   })
 })
