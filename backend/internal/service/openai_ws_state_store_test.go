@@ -75,6 +75,23 @@ func TestOpenAIWSStateStore_SessionConnTTL(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestOpenAIWSStateStore_SessionLastResponseIDTTL(t *testing.T) {
+	store := NewOpenAIWSStateStore(nil)
+	store.BindSessionLastResponseID(9, "session_hash_resp_1", "resp_1", 30*time.Millisecond)
+
+	responseID, ok := store.GetSessionLastResponseID(9, "session_hash_resp_1")
+	require.True(t, ok)
+	require.Equal(t, "resp_1", responseID)
+
+	// group 隔离
+	_, ok = store.GetSessionLastResponseID(10, "session_hash_resp_1")
+	require.False(t, ok)
+
+	time.Sleep(60 * time.Millisecond)
+	_, ok = store.GetSessionLastResponseID(9, "session_hash_resp_1")
+	require.False(t, ok)
+}
+
 func TestOpenAIWSStateStore_GetResponseAccount_NoStaleAfterCacheMiss(t *testing.T) {
 	cache := &stubGatewayCache{sessionBindings: map[string]int64{}}
 	store := NewOpenAIWSStateStore(cache)
