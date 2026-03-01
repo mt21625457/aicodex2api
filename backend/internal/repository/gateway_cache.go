@@ -2,14 +2,20 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/cespare/xxhash/v2"
 	"github.com/redis/go-redis/v9"
 )
 
 const stickySessionPrefix = "sticky_session:"
+const openAIWSSessionLastResponsePrefix = "openai_ws_session_last_response:"
+const openAIWSResponsePendingToolCallsPrefix = "openai_ws_response_pending_tool_calls:"
 
 type gatewayCache struct {
 	rdb *redis.Client
@@ -23,6 +29,18 @@ func NewGatewayCache(rdb *redis.Client) service.GatewayCache {
 // 格式: sticky_session:{groupID}:{sessionHash}
 func buildSessionKey(groupID int64, sessionHash string) string {
 	return fmt.Sprintf("%s%d:%s", stickySessionPrefix, groupID, sessionHash)
+}
+
+func buildOpenAIWSSessionLastResponseKey(groupID int64, sessionHash string) string {
+	return fmt.Sprintf("%s%d:%s", openAIWSSessionLastResponsePrefix, groupID, sessionHash)
+}
+
+func buildOpenAIWSResponsePendingToolCallsKey(responseID string) string {
+	id := strings.TrimSpace(responseID)
+	if id == "" {
+		return ""
+	}
+	return openAIWSResponsePendingToolCallsPrefix + strconv.FormatUint(xxhash.Sum64String(id), 16)
 }
 
 func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -50,4 +68,79 @@ func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, ses
 func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Del(ctx, key).Err()
+}
+
+func (c *gatewayCache) SetOpenAIWSSessionLastResponseID(ctx context.Context, groupID int64, sessionHash, responseID string, ttl time.Duration) error {
+	key := buildOpenAIWSSessionLastResponseKey(groupID, sessionHash)
+	return c.rdb.Set(ctx, key, responseID, ttl).Err()
+}
+
+func (c *gatewayCache) GetOpenAIWSSessionLastResponseID(ctx context.Context, groupID int64, sessionHash string) (string, error) {
+	key := buildOpenAIWSSessionLastResponseKey(groupID, sessionHash)
+	return c.rdb.Get(ctx, key).Result()
+}
+
+func (c *gatewayCache) DeleteOpenAIWSSessionLastResponseID(ctx context.Context, groupID int64, sessionHash string) error {
+	key := buildOpenAIWSSessionLastResponseKey(groupID, sessionHash)
+	return c.rdb.Del(ctx, key).Err()
+}
+
+func (c *gatewayCache) SetOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string, callIDs []string, ttl time.Duration) error {
+	key := buildOpenAIWSResponsePendingToolCallsKey(responseID)
+	if key == "" {
+		return nil
+	}
+	normalizedCallIDs := normalizeOpenAIWSResponsePendingToolCallIDs(callIDs)
+	if len(normalizedCallIDs) == 0 {
+		return c.rdb.Del(ctx, key).Err()
+	}
+	raw, err := json.Marshal(normalizedCallIDs)
+	if err != nil {
+		return err
+	}
+	return c.rdb.Set(ctx, key, raw, ttl).Err()
+}
+
+func (c *gatewayCache) GetOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string) ([]string, error) {
+	key := buildOpenAIWSResponsePendingToolCallsKey(responseID)
+	if key == "" {
+		return nil, nil
+	}
+	raw, err := c.rdb.Get(ctx, key).Bytes()
+	if err != nil {
+		return nil, err
+	}
+	var callIDs []string
+	if err := json.Unmarshal(raw, &callIDs); err != nil {
+		return nil, err
+	}
+	return normalizeOpenAIWSResponsePendingToolCallIDs(callIDs), nil
+}
+
+func (c *gatewayCache) DeleteOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string) error {
+	key := buildOpenAIWSResponsePendingToolCallsKey(responseID)
+	if key == "" {
+		return nil
+	}
+	return c.rdb.Del(ctx, key).Err()
+}
+
+func normalizeOpenAIWSResponsePendingToolCallIDs(callIDs []string) []string {
+	if len(callIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(callIDs))
+	normalized := make([]string, 0, len(callIDs))
+	for _, callID := range callIDs {
+		id := strings.TrimSpace(callID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+	return normalized
 }

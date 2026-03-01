@@ -181,6 +181,68 @@ func requestToJSONString(payload map[string]any) string {
 	return string(b)
 }
 
+func TestOpenAIWSPoolPreferredConnIDFromResponse(t *testing.T) {
+	store := NewOpenAIWSStateStore(nil)
+	ttl := time.Minute
+	store.BindResponseConn("resp_ctx", "ctxws_22_1", ttl)
+	store.BindResponseConn("resp_oa", "oa_ws_22_1", ttl)
+
+	require.Equal(t, "", openAIWSPoolPreferredConnIDFromResponse(store, "resp_ctx"))
+	require.Equal(t, "oa_ws_22_1", openAIWSPoolPreferredConnIDFromResponse(store, "resp_oa"))
+	require.Equal(t, "", openAIWSPoolPreferredConnIDFromResponse(store, "resp_missing"))
+}
+
+func TestIsOpenAIWSIngressToolOutputNotFound(t *testing.T) {
+	// tool_output_not_found stage → true
+	err := wrapOpenAIWSIngressTurnError(openAIWSIngressStageToolOutputNotFound, errors.New("No tool output found for function call call_abc."), false)
+	require.True(t, isOpenAIWSIngressToolOutputNotFound(err))
+
+	// previous_response_not_found stage → false
+	err = wrapOpenAIWSIngressTurnError(openAIWSIngressStagePreviousResponseNotFound, errors.New("previous response not found"), false)
+	require.False(t, isOpenAIWSIngressToolOutputNotFound(err))
+
+	// wroteDownstream=true → false
+	err = wrapOpenAIWSIngressTurnError(openAIWSIngressStageToolOutputNotFound, errors.New("msg"), true)
+	require.False(t, isOpenAIWSIngressToolOutputNotFound(err))
+
+	// nil → false
+	require.False(t, isOpenAIWSIngressToolOutputNotFound(nil))
+
+	// plain error → false
+	require.False(t, isOpenAIWSIngressToolOutputNotFound(errors.New("plain")))
+}
+
+func TestShouldPersistOpenAIWSLastResponseID(t *testing.T) {
+	require.True(t, shouldPersistOpenAIWSLastResponseID("response.completed"))
+	require.True(t, shouldPersistOpenAIWSLastResponseID("response.done"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID("response.failed"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID("response.incomplete"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID("response.cancelled"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID("response.canceled"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID(""))
+}
+
+func TestOpenAIWSIngressSessionScopeHelpers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	require.Equal(t, "", openAIWSIngressSessionScopeFromContext(c))
+	require.Equal(t, "hash_a", openAIWSApplySessionScope("hash_a", ""))
+	require.Equal(t, "", openAIWSApplySessionScope("", "scope_a"))
+
+	apiKey := &APIKey{ID: 6, UserID: 1}
+	c.Set("api_key", apiKey)
+	scope := openAIWSIngressSessionScopeFromContext(c)
+	require.Equal(t, "u1:k6", scope)
+	require.Equal(t, "u1:k6|hash_a", openAIWSApplySessionScope("hash_a", scope))
+
+	apiKey.UserID = 0
+	apiKey.User = &User{ID: 9}
+	scope = openAIWSIngressSessionScopeFromContext(c)
+	require.Equal(t, "u9:k6", scope)
+}
+
 func TestLogOpenAIWSBindResponseAccountWarn(t *testing.T) {
 	require.NotPanics(t, func() {
 		logOpenAIWSBindResponseAccountWarn(1, 2, "resp_ok", nil)

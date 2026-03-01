@@ -19,6 +19,7 @@
 - [x] **Phase 7: Template Sharing Scope** - 模板共享到团队/分组并限制可见范围
 - [x] **Phase 8: Template Versioning & Rollback** - 模板版本历史、差异预览与回滚
 - [x] **Phase 9: Quality Gate & Rollout (v1.2)** - 测试补齐、覆盖率、UAT 与上线说明
+- [ ] **Phase 10: OpenAI WSv2 ctx_pool normalization hardening** - 归一化收敛、跨实例 pending 状态、invariant-first 判定与回归矩阵
 
 ## Phase Details
 
@@ -68,3 +69,14 @@ Plans:
 | 7. Template Sharing Scope | 1/1 | Completed | 2026-02-28 |
 | 8. Template Versioning & Rollback | 1/1 | Completed | 2026-02-28 |
 | 9. Quality Gate & Rollout (v1.2) | 1/1 | Completed | 2026-02-28 |
+| 10. OpenAI WSv2 ctx_pool normalization hardening | 0/1 | Planned | - |
+
+### Phase 10: OpenAI WSv2 ctx_pool normalization hardening
+
+**Goal:** 收敛 ctx_pool WSv2 发送前归一化路径，补齐跨实例 pending 状态与不变量优先判定，保持恢复矩阵稳定。
+**Requirements**: [WSV2-CTX-NORMALIZER, WSV2-CTX-PENDING-CROSS-INSTANCE, WSV2-CTX-INVARIANT-FIRST, WSV2-CTX-RECOVERY-MATRIX, WSV2-CTX-REGRESSION-MATRIX]
+**Depends on:** Phase 9
+**Plans:** 1 plan
+
+Plans:
+- [ ] 10-01: 统一 normalizer + 跨实例 pending_call_ids + invariant-first + 回归矩阵

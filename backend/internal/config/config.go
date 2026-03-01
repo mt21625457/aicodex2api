@@ -457,7 +457,7 @@ type GatewayConfig struct {
 type GatewayOpenAIWSConfig struct {
 	// ModeRouterV2Enabled: 新版 WS mode 路由开关（默认 true；关闭时保持 legacy 行为）
 	ModeRouterV2Enabled bool `mapstructure:"mode_router_v2_enabled"`
-	// IngressModeDefault: ingress 默认模式（off/shared/dedicated/ctx_pool）
+	// IngressModeDefault: ingress 默认模式（off/ctx_pool）
 	IngressModeDefault string `mapstructure:"ingress_mode_default"`
 	// Enabled: 全局总开关（默认 true）
 	Enabled bool `mapstructure:"enabled"`
@@ -536,6 +536,32 @@ type GatewayOpenAIWSConfig struct {
 	StickyPreviousResponseTTLSeconds int `mapstructure:"sticky_previous_response_ttl_seconds"`
 
 	SchedulerScoreWeights GatewayOpenAIWSSchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
+
+	// SchedulerP2CEnabled: 启用 P2C（Power-of-Two-Choices）选择算法替代 Top-K 加权采样
+	SchedulerP2CEnabled bool `mapstructure:"scheduler_p2c_enabled"`
+
+	// Softmax 温度采样：替代线性平移的概率选择策略
+	SchedulerSoftmaxEnabled     bool    `mapstructure:"scheduler_softmax_enabled"`
+	SchedulerSoftmaxTemperature float64 `mapstructure:"scheduler_softmax_temperature"`
+
+	// 账号级熔断器
+	SchedulerCircuitBreakerEnabled       bool `mapstructure:"scheduler_circuit_breaker_enabled"`
+	SchedulerCircuitBreakerFailThreshold int  `mapstructure:"scheduler_circuit_breaker_fail_threshold"`
+	SchedulerCircuitBreakerCooldownSec   int  `mapstructure:"scheduler_circuit_breaker_cooldown_sec"`
+	SchedulerCircuitBreakerHalfOpenMax   int  `mapstructure:"scheduler_circuit_breaker_half_open_max"`
+
+	// 条件性 Sticky Session 释放：当粘连账号不健康时主动释放，回退到负载均衡
+	StickyReleaseEnabled        bool    `mapstructure:"sticky_release_enabled"`
+	StickyReleaseErrorThreshold float64 `mapstructure:"sticky_release_error_threshold"`
+
+	// Per-model TTFT tracking
+	SchedulerPerModelTTFTEnabled   bool `mapstructure:"scheduler_per_model_ttft_enabled"`
+	SchedulerPerModelTTFTMaxModels int  `mapstructure:"scheduler_per_model_ttft_max_models"`
+
+	// SchedulerTrendEnabled: 启用负载趋势预测（线性回归外推），在打分时对 loadFactor 施加趋势修正
+	SchedulerTrendEnabled bool `mapstructure:"scheduler_trend_enabled"`
+	// SchedulerTrendMaxSlope: 趋势斜率归一化上限（每秒负载百分比变化率）；0 或负数使用默认值 5.0
+	SchedulerTrendMaxSlope float64 `mapstructure:"scheduler_trend_max_slope"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1263,7 +1289,7 @@ func setDefaults() {
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", true)
-	viper.SetDefault("gateway.openai_ws.ingress_mode_default", "dedicated")
+	viper.SetDefault("gateway.openai_ws.ingress_mode_default", "ctx_pool")
 	viper.SetDefault("gateway.openai_ws.oauth_enabled", true)
 	viper.SetDefault("gateway.openai_ws.apikey_enabled", true)
 	viper.SetDefault("gateway.openai_ws.force_http", false)
@@ -1969,9 +1995,11 @@ func (c *Config) Validate() error {
 	}
 	if mode := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIWS.IngressModeDefault)); mode != "" {
 		switch mode {
-		case "off", "shared", "dedicated", "ctx_pool":
+		case "off", "ctx_pool":
+		case "shared", "dedicated":
+			slog.Warn("gateway.openai_ws.ingress_mode_default is deprecated, treating as ctx_pool; please update to off|ctx_pool", "value", mode)
 		default:
-			return fmt.Errorf("gateway.openai_ws.ingress_mode_default must be one of off|shared|dedicated|ctx_pool")
+			return fmt.Errorf("gateway.openai_ws.ingress_mode_default must be one of off|ctx_pool")
 		}
 	}
 	if mode := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIWS.StoreDisabledConnMode)); mode != "" {
@@ -2010,6 +2038,22 @@ func (c *Config) Validate() error {
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT
 	if weightSum <= 0 {
 		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights must not all be zero")
+	}
+	// Validate new scheduler/sticky-release config ranges.
+	if c.Gateway.OpenAIWS.SchedulerSoftmaxTemperature < 0 {
+		return fmt.Errorf("gateway.openai_ws.scheduler_softmax_temperature must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.StickyReleaseErrorThreshold < 0 || c.Gateway.OpenAIWS.StickyReleaseErrorThreshold > 1 {
+		return fmt.Errorf("gateway.openai_ws.sticky_release_error_threshold must be within [0,1]")
+	}
+	if c.Gateway.OpenAIWS.SchedulerCircuitBreakerFailThreshold < 0 {
+		return fmt.Errorf("gateway.openai_ws.scheduler_circuit_breaker_fail_threshold must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.SchedulerCircuitBreakerCooldownSec < 0 {
+		return fmt.Errorf("gateway.openai_ws.scheduler_circuit_breaker_cooldown_sec must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.SchedulerCircuitBreakerHalfOpenMax < 0 {
+		return fmt.Errorf("gateway.openai_ws.scheduler_circuit_breaker_half_open_max must be non-negative")
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")
