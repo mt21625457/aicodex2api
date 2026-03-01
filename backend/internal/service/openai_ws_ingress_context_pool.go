@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,11 @@ type openAIWSIngressContextPool struct {
 
 	seq atomic.Uint64
 
+	// schedulerStats provides load-aware signals (error rate, circuit breaker
+	// state) for migration scoring. When nil, scoring falls back to the
+	// existing idle-time + failure-streak heuristic.
+	schedulerStats *openAIAccountRuntimeStats
+
 	mu       sync.Mutex
 	accounts map[int64]*openAIWSIngressAccountPool
 
@@ -78,20 +84,21 @@ type openAIWSIngressContext struct {
 	sessionHash string
 	sessionKey  string
 
-	mu               sync.Mutex
-	dialing          bool
-	dialDone         chan struct{}
-	ownerID          string
-	lastUsedAtUnix   atomic.Int64
-	expiresAtUnix    atomic.Int64
-	broken           bool
-	failureStreak    int
-	lastFailureAt    time.Time
-	migrationCount   int
-	lastMigrationAt  time.Time
-	upstream         openAIWSClientConn
-	upstreamConnID   string
-	handshakeHeaders http.Header
+	mu                sync.Mutex
+	dialing           bool
+	dialDone          chan struct{}
+	ownerID           string
+	lastUsedAtUnix    atomic.Int64
+	expiresAtUnix     atomic.Int64
+	lastTouchUnixNano atomic.Int64 // throttle: skip touchLease if < 1s since last
+	broken            bool
+	failureStreak     int
+	lastFailureAt     time.Time
+	migrationCount    int
+	lastMigrationAt   time.Time
+	upstream          openAIWSClientConn
+	upstreamConnID    string
+	handshakeHeaders  http.Header
 }
 
 type openAIWSIngressContextLease struct {
@@ -105,6 +112,8 @@ type openAIWSIngressContextLease struct {
 	stickiness    string
 	migrationUsed bool
 	released      atomic.Bool
+	cachedConnMu  sync.RWMutex
+	cachedConn    openAIWSClientConn // fast path: avoid mutex on every activeConn() call
 }
 
 func openAIWSTimeToUnixNano(ts time.Time) int64 {
@@ -156,6 +165,23 @@ func (c *openAIWSIngressContext) touchLease(now time.Time, ttl time.Duration) {
 	nowUnix := openAIWSTimeToUnixNano(now)
 	c.lastUsedAtUnix.Store(nowUnix)
 	c.expiresAtUnix.Store(openAIWSTimeToUnixNano(now.Add(ttl)))
+	c.lastTouchUnixNano.Store(nowUnix)
+}
+
+// maybeTouchLease is a throttled version of touchLease.
+// It skips the update if less than 1 second has passed since the last touch,
+// avoiding redundant time.Now() + atomic stores on every hot-path message.
+func (c *openAIWSIngressContext) maybeTouchLease(ttl time.Duration) {
+	if c == nil {
+		return
+	}
+	now := time.Now()
+	nowNano := now.UnixNano()
+	lastNano := c.lastTouchUnixNano.Load()
+	if lastNano > 0 && nowNano-lastNano < int64(time.Second) {
+		return
+	}
+	c.touchLease(now, ttl)
 }
 
 func newOpenAIWSIngressContextPool(cfg *config.Config) *openAIWSIngressContextPool {
@@ -499,18 +525,18 @@ func (p *openAIWSIngressContextPool) resolveStickinessLevelLocked(
 }
 
 func openAIWSIngressMigrationPolicyByStickiness(stickiness string) (bool, float64) {
-	switch strings.TrimSpace(stickiness) {
+	switch stickiness {
 	case openAIWSIngressStickinessStrong:
-		return false, 85
+		return false, 80 // was 85; lowered to allow migration away from degraded accounts
 	case openAIWSIngressStickinessBalanced:
-		return true, 68
+		return true, 65 // was 68; lowered to allow more aggressive migration to healthier accounts
 	default:
-		return true, 45
+		return true, 40 // was 45; lowered for weak stickiness
 	}
 }
 
 func openAIWSIngressStickinessDowngrade(level string) string {
-	switch strings.TrimSpace(level) {
+	switch level {
 	case openAIWSIngressStickinessStrong:
 		return openAIWSIngressStickinessBalanced
 	case openAIWSIngressStickinessBalanced:
@@ -521,7 +547,7 @@ func openAIWSIngressStickinessDowngrade(level string) string {
 }
 
 func openAIWSIngressStickinessUpgrade(level string) string {
-	switch strings.TrimSpace(level) {
+	switch level {
 	case openAIWSIngressStickinessWeak:
 		return openAIWSIngressStickinessBalanced
 	case openAIWSIngressStickinessBalanced:
@@ -550,7 +576,7 @@ func (p *openAIWSIngressContextPool) pickMigrationCandidateLocked(
 		if ctx == nil {
 			continue
 		}
-		score, lastUsed, ok := scoreOpenAIWSIngressMigrationCandidate(ctx, now)
+		score, lastUsed, ok := scoreOpenAIWSIngressMigrationCandidate(ctx, now, p.schedulerStats)
 		if !ok || score < minScore {
 			continue
 		}
@@ -564,7 +590,7 @@ func (p *openAIWSIngressContextPool) pickMigrationCandidateLocked(
 	return selected
 }
 
-func scoreOpenAIWSIngressMigrationCandidate(c *openAIWSIngressContext, now time.Time) (float64, time.Time, bool) {
+func scoreOpenAIWSIngressMigrationCandidate(c *openAIWSIngressContext, now time.Time, stats *openAIAccountRuntimeStats) (float64, time.Time, bool) {
 	if c == nil {
 		return 0, time.Time{}, false
 	}
@@ -600,6 +626,25 @@ func scoreOpenAIWSIngressMigrationCandidate(c *openAIWSIngressContext, now time.
 		score += 16
 	default:
 		score += idleDuration.Seconds() / 12.0
+	}
+
+	// Load-aware factors: penalize contexts bound to accounts that the
+	// scheduler has flagged as degraded or circuit-open. When stats is nil
+	// (e.g. during tests or before scheduler init), these adjustments are
+	// silently skipped so existing behaviour is preserved.
+	if stats != nil && c.accountID > 0 {
+		errorRate, _, _ := stats.snapshot(c.accountID)
+		// errorRate is in [0,1]; a fully-erroring account subtracts up to 30
+		// points, making it significantly harder for a migration to land on
+		// an unhealthy account.
+		score -= errorRate * 30
+
+		// Circuit-open accounts receive a harsh penalty (-50) that in
+		// practice drops the score below any reasonable minimum threshold,
+		// effectively blocking migration to that account.
+		if stats.isCircuitOpen(c.accountID) {
+			score -= 50
+		}
 	}
 
 	return score, lastUsedAt, true
@@ -788,18 +833,17 @@ func (p *openAIWSIngressContextPool) cleanupAccountExpiredLocked(
 		ctx.mu.Lock()
 		expiresAt := ctx.expiresAt()
 		expired := ctx.ownerID == "" && !expiresAt.IsZero() && now.After(expiresAt)
-		ctx.mu.Unlock()
-		if !expired {
-			continue
-		}
-		ctx.mu.Lock()
-		upstream := ctx.upstream
+		var upstream openAIWSClientConn
 		if expired {
+			upstream = ctx.upstream
 			ctx.upstream = nil
 			ctx.handshakeHeaders = nil
 			ctx.upstreamConnID = ""
 		}
 		ctx.mu.Unlock()
+		if !expired {
+			continue
+		}
 		delete(ap.contexts, id)
 		if mappedID, ok := ap.bySession[ctx.sessionKey]; ok && mappedID == id {
 			delete(ap.bySession, ctx.sessionKey)
@@ -929,7 +973,11 @@ func (p *openAIWSIngressContextPool) sweepExpiredIdleContexts() {
 }
 
 func openAIWSIngressContextSessionKey(groupID int64, sessionHash string) string {
-	return fmt.Sprintf("%d:%s", groupID, strings.TrimSpace(sessionHash))
+	hash := strings.TrimSpace(sessionHash)
+	if hash == "" {
+		return ""
+	}
+	return strconv.FormatInt(groupID, 10) + ":" + hash
 }
 
 func (l *openAIWSIngressContextLease) ConnID() string {
@@ -999,6 +1047,14 @@ func (l *openAIWSIngressContextLease) activeConn() (openAIWSClientConn, error) {
 	if l == nil || l.context == nil || l.released.Load() {
 		return nil, errOpenAIWSConnClosed
 	}
+	// Fast path: return cached conn without mutex if lease is still valid.
+	l.cachedConnMu.RLock()
+	cc := l.cachedConn
+	l.cachedConnMu.RUnlock()
+	if cc != nil {
+		return cc, nil
+	}
+	// Slow path: acquire mutex, validate ownership, cache result.
 	l.context.mu.Lock()
 	defer l.context.mu.Unlock()
 	if l.context.ownerID != l.ownerID {
@@ -1007,6 +1063,9 @@ func (l *openAIWSIngressContextLease) activeConn() (openAIWSClientConn, error) {
 	if l.context.upstream == nil {
 		return nil, errOpenAIWSConnClosed
 	}
+	l.cachedConnMu.Lock()
+	l.cachedConn = l.context.upstream
+	l.cachedConnMu.Unlock()
 	return l.context.upstream, nil
 }
 
@@ -1027,7 +1086,7 @@ func (l *openAIWSIngressContextLease) WriteJSONWithContextTimeout(ctx context.Co
 	if err := conn.WriteJSON(writeCtx, value); err != nil {
 		return err
 	}
-	l.context.touchLease(time.Now(), l.pool.idleTTL)
+	l.context.maybeTouchLease(l.pool.idleTTL)
 	return nil
 }
 
@@ -1049,7 +1108,7 @@ func (l *openAIWSIngressContextLease) ReadMessageWithContextTimeout(ctx context.
 	if err != nil {
 		return nil, err
 	}
-	l.context.touchLease(time.Now(), l.pool.idleTTL)
+	l.context.maybeTouchLease(l.pool.idleTTL)
 	return payload, nil
 }
 
@@ -1067,7 +1126,7 @@ func (l *openAIWSIngressContextLease) PingWithTimeout(timeout time.Duration) err
 	if err := conn.Ping(pingCtx); err != nil {
 		return err
 	}
-	l.context.touchLease(time.Now(), l.pool.idleTTL)
+	l.context.maybeTouchLease(l.pool.idleTTL)
 	return nil
 }
 
@@ -1075,6 +1134,9 @@ func (l *openAIWSIngressContextLease) MarkBroken() {
 	if l == nil || l.pool == nil || l.context == nil || l.released.Load() {
 		return
 	}
+	l.cachedConnMu.Lock()
+	l.cachedConn = nil
+	l.cachedConnMu.Unlock()
 	l.pool.markContextBroken(l.context)
 }
 
@@ -1085,5 +1147,8 @@ func (l *openAIWSIngressContextLease) Release() {
 	if !l.released.CompareAndSwap(false, true) {
 		return
 	}
+	l.cachedConnMu.Lock()
+	l.cachedConn = nil
+	l.cachedConnMu.Unlock()
 	l.pool.releaseContext(l.context, l.ownerID)
 }

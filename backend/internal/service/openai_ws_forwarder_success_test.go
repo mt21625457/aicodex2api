@@ -212,6 +212,16 @@ func TestIsOpenAIWSIngressToolOutputNotFound(t *testing.T) {
 	require.False(t, isOpenAIWSIngressToolOutputNotFound(errors.New("plain")))
 }
 
+func TestShouldPersistOpenAIWSLastResponseID(t *testing.T) {
+	require.True(t, shouldPersistOpenAIWSLastResponseID("response.completed"))
+	require.True(t, shouldPersistOpenAIWSLastResponseID("response.done"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID("response.failed"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID("response.incomplete"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID("response.cancelled"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID("response.canceled"))
+	require.False(t, shouldPersistOpenAIWSLastResponseID(""))
+}
+
 func TestOpenAIWSIngressSessionScopeHelpers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

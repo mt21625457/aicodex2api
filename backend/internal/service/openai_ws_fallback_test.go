@@ -117,6 +117,131 @@ func TestClassifyOpenAIWSErrorEvent(t *testing.T) {
 	reason, recoverable = classifyOpenAIWSErrorEventFromRaw("", "invalid_request_error", "No tool output found for function call call_abc123.")
 	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
 	require.True(t, recoverable)
+
+	// reasoning orphaned items should reuse tool_output_not_found recovery path.
+	reason, recoverable = classifyOpenAIWSErrorEventFromRaw(
+		"",
+		"invalid_request_error",
+		"Item 'rs_xxx' of type 'reasoning' was provided without its required following item.",
+	)
+	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
+	require.True(t, recoverable)
+
+	reason, recoverable = classifyOpenAIWSErrorEventFromRaw(
+		"",
+		"invalid_request_error",
+		"Item 'rs_xxx' of type 'reasoning' was provided without its required preceding item.",
+	)
+	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
+	require.True(t, recoverable)
+}
+
+func TestClassifyOpenAIWSErrorEventFromRaw_AllBranches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		codeRaw     string
+		errTypeRaw  string
+		msgRaw      string
+		wantReason  string
+		wantRecover bool
+	}{
+		{
+			name:        "code_upgrade_required",
+			codeRaw:     "upgrade_required",
+			wantReason:  "upgrade_required",
+			wantRecover: true,
+		},
+		{
+			name:        "code_ws_unsupported",
+			codeRaw:     "websocket_not_supported",
+			wantReason:  "ws_unsupported",
+			wantRecover: true,
+		},
+		{
+			name:        "code_ws_connection_limit",
+			codeRaw:     "websocket_connection_limit_reached",
+			wantReason:  "ws_connection_limit_reached",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_upgrade_required",
+			msgRaw:      "status 426 upgrade required",
+			wantReason:  "upgrade_required",
+			wantRecover: true,
+		},
+		{
+			name:        "err_type_upgrade",
+			errTypeRaw:  "gateway_upgrade_error",
+			wantReason:  "upgrade_required",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_ws_unsupported",
+			msgRaw:      "websocket is unsupported in this region",
+			wantReason:  "ws_unsupported",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_ws_connection_limit",
+			msgRaw:      "websocket connection limit exceeded",
+			wantReason:  "ws_connection_limit_reached",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_previous_response_not_found_variant",
+			msgRaw:      "previous response is not found",
+			wantReason:  "previous_response_not_found",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_no_tool_output",
+			msgRaw:      "No tool output found for function call call_abc.",
+			wantReason:  openAIWSIngressStageToolOutputNotFound,
+			wantRecover: true,
+		},
+		{
+			name:        "msg_reasoning_missing_following",
+			msgRaw:      "Item 'rs_xxx' of type 'reasoning' was provided without its required following item.",
+			wantReason:  openAIWSIngressStageToolOutputNotFound,
+			wantRecover: true,
+		},
+		{
+			name:        "msg_reasoning_missing_preceding",
+			msgRaw:      "Item 'rs_xxx' of type 'reasoning' was provided without its required preceding item.",
+			wantReason:  openAIWSIngressStageToolOutputNotFound,
+			wantRecover: true,
+		},
+		{
+			name:        "server_error_by_type",
+			errTypeRaw:  "server_error",
+			wantReason:  "upstream_error_event",
+			wantRecover: true,
+		},
+		{
+			name:        "server_error_by_code",
+			codeRaw:     "server_error",
+			wantReason:  "upstream_error_event",
+			wantRecover: true,
+		},
+		{
+			name:        "unknown_event_error",
+			codeRaw:     "other",
+			errTypeRaw:  "other",
+			msgRaw:      "other",
+			wantReason:  "event_error",
+			wantRecover: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, recoverable := classifyOpenAIWSErrorEventFromRaw(tt.codeRaw, tt.errTypeRaw, tt.msgRaw)
+			require.Equal(t, tt.wantReason, reason)
+			require.Equal(t, tt.wantRecover, recoverable)
+		})
+	}
 }
 
 func TestClassifyOpenAIWSReconnectReason(t *testing.T) {

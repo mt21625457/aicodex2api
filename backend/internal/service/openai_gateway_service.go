@@ -212,6 +212,11 @@ type OpenAIForwardResult struct {
 	OpenAIWSMode    bool
 	Duration        time.Duration
 	FirstTokenMs    *int
+	// TerminalEventType records the terminal event that ended the WS turn.
+	TerminalEventType string
+	// PendingFunctionCallIDs 表示该 response 中未完成的 function_call call_id 集合。
+	// 仅在 WS ingress 连续对话场景用于续链自愈，不参与外部 API 返回。
+	PendingFunctionCallIDs []string
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
@@ -3469,13 +3474,16 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	inserted, err := s.usageLogRepo.Create(ctx, usageLog)
+	if err != nil {
+		return fmt.Errorf("create usage log: %w", err)
+	}
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		logger.LegacyPrintf("service.openai_gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)
 		return nil
 	}
 
-	shouldBill := inserted || err != nil
+	shouldBill := inserted
 
 	// Deduct based on billing type
 	if isSubscriptionBilling {

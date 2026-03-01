@@ -30,6 +30,39 @@ api.sub2api.com {
 	# =========================================================================
 	# 反向代理配置
 	# =========================================================================
+	# OpenAI Responses（含 WebSocket/SSE）单独代理策略：
+	# 1) flush_interval -1：尽快转发流式分片，降低中间层缓冲导致的断流概率
+	# 2) versions 1.1：确保上游走标准 HTTP/1.1 Upgrade，避免协议协商差异
+	# 3) stream_timeout/stream_close_delay：为长连接提供更宽松生命周期
+	@openai_responses {
+		path /openai/v1/responses*
+	}
+	reverse_proxy @openai_responses localhost:8080 {
+		# 长连接/流式场景建议关闭代理缓冲
+		flush_interval -1
+		# 长连接超时窗口（避免长会话被代理层过早回收）
+		stream_timeout 24h
+		# 配置热重载时，给现有流预留关闭缓冲期
+		stream_close_delay 5m
+
+		# 传递真实客户端信息
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+		header_up CF-Connecting-IP {http.request.header.CF-Connecting-IP}
+
+		transport http {
+			# WebSocket Upgrade 对上游统一使用 HTTP/1.1，更稳妥
+			versions 1.1
+			keepalive 120s
+			keepalive_idle_conns 256
+			read_buffer 32KB
+			write_buffer 32KB
+			compression off
+		}
+	}
+
 	reverse_proxy localhost:8080 {
 		# 健康检查
 		health_uri /health

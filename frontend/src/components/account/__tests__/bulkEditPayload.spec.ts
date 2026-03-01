@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   OPENAI_WS_MODE_OFF,
-  OPENAI_WS_MODE_SHARED,
-  OPENAI_WS_MODE_DEDICATED
+  OPENAI_WS_MODE_CTX_POOL
 } from '@/utils/openaiWsMode'
 import {
   buildBulkEditUpdatePayload,
@@ -185,7 +184,7 @@ describe('buildBulkEditUpdatePayload', () => {
         enableOpenAIPassthrough: true,
         openAIPassthroughEnabled: true,
         enableOpenAIWSMode: true,
-        openAIWSMode: OPENAI_WS_MODE_SHARED
+        openAIWSMode: OPENAI_WS_MODE_CTX_POOL
       })
     )
 
@@ -193,7 +192,7 @@ describe('buildBulkEditUpdatePayload', () => {
       extra: {
         openai_passthrough: true,
         openai_oauth_passthrough: true,
-        openai_oauth_responses_websockets_v2_mode: OPENAI_WS_MODE_SHARED,
+        openai_oauth_responses_websockets_v2_mode: OPENAI_WS_MODE_CTX_POOL,
         openai_oauth_responses_websockets_v2_enabled: true
       }
     })
@@ -221,7 +220,7 @@ describe('buildBulkEditUpdatePayload', () => {
       createInput({
         scopeType: 'setup-token',
         enableOpenAIWSMode: true,
-        openAIWSMode: OPENAI_WS_MODE_DEDICATED
+        openAIWSMode: OPENAI_WS_MODE_CTX_POOL
       })
     )
 

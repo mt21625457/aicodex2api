@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -529,7 +530,7 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 	}`)
 
 	t.Run("strict_incremental_keep", func(t *testing.T) {
-		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "resp_turn_1", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "resp_turn_1", false, nil, nil)
 		require.NoError(t, err)
 		require.True(t, keep)
 		require.Equal(t, "strict_incremental_ok", reason)
@@ -537,28 +538,28 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 
 	t.Run("missing_previous_response_id", func(t *testing.T) {
 		payload := []byte(`{"type":"response.create","model":"gpt-5.1","input":[]}`)
-		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false, nil, nil)
 		require.NoError(t, err)
 		require.False(t, keep)
 		require.Equal(t, "missing_previous_response_id", reason)
 	})
 
 	t.Run("missing_last_turn_response_id", func(t *testing.T) {
-		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "", false, nil, nil)
 		require.NoError(t, err)
 		require.False(t, keep)
 		require.Equal(t, "missing_last_turn_response_id", reason)
 	})
 
 	t.Run("previous_response_id_mismatch", func(t *testing.T) {
-		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "resp_turn_other", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, currentStrictPayload, "resp_turn_other", false, nil, nil)
 		require.NoError(t, err)
 		require.False(t, keep)
 		require.Equal(t, "previous_response_id_mismatch", reason)
 	})
 
 	t.Run("missing_previous_turn_payload", func(t *testing.T) {
-		keep, reason, err := shouldKeepIngressPreviousResponseID(nil, currentStrictPayload, "resp_turn_1", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(nil, currentStrictPayload, "resp_turn_1", false, nil, nil)
 		require.NoError(t, err)
 		require.False(t, keep)
 		require.Equal(t, "missing_previous_turn_payload", reason)
@@ -573,7 +574,7 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 			"previous_response_id":"resp_turn_1",
 			"input":[{"type":"input_text","text":"hello"},{"type":"input_text","text":"world"}]
 		}`)
-		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false, nil, nil)
 		require.NoError(t, err)
 		require.False(t, keep)
 		require.Equal(t, "non_input_changed", reason)
@@ -588,7 +589,7 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 			"previous_response_id":"resp_turn_1",
 			"input":[{"type":"input_text","text":"different"}]
 		}`)
-		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", false, nil, nil)
 		require.NoError(t, err)
 		require.True(t, keep)
 		require.Equal(t, "strict_incremental_ok", reason)
@@ -602,21 +603,63 @@ func TestShouldKeepIngressPreviousResponseID(t *testing.T) {
 			"previous_response_id":"resp_external",
 			"input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]
 		}`)
-		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", true)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, payload, "resp_turn_1", true, nil, []string{"call_1"})
 		require.NoError(t, err)
 		require.True(t, keep)
 		require.Equal(t, "has_function_call_output", reason)
 	})
 
+	t.Run("function_call_output_pending_call_id_match_keeps_previous_response_id", func(t *testing.T) {
+		payload := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1",
+			"store":false,
+			"previous_response_id":"resp_turn_1",
+			"input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]
+		}`)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(
+			previousPayload,
+			payload,
+			"resp_turn_1",
+			true,
+			[]string{"call_1"},
+			[]string{"call_1"},
+		)
+		require.NoError(t, err)
+		require.True(t, keep)
+		require.Equal(t, "function_call_output_call_id_match", reason)
+	})
+
+	t.Run("function_call_output_pending_call_id_mismatch_drops_previous_response_id", func(t *testing.T) {
+		payload := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.1",
+			"store":false,
+			"previous_response_id":"resp_turn_1",
+			"input":[{"type":"function_call_output","call_id":"call_other","output":"ok"}]
+		}`)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(
+			previousPayload,
+			payload,
+			"resp_turn_1",
+			true,
+			[]string{"call_1"},
+			[]string{"call_other"},
+		)
+		require.NoError(t, err)
+		require.False(t, keep)
+		require.Equal(t, "function_call_output_call_id_mismatch", reason)
+	})
+
 	t.Run("non_input_compare_error", func(t *testing.T) {
-		keep, reason, err := shouldKeepIngressPreviousResponseID([]byte(`[]`), currentStrictPayload, "resp_turn_1", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID([]byte(`[]`), currentStrictPayload, "resp_turn_1", false, nil, nil)
 		require.Error(t, err)
 		require.False(t, keep)
 		require.Equal(t, "non_input_compare_error", reason)
 	})
 
 	t.Run("current_payload_compare_error", func(t *testing.T) {
-		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, []byte(`{"previous_response_id":"resp_turn_1","input":[}`), "resp_turn_1", false)
+		keep, reason, err := shouldKeepIngressPreviousResponseID(previousPayload, []byte(`{"previous_response_id":"resp_turn_1","input":[}`), "resp_turn_1", false, nil, nil)
 		require.Error(t, err)
 		require.False(t, keep)
 		require.Equal(t, "non_input_compare_error", reason)
@@ -669,6 +712,171 @@ func TestBuildOpenAIWSReplayInputSequence(t *testing.T) {
 		require.Len(t, items, 2)
 		require.Equal(t, "hello", gjson.GetBytes(items[0], "text").String())
 		require.Equal(t, "world", gjson.GetBytes(items[1], "text").String())
+	})
+
+	t.Run("replay_input_limited_by_bytes_keeps_newest_items", func(t *testing.T) {
+		makeItem := func(text string) json.RawMessage {
+			raw, err := json.Marshal(map[string]any{
+				"type": "input_text",
+				"text": text,
+			})
+			require.NoError(t, err)
+			return json.RawMessage(raw)
+		}
+		largeA := strings.Repeat("a", openAIWSIngressReplayInputMaxBytes/2)
+		largeB := strings.Repeat("b", openAIWSIngressReplayInputMaxBytes/2)
+		largeC := strings.Repeat("c", openAIWSIngressReplayInputMaxBytes/2)
+		previousLarge := []json.RawMessage{
+			makeItem(largeA),
+			makeItem(largeB),
+		}
+		currentPayload, err := json.Marshal(map[string]any{
+			"previous_response_id": "resp_1",
+			"input": []map[string]any{
+				{"type": "input_text", "text": largeC},
+			},
+		})
+		require.NoError(t, err)
+
+		items, exists, err := buildOpenAIWSReplayInputSequence(
+			previousLarge,
+			true,
+			currentPayload,
+			true,
+		)
+		require.NoError(t, err)
+		require.True(t, exists)
+		require.GreaterOrEqual(t, len(items), 1)
+		require.Equal(t, largeC, gjson.GetBytes(items[len(items)-1], "text").String(), "latest item should always be preserved")
+		require.Less(t, len(items), 3, "oversized replay input should be truncated")
+	})
+
+	t.Run("replay_input_limited_by_bytes_still_keeps_single_oversized_latest_item", func(t *testing.T) {
+		tooLargeText := strings.Repeat("z", openAIWSIngressReplayInputMaxBytes+1024)
+		currentPayload, err := json.Marshal(map[string]any{
+			"input": []map[string]any{
+				{"type": "input_text", "text": tooLargeText},
+			},
+		})
+		require.NoError(t, err)
+
+		items, exists, err := buildOpenAIWSReplayInputSequence(
+			nil,
+			false,
+			currentPayload,
+			false,
+		)
+		require.NoError(t, err)
+		require.True(t, exists)
+		require.Len(t, items, 1)
+		require.Equal(t, tooLargeText, gjson.GetBytes(items[0], "text").String())
+	})
+}
+
+func TestOpenAIWSInputAppearsEditedFromPreviousFullInput(t *testing.T) {
+	t.Parallel()
+
+	makeItems := func(values ...string) []json.RawMessage {
+		items := make([]json.RawMessage, 0, len(values))
+		for _, v := range values {
+			raw, err := json.Marshal(map[string]any{
+				"type": "input_text",
+				"text": v,
+			})
+			require.NoError(t, err)
+			items = append(items, json.RawMessage(raw))
+		}
+		return items
+	}
+
+	previous := makeItems("hello", "world")
+
+	t.Run("skip_when_no_previous_response_id", func(t *testing.T) {
+		edited, err := openAIWSInputAppearsEditedFromPreviousFullInput(
+			previous,
+			true,
+			[]byte(`{"input":[{"type":"input_text","text":"HELLO_EDITED"},{"type":"input_text","text":"world"}]}`),
+			false,
+		)
+		require.NoError(t, err)
+		require.False(t, edited)
+	})
+
+	t.Run("skip_when_previous_full_input_missing", func(t *testing.T) {
+		edited, err := openAIWSInputAppearsEditedFromPreviousFullInput(
+			nil,
+			false,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"HELLO_EDITED"},{"type":"input_text","text":"world"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.False(t, edited)
+	})
+
+	t.Run("error_when_current_payload_invalid", func(t *testing.T) {
+		edited, err := openAIWSInputAppearsEditedFromPreviousFullInput(
+			previous,
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[}`),
+			true,
+		)
+		require.Error(t, err)
+		require.False(t, edited)
+	})
+
+	t.Run("skip_when_current_input_missing", func(t *testing.T) {
+		edited, err := openAIWSInputAppearsEditedFromPreviousFullInput(
+			previous,
+			true,
+			[]byte(`{"previous_response_id":"resp_1"}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.False(t, edited)
+	})
+
+	t.Run("skip_when_previous_len_lt_2", func(t *testing.T) {
+		edited, err := openAIWSInputAppearsEditedFromPreviousFullInput(
+			makeItems("hello"),
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"HELLO_EDITED"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.False(t, edited)
+	})
+
+	t.Run("skip_when_current_shorter_than_previous", func(t *testing.T) {
+		edited, err := openAIWSInputAppearsEditedFromPreviousFullInput(
+			previous,
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"world"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.False(t, edited)
+	})
+
+	t.Run("skip_when_current_has_previous_prefix", func(t *testing.T) {
+		edited, err := openAIWSInputAppearsEditedFromPreviousFullInput(
+			previous,
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"hello"},{"type":"input_text","text":"world"},{"type":"input_text","text":"new"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.False(t, edited)
+	})
+
+	t.Run("detect_when_current_is_full_snapshot_edit", func(t *testing.T) {
+		edited, err := openAIWSInputAppearsEditedFromPreviousFullInput(
+			previous,
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"HELLO_EDITED"},{"type":"input_text","text":"world"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.True(t, edited)
 	})
 }
 

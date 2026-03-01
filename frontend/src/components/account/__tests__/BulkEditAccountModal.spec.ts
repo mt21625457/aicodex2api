@@ -77,7 +77,7 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.text()).not.toContain('GPT-5.3 Codex')
   })
 
-  it('OpenAI OAuth 范围 WS mode 选项包含 ctx_pool', () => {
+  it('OpenAI OAuth 范围 WS mode 选项仅保留 off 与 ctx_pool', () => {
     const wrapper = mountModal(
       { scopePlatform: 'openai', scopeType: 'oauth' },
       {
@@ -87,6 +87,9 @@ describe('BulkEditAccountModal', () => {
       }
     )
 
+    expect(wrapper.text()).toContain('off')
     expect(wrapper.text()).toContain('ctx_pool')
+    expect(wrapper.text()).not.toContain('shared')
+    expect(wrapper.text()).not.toContain('dedicated')
   })
 })
