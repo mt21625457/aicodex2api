@@ -4023,51 +4023,20 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					return true
 				}
 			}
-			// Layer 2 降级：set/align 策略均失败，移除 previous_response_id 后完整重放。
-			// 保留无效 ID 重试 (retry_keep) 100% 必败，改为 drop 以避免死循环。
+			// function_call_output 与 previous_response_id 语义绑定：
+			// function_call_output 引用了前一个 response 中的 call_id，
+			// 移除 previous_response_id 但保留 function_call_output 会导致上游报错
+			// "No tool call found for function call output with call_id ..."。
+			// 此场景在网关层不可恢复，返回 false 走 abort 路径通知客户端，
+			// 客户端收到错误后会重置并发送完整请求（不带 previous_response_id）。
 			logOpenAIWSModeInfo(
-				"ingress_ws_prev_response_recovery account_id=%d turn=%d conn_id=%s action=drop_previous_response_id_function_call_fallback previous_response_id=%s",
+				"ingress_ws_prev_response_recovery account_id=%d turn=%d conn_id=%s action=abort_function_call_unrecoverable previous_response_id=%s",
 				account.ID,
 				turn,
 				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
 				truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
 			)
-			droppedPayload, removed, dropErr := dropPreviousResponseIDFromRawPayload(currentPayload)
-			if dropErr != nil || !removed {
-				dropReason := "not_removed"
-				if dropErr != nil {
-					dropReason = "drop_error"
-				}
-				logOpenAIWSModeInfo(
-					"ingress_ws_prev_response_recovery_skip account_id=%d turn=%d conn_id=%s reason=%s",
-					account.ID,
-					turn,
-					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
-					normalizeOpenAIWSLogValue(dropReason),
-				)
-				return false
-			}
-			droppedWithInput, setInputErr := setOpenAIWSPayloadInputSequence(
-				droppedPayload,
-				currentTurnReplayInput,
-				currentTurnReplayInputExists,
-			)
-			if setInputErr != nil {
-				logOpenAIWSModeInfo(
-					"ingress_ws_prev_response_recovery_skip account_id=%d turn=%d conn_id=%s reason=set_full_input_error cause=%s",
-					account.ID,
-					turn,
-					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
-					truncateOpenAIWSLogValue(setInputErr.Error(), openAIWSLogValueMaxLen),
-				)
-				return false
-			}
-			currentPayload = droppedWithInput
-			currentPayloadBytes = len(droppedWithInput)
-			clearSessionLastResponseID()
-			resetSessionLease(true)
-			skipBeforeTurn = true
-			return true
+			return false
 		}
 		if isStrictAffinityTurn(currentPayload) {
 			// Layer 2：严格亲和链路命中 previous_response_not_found 时，降级为“去掉 previous_response_id 后重放一次”。
