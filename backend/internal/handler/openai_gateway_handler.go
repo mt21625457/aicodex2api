@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -115,30 +116,29 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	setOpsRequestContext(c, "", false, body)
-
-	// 校验请求体 JSON 合法性
+	// 校验请求体 JSON 合法性，避免畸形 JSON 被 gjson 部分解析后继续下游处理。
 	if !gjson.ValidBytes(body) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
 
-	// 使用 gjson 只读提取字段做校验，避免完整 Unmarshal
-	modelResult := gjson.GetBytes(body, "model")
+	// 使用 GetManyBytes 一次扫描提取所有字段，避免多次遍历大请求体
+	results := gjson.GetManyBytes(body, "model", "stream", "previous_response_id")
+	modelResult := results[0]
 	if !modelResult.Exists() || modelResult.Type != gjson.String || modelResult.String() == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
 	reqModel := modelResult.String()
 
-	streamResult := gjson.GetBytes(body, "stream")
+	streamResult := results[1]
 	if streamResult.Exists() && streamResult.Type != gjson.True && streamResult.Type != gjson.False {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "invalid stream field type")
 		return
 	}
 	reqStream := streamResult.Bool()
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
-	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+	previousResponseID := strings.TrimSpace(results[2].String())
 	if previousResponseID != "" {
 		previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
 		reqLog = reqLog.With(
@@ -156,6 +156,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
+
+	// 缓存已提取的 meta 到 context，供 Service 层复用，避免重复解析请求体
+	c.Set(service.OpenAIRequestMetaKey, &service.OpenAIRequestMeta{
+		Model:  reqModel,
+		Stream: reqStream,
+	})
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
 	if !h.validateFunctionCallOutputRequest(c, body, reqLog) {
@@ -315,18 +321,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
+		requestID := strings.TrimSpace(c.GetHeader("X-Request-ID"))
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		h.submitUsageRecordTask(func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:        result,
-				APIKey:        apiKey,
-				User:          apiKey.User,
-				Account:       account,
-				Subscription:  subscription,
-				UserAgent:     userAgent,
-				IPAddress:     clientIP,
-				APIKeyService: h.apiKeyService,
+				Result:            result,
+				APIKey:            apiKey,
+				User:              apiKey.User,
+				Account:           account,
+				Subscription:      subscription,
+				UserAgent:         userAgent,
+				IPAddress:         clientIP,
+				FallbackRequestID: requestID,
+				APIKeyService:     h.apiKeyService,
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.responses"),
@@ -556,6 +564,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	reqLog.Info("openai.websocket_ingress_started")
 	clientIP := ip.GetClientIP(c)
 	userAgent := strings.TrimSpace(c.GetHeader("User-Agent"))
+	requestID := strings.TrimSpace(c.GetHeader("X-Request-ID"))
 
 	wsConn, err := coderws.Accept(c.Writer, c.Request, &coderws.AcceptOptions{
 		CompressionMode: coderws.CompressionNoContextTakeover,
@@ -732,10 +741,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.String("openai_ws_ingress_mode", wsIngressMode),
 	)
 
+	var turnScheduleReported atomic.Bool
 	hooks := &service.OpenAIWSIngressHooks{
 		BeforeTurn: func(turn int) error {
 			if turn == 1 {
 				return nil
+			}
+			if err := h.billingCacheService.CheckBillingEligibility(ctx, apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
+				return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "billing check failed", err)
 			}
 			// 防御式清理：避免异常路径下旧槽位覆盖导致泄漏。
 			releaseTurnSlots()
@@ -766,7 +779,35 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		},
 		AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
 			releaseTurnSlots()
-			if turnErr != nil || result == nil {
+			if turnErr != nil {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
+				turnScheduleReported.Store(true)
+				if partialResult, ok := service.OpenAIWSIngressTurnPartialResult(turnErr); ok && partialResult != nil {
+					h.submitUsageRecordTask(func(taskCtx context.Context) {
+						if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
+							Result:            partialResult,
+							APIKey:            apiKey,
+							User:              apiKey.User,
+							Account:           account,
+							Subscription:      subscription,
+							UserAgent:         userAgent,
+							IPAddress:         clientIP,
+							FallbackRequestID: requestID,
+							APIKeyService:     h.apiKeyService,
+						}); err != nil {
+							reqLog.Error("openai.websocket_record_partial_usage_failed",
+								zap.Int64("account_id", account.ID),
+								zap.String("request_id", partialResult.RequestID),
+								zap.Error(err),
+							)
+						}
+					})
+				}
+				return
+			}
+			if result == nil {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
+				turnScheduleReported.Store(true)
 				return
 			}
 			var turnTTFTMs float64
@@ -774,16 +815,18 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				turnTTFTMs = float64(*result.FirstTokenMs)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs, reqModel, turnTTFTMs)
+			turnScheduleReported.Store(true)
 			h.submitUsageRecordTask(func(taskCtx context.Context) {
 				if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
-					Result:        result,
-					APIKey:        apiKey,
-					User:          apiKey.User,
-					Account:       account,
-					Subscription:  subscription,
-					UserAgent:     userAgent,
-					IPAddress:     clientIP,
-					APIKeyService: h.apiKeyService,
+					Result:            result,
+					APIKey:            apiKey,
+					User:              apiKey.User,
+					Account:           account,
+					Subscription:      subscription,
+					UserAgent:         userAgent,
+					IPAddress:         clientIP,
+					FallbackRequestID: requestID,
+					APIKeyService:     h.apiKeyService,
 				}); err != nil {
 					reqLog.Error("openai.websocket_record_usage_failed",
 						zap.Int64("account_id", account.ID),
@@ -796,7 +839,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 
 	if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, firstMessage, hooks); err != nil {
-		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
+		if !turnScheduleReported.Load() {
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
+		}
 		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
 		reqLog.Warn("openai.websocket_proxy_failed",
 			zap.Int64("account_id", account.ID),
@@ -899,47 +944,12 @@ func getContextInt64(c *gin.Context, key string) (int64, bool) {
 }
 
 func (h *OpenAIGatewayHandler) submitUsageRecordTask(task service.UsageRecordTask) {
-	if task == nil {
-		return
-	}
-	if h.usageRecordWorkerPool != nil {
-		mode := h.usageRecordWorkerPool.Submit(task)
-		if mode != service.UsageRecordSubmitModeDropped {
-			return
-		}
-		// 队列溢出导致 submit 丢弃时，同步兜底执行，避免 usage 漏记费。
-		logger.L().With(
-			zap.String("component", "handler.openai_gateway.responses"),
-			zap.String("submit_mode", mode.String()),
-		).Warn("openai.usage_record_task_submit_dropped_sync_fallback")
-	}
-	// 回退路径：worker 池未注入时同步执行，避免退回到无界 goroutine 模式。
-	ctx, cancel := context.WithTimeout(context.Background(), h.usageRecordSyncFallbackTimeout())
-	defer cancel()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			logger.L().With(
-				zap.String("component", "handler.openai_gateway.responses"),
-				zap.Any("panic", recovered),
-			).Error("openai.usage_record_task_panic_recovered")
-		}
-	}()
-	task(ctx)
-}
-
-func (h *OpenAIGatewayHandler) usageRecordSyncFallbackTimeout() time.Duration {
-	timeout := 10 * time.Second
-	if h != nil && h.cfg != nil && h.cfg.Gateway.UsageRecord.TaskTimeoutSeconds > 0 {
-		timeout = time.Duration(h.cfg.Gateway.UsageRecord.TaskTimeoutSeconds) * time.Second
-	}
-	// keep a sane bound on synchronous fallback to limit request-path blocking.
-	if timeout < time.Second {
-		return time.Second
-	}
-	if timeout > 10*time.Second {
-		return 10 * time.Second
-	}
-	return timeout
+	submitUsageRecordTaskWithFallback(
+		"handler.openai_gateway.responses",
+		h.usageRecordWorkerPool,
+		h.cfg,
+		task,
+	)
 }
 
 // handleConcurrencyError handles concurrency-related errors with proper 429 response

@@ -1,13 +1,19 @@
 package repository
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -112,6 +118,16 @@ func (s *HTTPUpstreamSuite) TestDo_WithoutProxy_GoesDirect() {
 	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	require.Equal(s.T(), "direct", string(b), "unexpected body")
+}
+
+func (s *HTTPUpstreamSuite) TestDo_RequestErrorPath() {
+	svc := s.newService()
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:1/unreachable", nil)
+	require.NoError(s.T(), err)
+
+	resp, doErr := svc.Do(req, "", 1, 1)
+	require.Nil(s.T(), resp)
+	require.Error(s.T(), doErr)
 }
 
 // TestDo_WithHTTPProxy_UsesProxy 测试 HTTP 代理功能
@@ -272,6 +288,430 @@ func (s *HTTPUpstreamSuite) TestIdleTTLDoesNotEvictActive() {
 	_ = svc.getOrCreateClient("", 2, 1)
 
 	require.True(s.T(), hasEntry(svc, entry1), "有活跃请求时不应回收")
+}
+
+func (s *HTTPUpstreamSuite) TestOpenAIProfile_UsesHTTP2TransportForHTTPProxy() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{
+			Enabled:                   true,
+			AllowProxyFallbackToHTTP1: true,
+			FallbackErrorThreshold:    2,
+			FallbackWindowSeconds:     60,
+			FallbackTTLSeconds:        600,
+		},
+	}
+	svc := s.newService()
+
+	entry, err := svc.getClientEntry("http://proxy.local:8080", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH2, entry.protocolMode)
+
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.True(s.T(), transport.ForceAttemptHTTP2, "OpenAI profile should prefer HTTP/2")
+	require.Nil(s.T(), transport.TLSNextProto, "HTTP/2 mode should not force-disable TLSNextProto")
+}
+
+func (s *HTTPUpstreamSuite) TestOpenAIProfile_FallbackToHTTP11WhenProxyMarkedIncompatible() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{
+			Enabled:                   true,
+			AllowProxyFallbackToHTTP1: true,
+			FallbackErrorThreshold:    2,
+			FallbackWindowSeconds:     60,
+			FallbackTTLSeconds:        600,
+		},
+	}
+	svc := s.newService()
+	proxyURL := "http://proxy.local:8080"
+
+	state := svc.getOrCreateOpenAIHTTP2FallbackState(proxyURL)
+	state.mu.Lock()
+	state.fallbackUntil = time.Now().Add(3 * time.Minute)
+	state.mu.Unlock()
+
+	entry, err := svc.getClientEntry(proxyURL, 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH1Fallback, entry.protocolMode)
+
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.False(s.T(), transport.ForceAttemptHTTP2, "fallback mode must disable HTTP/2 force-attempt")
+	require.NotNil(s.T(), transport.TLSNextProto, "fallback mode must disable HTTP/2 negotiation")
+}
+
+func (s *HTTPUpstreamSuite) TestOpenAIProfile_RecordHTTP2ErrorActivatesFallback() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{
+			Enabled:                   true,
+			AllowProxyFallbackToHTTP1: true,
+			FallbackErrorThreshold:    2,
+			FallbackWindowSeconds:     60,
+			FallbackTTLSeconds:        600,
+		},
+	}
+	svc := s.newService()
+	proxyURL := "http://proxy.local:8080"
+	h2Err := errors.New("http2: stream error")
+
+	svc.recordOpenAIHTTP2Failure(service.HTTPUpstreamProfileOpenAI, upstreamProtocolModeOpenAIH2, proxyURL, h2Err)
+	require.False(s.T(), svc.isOpenAIHTTP2FallbackActive(proxyURL), "first error should not activate fallback")
+
+	svc.recordOpenAIHTTP2Failure(service.HTTPUpstreamProfileOpenAI, upstreamProtocolModeOpenAIH2, proxyURL, h2Err)
+	require.True(s.T(), svc.isOpenAIHTTP2FallbackActive(proxyURL), "second error in window should activate fallback")
+}
+
+func (s *HTTPUpstreamSuite) TestOpenAIProfile_RecordNonHTTP2ErrorDoesNotActivateFallback() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{
+			Enabled:                   true,
+			AllowProxyFallbackToHTTP1: true,
+			FallbackErrorThreshold:    1,
+			FallbackWindowSeconds:     60,
+			FallbackTTLSeconds:        600,
+		},
+	}
+	svc := s.newService()
+	proxyURL := "http://proxy.local:8080"
+
+	svc.recordOpenAIHTTP2Failure(service.HTTPUpstreamProfileOpenAI, upstreamProtocolModeOpenAIH2, proxyURL, errors.New("dial tcp: i/o timeout"))
+	require.False(s.T(), svc.isOpenAIHTTP2FallbackActive(proxyURL))
+}
+
+func (s *HTTPUpstreamSuite) TestDoWithTLS_DisabledDelegatesToDo() {
+	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	s.T().Cleanup(upstream.Close)
+
+	svc := s.newService()
+	req, err := http.NewRequest(http.MethodGet, upstream.URL+"/tls-disabled", nil)
+	require.NoError(s.T(), err)
+
+	resp, err := svc.DoWithTLS(req, "", 1, 1, false)
+	require.NoError(s.T(), err)
+	defer func() { _ = resp.Body.Close() }()
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(s.T(), readErr)
+	require.Equal(s.T(), "ok", string(body))
+}
+
+func (s *HTTPUpstreamSuite) TestDoWithTLS_EnabledHTTPRequestSuccess() {
+	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "tls-enabled")
+	}))
+	s.T().Cleanup(upstream.Close)
+
+	svc := s.newService()
+	req, err := http.NewRequest(http.MethodGet, upstream.URL+"/tls-enabled", nil)
+	require.NoError(s.T(), err)
+
+	resp, err := svc.DoWithTLS(req, "", 9, 1, true)
+	require.NoError(s.T(), err)
+	defer func() { _ = resp.Body.Close() }()
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(s.T(), readErr)
+	require.Equal(s.T(), "tls-enabled", string(body))
+}
+
+func (s *HTTPUpstreamSuite) TestDoWithTLS_EnabledRequestError() {
+	svc := s.newService()
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:1/tls-error", nil)
+	require.NoError(s.T(), err)
+
+	resp, doErr := svc.DoWithTLS(req, "", 9, 1, true)
+	require.Nil(s.T(), resp)
+	require.Error(s.T(), doErr)
+}
+
+func (s *HTTPUpstreamSuite) TestDoWithTLS_ValidateRequestHostFailure() {
+	s.cfg.Security.URLAllowlist.Enabled = true
+	s.cfg.Security.URLAllowlist.AllowPrivateHosts = false
+	svc := s.newService()
+
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1/test", nil)
+	require.NoError(s.T(), err)
+
+	resp, doErr := svc.DoWithTLS(req, "", 1, 1, true)
+	require.Nil(s.T(), resp)
+	require.Error(s.T(), doErr)
+}
+
+func (s *HTTPUpstreamSuite) TestShouldValidateResolvedIPAndValidateRequestHost() {
+	svc := s.newService()
+	require.False(s.T(), svc.shouldValidateResolvedIP())
+	require.NoError(s.T(), svc.validateRequestHost(nil))
+
+	s.cfg.Security.URLAllowlist.Enabled = true
+	s.cfg.Security.URLAllowlist.AllowPrivateHosts = false
+	require.True(s.T(), svc.shouldValidateResolvedIP())
+	require.Error(s.T(), svc.validateRequestHost(nil))
+
+	req, err := http.NewRequest(http.MethodGet, "http:///nohost", nil)
+	require.NoError(s.T(), err)
+	require.Error(s.T(), svc.validateRequestHost(req))
+}
+
+func (s *HTTPUpstreamSuite) TestRedirectCheckerStopsAfterLimit() {
+	svc := s.newService()
+	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	require.NoError(s.T(), err)
+
+	via := make([]*http.Request, 10)
+	require.Error(s.T(), svc.redirectChecker(req, via))
+}
+
+func (s *HTTPUpstreamSuite) TestRedirectCheckerValidatesRequestHost() {
+	s.cfg.Security.URLAllowlist.Enabled = true
+	s.cfg.Security.URLAllowlist.AllowPrivateHosts = false
+	svc := s.newService()
+
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1", nil)
+	require.NoError(s.T(), err)
+	require.Error(s.T(), svc.redirectChecker(req, nil))
+}
+
+func (s *HTTPUpstreamSuite) TestShouldReuseEntryAndEvictBranches() {
+	svc := s.newService()
+	entry := &upstreamClientEntry{
+		proxyKey: "proxy-a",
+		poolKey:  "pool-a",
+	}
+	require.False(s.T(), svc.shouldReuseEntry(nil, config.ConnectionPoolIsolationAccount, "proxy-a", "pool-a"))
+	require.False(s.T(), svc.shouldReuseEntry(entry, config.ConnectionPoolIsolationAccount, "proxy-b", "pool-a"))
+	require.False(s.T(), svc.shouldReuseEntry(entry, config.ConnectionPoolIsolationProxy, "proxy-a", "pool-b"))
+	require.True(s.T(), svc.shouldReuseEntry(entry, config.ConnectionPoolIsolationProxy, "proxy-x", "pool-a"))
+
+	s.cfg.Gateway.MaxUpstreamClients = 2
+	svc.clients["k1"] = &upstreamClientEntry{inFlight: 1}
+	svc.clients["k2"] = &upstreamClientEntry{inFlight: 1}
+	require.False(s.T(), svc.evictOldestIdleLocked())
+	require.False(s.T(), svc.evictOverLimitLocked())
+}
+
+func (s *HTTPUpstreamSuite) TestBuildCacheKeyAndIsolationMode() {
+	svc := s.newService()
+	require.Equal(s.T(), "account:1", buildCacheKey(config.ConnectionPoolIsolationAccount, "direct", 1))
+	require.Equal(s.T(), "account:2|proxy:px", buildCacheKey(config.ConnectionPoolIsolationAccountProxy, "px", 2))
+	require.Equal(s.T(), "proxy:direct", buildCacheKey(config.ConnectionPoolIsolationProxy, "direct", 3))
+
+	s.cfg.Gateway.ConnectionPoolIsolation = "invalid"
+	require.Equal(s.T(), config.ConnectionPoolIsolationAccountProxy, svc.getIsolationMode())
+	s.cfg.Gateway.ConnectionPoolIsolation = config.ConnectionPoolIsolationProxy
+	require.Equal(s.T(), config.ConnectionPoolIsolationProxy, svc.getIsolationMode())
+}
+
+func (s *HTTPUpstreamSuite) TestResolveProtocolModeAndSettingsBranches() {
+	svc := s.newService()
+	s.cfg.Gateway.OpenAIHTTP2 = config.GatewayOpenAIHTTP2Config{
+		Enabled:                   true,
+		AllowProxyFallbackToHTTP1: true,
+		FallbackErrorThreshold:    2,
+		FallbackWindowSeconds:     60,
+		FallbackTTLSeconds:        600,
+	}
+	parsedHTTPProxy, err := url.Parse("http://proxy.local:8080")
+	require.NoError(s.T(), err)
+	parsedSOCKSProxy, err := url.Parse("socks5://proxy.local:1080")
+	require.NoError(s.T(), err)
+
+	require.Equal(s.T(), upstreamProtocolModeDefault, svc.resolveProtocolMode(service.HTTPUpstreamProfileDefault, "direct", nil))
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH2, svc.resolveProtocolMode(service.HTTPUpstreamProfileOpenAI, "direct", nil))
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH2, svc.resolveProtocolMode(service.HTTPUpstreamProfileOpenAI, "socks5://proxy.local:1080", parsedSOCKSProxy))
+
+	state := svc.getOrCreateOpenAIHTTP2FallbackState("http://proxy.local:8080")
+	state.mu.Lock()
+	state.fallbackUntil = time.Now().Add(10 * time.Second)
+	state.mu.Unlock()
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH1Fallback, svc.resolveProtocolMode(service.HTTPUpstreamProfileOpenAI, "http://proxy.local:8080", parsedHTTPProxy))
+
+	s.cfg.Gateway.OpenAIHTTP2.Enabled = false
+	require.Equal(s.T(), upstreamProtocolModeDefault, svc.resolveProtocolMode(service.HTTPUpstreamProfileOpenAI, "http://proxy.local:8080", parsedHTTPProxy))
+}
+
+func (s *HTTPUpstreamSuite) TestGetClientEntryWithTLS_ReusesAndRebuildsOnProxyChange() {
+	s.cfg.Gateway.ConnectionPoolIsolation = config.ConnectionPoolIsolationAccount
+	svc := s.newService()
+	profile := &tlsfingerprint.Profile{Name: "tls-profile"}
+
+	entry1, err := svc.getClientEntryWithTLS("http://proxy-a.local:8080", 1, 1, profile, false, false)
+	require.NoError(s.T(), err)
+	entry2, err := svc.getClientEntryWithTLS("http://proxy-a.local:8080", 1, 1, profile, false, false)
+	require.NoError(s.T(), err)
+	require.Same(s.T(), entry1, entry2)
+
+	entry3, err := svc.getClientEntryWithTLS("http://proxy-b.local:8080", 1, 1, profile, false, false)
+	require.NoError(s.T(), err)
+	require.NotSame(s.T(), entry1, entry3)
+}
+
+func (s *HTTPUpstreamSuite) TestGetClientEntryWithTLS_OverLimitReturnsError() {
+	s.cfg.Gateway.ConnectionPoolIsolation = config.ConnectionPoolIsolationAccountProxy
+	s.cfg.Gateway.MaxUpstreamClients = 1
+	svc := s.newService()
+	profile := &tlsfingerprint.Profile{Name: "tls-profile"}
+
+	entry1, err := svc.getClientEntryWithTLS("http://proxy-a.local:8080", 1, 1, profile, true, true)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), entry1)
+
+	entry2, err := svc.getClientEntryWithTLS("http://proxy-b.local:8080", 2, 1, profile, true, true)
+	require.ErrorIs(s.T(), err, errUpstreamClientLimitReached)
+	require.Nil(s.T(), entry2)
+}
+
+func (s *HTTPUpstreamSuite) TestOpenAIFallbackStateHelpers() {
+	var state openAIHTTP2FallbackState
+	now := time.Now()
+
+	active, until := state.recordFailure(now, 1, time.Minute, time.Minute)
+	require.True(s.T(), active)
+	require.False(s.T(), until.IsZero())
+	require.True(s.T(), state.isFallbackActive(now))
+	require.False(s.T(), state.isFallbackActive(now.Add(2*time.Minute)))
+
+	state.recordFailure(now, 3, time.Minute, time.Minute)
+	state.recordFailure(now.Add(10*time.Second), 3, time.Minute, time.Minute)
+	state.resetErrorWindow()
+	require.Equal(s.T(), 0, state.errorCount)
+	require.True(s.T(), state.windowStart.IsZero())
+
+	// 在 fallback 活跃期间再次失败，不应重复激活。
+	state.fallbackUntil = now.Add(time.Minute)
+	activated, _ := state.recordFailure(now.Add(5*time.Second), 1, time.Minute, time.Minute)
+	require.False(s.T(), activated)
+}
+
+func (s *HTTPUpstreamSuite) TestRecordOpenAIHTTP2SuccessResetsWindow() {
+	svc := s.newService()
+	proxyURL := "http://proxy.local:8080"
+	state := svc.getOrCreateOpenAIHTTP2FallbackState(proxyURL)
+	state.mu.Lock()
+	state.errorCount = 5
+	state.windowStart = time.Now()
+	state.mu.Unlock()
+
+	svc.recordOpenAIHTTP2Success(service.HTTPUpstreamProfileOpenAI, upstreamProtocolModeOpenAIH2, proxyURL)
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	require.Equal(s.T(), 0, state.errorCount)
+	require.True(s.T(), state.windowStart.IsZero())
+}
+
+func (s *HTTPUpstreamSuite) TestDo_OpenAIProxySuccessResetsHTTP2ErrorWindow() {
+	seen := make(chan struct{}, 1)
+	proxySrv := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case seen <- struct{}{}:
+		default:
+		}
+		_, _ = io.WriteString(w, "proxied")
+	}))
+	s.T().Cleanup(proxySrv.Close)
+
+	s.cfg.Gateway.OpenAIHTTP2 = config.GatewayOpenAIHTTP2Config{
+		Enabled:                   true,
+		AllowProxyFallbackToHTTP1: true,
+		FallbackErrorThreshold:    2,
+		FallbackWindowSeconds:     60,
+		FallbackTTLSeconds:        600,
+	}
+	svc := s.newService()
+	proxyKey, _ := normalizeProxyURL(proxySrv.URL)
+	state := svc.getOrCreateOpenAIHTTP2FallbackState(proxyKey)
+	state.mu.Lock()
+	state.windowStart = time.Now()
+	state.errorCount = 3
+	state.fallbackUntil = time.Time{}
+	state.mu.Unlock()
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com/reset-window", nil)
+	require.NoError(s.T(), err)
+	req = req.WithContext(service.WithHTTPUpstreamProfile(context.Background(), service.HTTPUpstreamProfileOpenAI))
+	resp, doErr := svc.Do(req, proxySrv.URL, 1, 1)
+	require.NoError(s.T(), doErr)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+
+	select {
+	case <-seen:
+	default:
+		require.Fail(s.T(), "expected proxy to receive request")
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	require.Equal(s.T(), 0, state.errorCount)
+	require.True(s.T(), state.windowStart.IsZero())
+}
+
+func (s *HTTPUpstreamSuite) TestOpenAIFallbackStateMapTypeSafety() {
+	svc := s.newService()
+	svc.openAIHTTP2Fallbacks.Store("x", "bad-type")
+	require.False(s.T(), svc.isOpenAIHTTP2FallbackActive("x"))
+	state := svc.getOrCreateOpenAIHTTP2FallbackState("x")
+	require.NotNil(s.T(), state)
+}
+
+func (s *HTTPUpstreamSuite) TestBuildUpstreamTransport_ModeSwitchingAndProxyErrors() {
+	settings := defaultPoolSettings(s.cfg)
+	parsedProxy, err := url.Parse("http://proxy.local:8080")
+	require.NoError(s.T(), err)
+
+	h2Transport, err := buildUpstreamTransport(settings, parsedProxy, upstreamProtocolModeOpenAIH2)
+	require.NoError(s.T(), err)
+	require.True(s.T(), h2Transport.ForceAttemptHTTP2)
+
+	h1Transport, err := buildUpstreamTransport(settings, parsedProxy, upstreamProtocolModeOpenAIH1Fallback)
+	require.NoError(s.T(), err)
+	require.False(s.T(), h1Transport.ForceAttemptHTTP2)
+	require.NotNil(s.T(), h1Transport.TLSNextProto)
+
+	badProxy, err := url.Parse("ftp://proxy.local:21")
+	require.NoError(s.T(), err)
+	_, badErr := buildUpstreamTransport(settings, badProxy, upstreamProtocolModeDefault)
+	require.Error(s.T(), badErr)
+}
+
+func (s *HTTPUpstreamSuite) TestBuildUpstreamTransportWithTLSFingerprintBranches() {
+	settings := defaultPoolSettings(s.cfg)
+	profile := &tlsfingerprint.Profile{Name: "test-profile"}
+
+	transportDirect, err := buildUpstreamTransportWithTLSFingerprint(settings, nil, profile)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), transportDirect.DialTLSContext)
+
+	httpProxy, err := url.Parse("http://proxy.local:8080")
+	require.NoError(s.T(), err)
+	transportHTTPProxy, err := buildUpstreamTransportWithTLSFingerprint(settings, httpProxy, profile)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), transportHTTPProxy.DialTLSContext)
+
+	socksProxy, err := url.Parse("socks5://proxy.local:1080")
+	require.NoError(s.T(), err)
+	transportSOCKSProxy, err := buildUpstreamTransportWithTLSFingerprint(settings, socksProxy, profile)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), transportSOCKSProxy.DialTLSContext)
+
+	unsupportedProxy, err := url.Parse("ftp://proxy.local:21")
+	require.NoError(s.T(), err)
+	_, unsupportedErr := buildUpstreamTransportWithTLSFingerprint(settings, unsupportedProxy, profile)
+	require.Error(s.T(), unsupportedErr)
+}
+
+func (s *HTTPUpstreamSuite) TestWrapTrackedBody_NilAndCloseOnce() {
+	require.Nil(s.T(), wrapTrackedBody(nil, nil))
+
+	closed := int32(0)
+	readCloser := io.NopCloser(strings.NewReader("x"))
+	wrapped := wrapTrackedBody(readCloser, func() {
+		atomic.AddInt32(&closed, 1)
+	})
+	require.NotNil(s.T(), wrapped)
+	_ = wrapped.Close()
+	_ = wrapped.Close()
+	require.Equal(s.T(), int32(1), atomic.LoadInt32(&closed))
 }
 
 // TestHTTPUpstreamSuite 运行测试套件

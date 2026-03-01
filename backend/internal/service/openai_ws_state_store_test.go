@@ -369,6 +369,32 @@ func TestOpenAIWSStateStore_MaybeCleanupRemovesExpiredIncrementally(t *testing.T
 	require.Zero(t, remaining, "多轮 cleanup 后应逐步清空全部过期键")
 }
 
+func TestOpenAIWSStateStore_BackgroundCleanupRemovesExpiredWithoutNewWrites(t *testing.T) {
+	store := newOpenAIWSStateStore(nil, 20*time.Millisecond)
+	defer store.Close()
+
+	expiredAt := time.Now().Add(-time.Minute)
+	store.responseToAccountMu.Lock()
+	for i := 0; i < 64; i++ {
+		key := fmt.Sprintf("bg_cleanup_resp_%d", i)
+		store.responseToAccount[key] = openAIWSAccountBinding{
+			accountID: int64(i + 1),
+			expiresAt: expiredAt,
+		}
+	}
+	store.responseToAccountMu.Unlock()
+
+	// Backdate cleanup watermark so the worker can run immediately on next tick.
+	store.lastCleanupUnixNano.Store(time.Now().Add(-time.Minute).UnixNano())
+
+	require.Eventually(t, func() bool {
+		store.responseToAccountMu.RLock()
+		remaining := len(store.responseToAccount)
+		store.responseToAccountMu.RUnlock()
+		return remaining == 0
+	}, 600*time.Millisecond, 10*time.Millisecond, "后台 cleanup 应在无新写入时清理过期项")
+}
+
 func TestEnsureBindingCapacity_EvictsOneWhenMapIsFull(t *testing.T) {
 	bindings := map[string]openAIWSAccountBinding{
 		"a": {accountID: 1, expiresAt: time.Now().Add(time.Hour)},
@@ -409,6 +435,23 @@ func TestEnsureBindingCapacity_PrefersExpiredEntry(t *testing.T) {
 	require.False(t, hasExpired, "expired entry should have been evicted")
 	require.Equal(t, int64(2), bindings["active"].accountID)
 	require.Equal(t, int64(3), bindings["c"].accountID)
+}
+
+func TestEnsureBindingCapacity_EvictsEarliestExpiryWhenNoExpired(t *testing.T) {
+	now := time.Now()
+	bindings := map[string]openAIWSAccountBinding{
+		"soon":  {accountID: 1, expiresAt: now.Add(30 * time.Second)},
+		"later": {accountID: 2, expiresAt: now.Add(5 * time.Minute)},
+	}
+
+	ensureBindingCapacity(bindings, "new", 2)
+	bindings["new"] = openAIWSAccountBinding{accountID: 3, expiresAt: now.Add(10 * time.Minute)}
+
+	require.Len(t, bindings, 2)
+	_, hasSoon := bindings["soon"]
+	require.False(t, hasSoon, "entry with earliest expiresAt should be evicted")
+	require.Equal(t, int64(2), bindings["later"].accountID)
+	require.Equal(t, int64(3), bindings["new"].accountID)
 }
 
 type openAIWSStateStoreTimeoutProbeCache struct {
@@ -459,13 +502,13 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 
 	accountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_timeout_probe")
 	require.NoError(t, getErr)
-	require.Equal(t, int64(11), accountID, "本地缓存命中应优先返回已绑定账号")
+	require.Equal(t, int64(123), accountID, "Set 失败后应回滚本地写入，避免本地/Redis 双写不一致")
 
 	require.NoError(t, store.DeleteResponseAccount(ctx, groupID, "resp_timeout_probe"))
 
 	require.True(t, probe.setHasDeadline, "SetSessionAccountID 应携带独立超时上下文")
 	require.True(t, probe.deleteHasDeadline, "DeleteSessionAccountID 应携带独立超时上下文")
-	require.False(t, probe.getHasDeadline, "GetSessionAccountID 本用例应由本地缓存命中，不触发 Redis 读取")
+	require.True(t, probe.getHasDeadline, "Set 失败回滚后应走 Redis 读取且携带独立超时上下文")
 	require.Greater(t, probe.setDeadlineDelta, 2*time.Second)
 	require.LessOrEqual(t, probe.setDeadlineDelta, 3*time.Second)
 	require.Greater(t, probe.delDeadlineDelta, 2*time.Second)
@@ -479,6 +522,26 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 	require.True(t, probe2.getHasDeadline, "GetSessionAccountID 在缓存未命中时应携带独立超时上下文")
 	require.Greater(t, probe2.getDeadlineDelta, 2*time.Second)
 	require.LessOrEqual(t, probe2.getDeadlineDelta, 3*time.Second)
+}
+
+func TestOpenAIWSStateStore_BindResponseAccount_UsesShortLocalHotTTL(t *testing.T) {
+	cache := &stubGatewayCache{}
+	raw := NewOpenAIWSStateStore(cache)
+	store, ok := raw.(*defaultOpenAIWSStateStore)
+	require.True(t, ok)
+
+	groupID := int64(23)
+	responseID := "resp_local_hot_ttl"
+	require.NoError(t, store.BindResponseAccount(context.Background(), groupID, responseID, 902, 24*time.Hour))
+
+	id := normalizeOpenAIWSResponseID(responseID)
+	require.NotEmpty(t, id)
+	store.responseToAccountMu.RLock()
+	binding, exists := store.responseToAccount[id]
+	store.responseToAccountMu.RUnlock()
+	require.True(t, exists)
+	require.Equal(t, int64(902), binding.accountID)
+	require.WithinDuration(t, time.Now().Add(openAIWSStateStoreHotCacheTTL), binding.expiresAt, 1500*time.Millisecond)
 }
 
 func TestWithOpenAIWSStateStoreRedisTimeout_WithParentContext(t *testing.T) {

@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	coderws "github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -331,6 +334,21 @@ func TestOpenAIWSRetryTotalBudget(t *testing.T) {
 	require.Equal(t, time.Duration(0), svc.openAIWSRetryTotalBudget())
 }
 
+func TestOpenAIWSRetryContextError(t *testing.T) {
+	require.NoError(t, openAIWSRetryContextError(nil))
+	require.NoError(t, openAIWSRetryContextError(context.Background()))
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := openAIWSRetryContextError(canceledCtx)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+
+	var fallbackErr *openAIWSFallbackError
+	require.ErrorAs(t, err, &fallbackErr)
+	require.Equal(t, "retry_context_canceled", fallbackErr.Reason)
+}
+
 func TestClassifyOpenAIWSReadFallbackReason(t *testing.T) {
 	require.Equal(t, "policy_violation", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusPolicyViolation}))
 	require.Equal(t, "message_too_big", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusMessageTooBig}))
@@ -371,6 +389,117 @@ func TestOpenAIWSRetryMetricsSnapshot(t *testing.T) {
 	require.Equal(t, int64(150), snapshot.RetryBackoffMsTotal)
 	require.Equal(t, int64(1), snapshot.RetryExhaustedTotal)
 	require.Equal(t, int64(1), snapshot.NonRetryableFastFallbackTotal)
+}
+
+func TestWriteOpenAIWSV1UnsupportedResponse_TracksOps(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       42,
+		Name:     "acc-ws-v1",
+		Platform: PlatformOpenAI,
+	}
+
+	err := svc.writeOpenAIWSV1UnsupportedResponse(c, account)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "openai ws v1 is temporarily unsupported")
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "invalid_request_error")
+	require.Contains(t, rec.Body.String(), "temporarily unsupported")
+
+	rawStatus, ok := c.Get(OpsUpstreamStatusCodeKey)
+	require.True(t, ok)
+	require.Equal(t, http.StatusBadRequest, rawStatus)
+
+	rawMsg, ok := c.Get(OpsUpstreamErrorMessageKey)
+	require.True(t, ok)
+	require.Equal(t, "openai ws v1 is temporarily unsupported; use ws v2", rawMsg)
+
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Equal(t, account.ID, events[0].AccountID)
+	require.Equal(t, account.Platform, events[0].Platform)
+	require.Equal(t, http.StatusBadRequest, events[0].UpstreamStatusCode)
+	require.Equal(t, "ws_error", events[0].Kind)
+}
+
+func TestIsOpenAIWSStreamWriteDisconnectError(t *testing.T) {
+	require.False(t, isOpenAIWSStreamWriteDisconnectError(nil, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.True(t, isOpenAIWSStreamWriteDisconnectError(errors.New("writer failed"), ctx))
+
+	require.True(t, isOpenAIWSStreamWriteDisconnectError(errors.New("broken pipe"), context.Background()))
+	require.True(t, isOpenAIWSStreamWriteDisconnectError(io.EOF, context.Background()))
+
+	require.False(t, isOpenAIWSStreamWriteDisconnectError(errors.New("template execute failed"), context.Background()))
+}
+
+func TestShouldFlushOpenAIWSBufferedEventsOnError(t *testing.T) {
+	require.True(t, shouldFlushOpenAIWSBufferedEventsOnError(true, true, false))
+	require.False(t, shouldFlushOpenAIWSBufferedEventsOnError(true, false, false))
+	require.False(t, shouldFlushOpenAIWSBufferedEventsOnError(true, true, true))
+	require.False(t, shouldFlushOpenAIWSBufferedEventsOnError(false, true, false))
+}
+
+func TestCloneOpenAIWSJSONRawString(t *testing.T) {
+	require.Nil(t, cloneOpenAIWSJSONRawString(""))
+	require.Nil(t, cloneOpenAIWSJSONRawString("   "))
+
+	raw := `{"id":"resp_1","type":"response"}`
+	cloned := cloneOpenAIWSJSONRawString(raw)
+	require.Equal(t, raw, string(cloned))
+	require.Equal(t, len(raw), len(cloned))
+}
+
+func TestOpenAIWSAbortMetricsSnapshot(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	svc.recordOpenAIWSTurnAbort(openAIWSIngressTurnAbortReasonUpstreamError, true)
+	svc.recordOpenAIWSTurnAbort(openAIWSIngressTurnAbortReasonUpstreamError, true)
+	svc.recordOpenAIWSTurnAbort(openAIWSIngressTurnAbortReasonWriteUpstream, false)
+	svc.recordOpenAIWSTurnAbortRecovered()
+
+	snapshot := svc.SnapshotOpenAIWSAbortMetrics()
+	require.Equal(t, int64(1), snapshot.TurnAbortRecoveredTotal)
+
+	getTotal := func(reason string, expected bool) int64 {
+		for _, point := range snapshot.TurnAbortTotal {
+			if point.Reason == reason && point.Expected == expected {
+				return point.Total
+			}
+		}
+		return 0
+	}
+	require.Equal(t, int64(2), getTotal(string(openAIWSIngressTurnAbortReasonUpstreamError), true))
+	require.Equal(t, int64(1), getTotal(string(openAIWSIngressTurnAbortReasonWriteUpstream), false))
+}
+
+func TestOpenAIWSPerformanceMetricsSnapshot_ContainsAbortMetrics(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	svc.recordOpenAIWSTurnAbort(openAIWSIngressTurnAbortReasonClientClosed, true)
+	svc.recordOpenAIWSTurnAbortRecovered()
+
+	snapshot := svc.SnapshotOpenAIWSPerformanceMetrics()
+	require.Equal(t, int64(1), snapshot.Abort.TurnAbortRecoveredTotal)
+
+	found := false
+	for _, point := range snapshot.Abort.TurnAbortTotal {
+		if point.Reason == string(openAIWSIngressTurnAbortReasonClientClosed) && point.Expected {
+			require.Equal(t, int64(1), point.Total)
+			found = true
+			break
+		}
+	}
+	require.True(t, found)
 }
 
 func TestShouldLogOpenAIWSPayloadSchema(t *testing.T) {

@@ -42,6 +42,8 @@ const (
 
 	// OpenAIParsedRequestBodyKey 缓存 handler 侧已解析的请求体，避免重复解析。
 	OpenAIParsedRequestBodyKey = "openai_parsed_request_body"
+	// OpenAIRequestMetaKey 缓存 handler 已提取的请求元数据，供 Service 层复用。
+	OpenAIRequestMetaKey = "openai_request_meta"
 	// OpenAI WS Mode 失败后的重连次数上限（不含首次尝试）。
 	// 与 Codex 客户端保持一致：失败后最多重连 5 次。
 	openAIWSReconnectRetryLimit = 5
@@ -49,6 +51,13 @@ const (
 	openAIWSRetryBackoffInitialDefault = 120 * time.Millisecond
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
+	openAICodexUsageUpdateConcurrency  = 16
+)
+
+// SSE 热路径包级常量，避免循环内重复分配
+var (
+	sseDataDone              = []byte("[DONE]")
+	sseResponseCompletedMark = []byte(`"response.completed"`)
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -226,6 +235,17 @@ type OpenAIWSRetryMetricsSnapshot struct {
 	NonRetryableFastFallbackTotal int64 `json:"non_retryable_fast_fallback_total"`
 }
 
+type OpenAIWSTurnAbortMetricPoint struct {
+	Reason   string `json:"reason"`
+	Expected bool   `json:"expected"`
+	Total    int64  `json:"total"`
+}
+
+type OpenAIWSAbortMetricsSnapshot struct {
+	TurnAbortTotal          []OpenAIWSTurnAbortMetricPoint `json:"turn_abort_total"`
+	TurnAbortRecoveredTotal int64                          `json:"turn_abort_recovered_total"`
+}
+
 type OpenAICompatibilityFallbackMetricsSnapshot struct {
 	SessionHashLegacyReadFallbackTotal int64   `json:"session_hash_legacy_read_fallback_total"`
 	SessionHashLegacyReadFallbackHit   int64   `json:"session_hash_legacy_read_fallback_hit"`
@@ -248,6 +268,16 @@ type openAIWSRetryMetrics struct {
 	nonRetryableFastFallback atomic.Int64
 }
 
+type openAIWSTurnAbortMetricKey struct {
+	reason   string
+	expected bool
+}
+
+type openAIWSAbortMetrics struct {
+	turnAbortTotal     sync.Map // key: openAIWSTurnAbortMetricKey, value: *atomic.Int64
+	turnAbortRecovered atomic.Int64
+}
+
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
 	accountRepo         AccountRepository
@@ -268,11 +298,9 @@ type OpenAIGatewayService struct {
 	toolCorrector       *CodexToolCorrector
 	openaiWSResolver    OpenAIWSProtocolResolver
 
-	openaiWSPoolOnce       sync.Once
 	openaiWSIngressCtxOnce sync.Once
 	openaiWSStateStoreOnce sync.Once
 	openaiSchedulerOnce    sync.Once
-	openaiWSPool           *openAIWSConnPool
 	openaiWSIngressCtxPool *openAIWSIngressContextPool
 	openaiWSStateStore     OpenAIWSStateStore
 	openaiScheduler        OpenAIAccountScheduler
@@ -280,7 +308,16 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackUntil sync.Map // key: int64(accountID), value: time.Time
 	openaiWSRetryMetrics  openAIWSRetryMetrics
+	openaiWSAbortMetrics  openAIWSAbortMetrics
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
+
+	codexUsageUpdateOnce sync.Once
+	codexUsageUpdateSem  chan struct{}
+
+	usageBillingCompensation *UsageBillingCompensationService
+
+	// test hook for deterministic tie-break in account selection.
+	accountTieBreakIntnFn func(n int) int
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -320,18 +357,25 @@ func NewOpenAIGatewayService(
 		openaiWSResolver:     NewOpenAIWSProtocolResolver(cfg),
 		responseHeaderFilter: compileResponseHeaderFilter(cfg),
 	}
+	svc.usageBillingCompensation = NewUsageBillingCompensationService(usageLogRepo, userRepo, userSubRepo, billingCacheService, cfg)
+	svc.usageBillingCompensation.Start()
 	svc.logOpenAIWSModeBootstrap()
 	return svc
 }
 
-// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池的后台 worker 和空闲连接。
+// CloseOpenAIWSCtxPool 关闭 OpenAI WebSocket ctx_pool 的后台 worker 与连接资源。
 // 应在应用优雅关闭时调用。
-func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
-	if s != nil && s.openaiWSPool != nil {
-		s.openaiWSPool.Close()
-	}
+func (s *OpenAIGatewayService) CloseOpenAIWSCtxPool() {
 	if s != nil && s.openaiWSIngressCtxPool != nil {
 		s.openaiWSIngressCtxPool.Close()
+	}
+	if s != nil && s.openaiWSStateStore != nil {
+		if closer, ok := s.openaiWSStateStore.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
+	if s != nil && s.usageBillingCompensation != nil {
+		s.usageBillingCompensation.Stop()
 	}
 }
 
@@ -547,6 +591,33 @@ func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context
 	return true
 }
 
+func (s *OpenAIGatewayService) writeOpenAIWSV1UnsupportedResponse(c *gin.Context, account *Account) error {
+	const (
+		upstreamMessage = "openai ws v1 is temporarily unsupported; use ws v2"
+		clientMessage   = "OpenAI WSv1 is temporarily unsupported. Please enable responses_websockets_v2."
+	)
+	setOpsUpstreamError(c, http.StatusBadRequest, upstreamMessage, "")
+	if account != nil {
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: http.StatusBadRequest,
+			Kind:               "ws_error",
+			Message:            upstreamMessage,
+		})
+	}
+	if c != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": clientMessage,
+			},
+		})
+	}
+	return errors.New(upstreamMessage)
+}
+
 func (s *OpenAIGatewayService) openAIWSRetryBackoff(attempt int) time.Duration {
 	if attempt <= 0 {
 		return 0
@@ -620,6 +691,16 @@ func (s *OpenAIGatewayService) openAIWSRetryTotalBudget() time.Duration {
 	return 0
 }
 
+func openAIWSRetryContextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return wrapOpenAIWSFallback("retry_context_canceled", err)
+	}
+	return nil
+}
+
 func (s *OpenAIGatewayService) recordOpenAIWSRetryAttempt(backoff time.Duration) {
 	if s == nil {
 		return
@@ -653,6 +734,70 @@ func (s *OpenAIGatewayService) SnapshotOpenAIWSRetryMetrics() OpenAIWSRetryMetri
 		RetryBackoffMsTotal:           s.openaiWSRetryMetrics.retryBackoffMs.Load(),
 		RetryExhaustedTotal:           s.openaiWSRetryMetrics.retryExhausted.Load(),
 		NonRetryableFastFallbackTotal: s.openaiWSRetryMetrics.nonRetryableFastFallback.Load(),
+	}
+}
+
+func (s *OpenAIGatewayService) recordOpenAIWSTurnAbort(reason openAIWSIngressTurnAbortReason, expected bool) {
+	if s == nil {
+		return
+	}
+	normalizedReason := strings.TrimSpace(string(reason))
+	if normalizedReason == "" {
+		normalizedReason = string(openAIWSIngressTurnAbortReasonUnknown)
+	}
+	key := openAIWSTurnAbortMetricKey{
+		reason:   normalizedReason,
+		expected: expected,
+	}
+	counterAny, _ := s.openaiWSAbortMetrics.turnAbortTotal.LoadOrStore(key, &atomic.Int64{})
+	counter, ok := counterAny.(*atomic.Int64)
+	if !ok || counter == nil {
+		return
+	}
+	counter.Add(1)
+}
+
+func (s *OpenAIGatewayService) recordOpenAIWSTurnAbortRecovered() {
+	if s == nil {
+		return
+	}
+	s.openaiWSAbortMetrics.turnAbortRecovered.Add(1)
+}
+
+func (s *OpenAIGatewayService) SnapshotOpenAIWSAbortMetrics() OpenAIWSAbortMetricsSnapshot {
+	if s == nil {
+		return OpenAIWSAbortMetricsSnapshot{}
+	}
+	points := make([]OpenAIWSTurnAbortMetricPoint, 0, 8)
+	s.openaiWSAbortMetrics.turnAbortTotal.Range(func(key, value any) bool {
+		label, ok := key.(openAIWSTurnAbortMetricKey)
+		if !ok {
+			return true
+		}
+		counter, ok := value.(*atomic.Int64)
+		if !ok || counter == nil {
+			return true
+		}
+		total := counter.Load()
+		if total <= 0 {
+			return true
+		}
+		points = append(points, OpenAIWSTurnAbortMetricPoint{
+			Reason:   label.reason,
+			Expected: label.expected,
+			Total:    total,
+		})
+		return true
+	})
+	sort.Slice(points, func(i, j int) bool {
+		if points[i].Reason == points[j].Reason {
+			return !points[i].Expected && points[j].Expected
+		}
+		return points[i].Reason < points[j].Reason
+	})
+	return OpenAIWSAbortMetricsSnapshot{
+		TurnAbortTotal:          points,
+		TurnAbortRecoveredTotal: s.openaiWSAbortMetrics.turnAbortRecovered.Load(),
 	}
 }
 
@@ -1051,6 +1196,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 // Returns nil if no available account.
 func (s *OpenAIGatewayService) selectBestAccount(accounts []Account, requestedModel string, excludedIDs map[int64]struct{}) *Account {
 	var selected *Account
+	tieCount := 0
 
 	for i := range accounts {
 		acc := &accounts[i]
@@ -1077,15 +1223,39 @@ func (s *OpenAIGatewayService) selectBestAccount(accounts []Account, requestedMo
 		// Select highest priority and least recently used
 		if selected == nil {
 			selected = acc
+			tieCount = 1
 			continue
 		}
 
 		if s.isBetterAccount(acc, selected) {
 			selected = acc
+			tieCount = 1
+			continue
+		}
+		if !s.isBetterAccount(selected, acc) {
+			// 完全同分档时进行 reservoir tie-break，避免长期集中命中首个账号。
+			tieCount++
+			if s.accountTieBreakIntn(tieCount) == 0 {
+				selected = acc
+			}
 		}
 	}
 
 	return selected
+}
+
+func (s *OpenAIGatewayService) accountTieBreakIntn(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	if s != nil && s.accountTieBreakIntnFn != nil {
+		v := s.accountTieBreakIntnFn(n)
+		if v >= 0 && v < n {
+			return v
+		}
+		return 0
+	}
+	return rand.Intn(n)
 }
 
 // isBetterAccount 判断 candidate 是否比 current 更优。
@@ -1450,12 +1620,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	originalBody := body
-	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
+	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMeta(c, body)
 	originalModel := reqModel
 
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	clientTransport := GetOpenAIClientTransport(c)
+	if shouldWarnOpenAIWSUnknownTransportFallback(wsDecision, clientTransport) {
+		logOpenAIWSModeInfo(
+			"client_transport_unknown_fallback_http account_id=%d account_type=%s resolved_transport=%s resolved_reason=%s",
+			account.ID,
+			account.Type,
+			normalizeOpenAIWSLogValue(string(wsDecision.Transport)),
+			normalizeOpenAIWSLogValue(wsDecision.Reason),
+		)
+	}
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport)
 	if c != nil {
@@ -1475,15 +1654,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	// 当前仅支持 WSv2；WSv1 命中时直接返回错误，避免出现“配置可开但行为不确定”。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
-		if c != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": gin.H{
-					"type":    "invalid_request_error",
-					"message": "OpenAI WSv1 is temporarily unsupported. Please enable responses_websockets_v2.",
-				},
-			})
-		}
-		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
+		return nil, s.writeOpenAIWSV1UnsupportedResponse(c, account)
 	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	if passthroughEnabled {
@@ -1772,6 +1943,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		retryStartedAt := time.Now()
 	wsRetryLoop:
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			if cancelErr := openAIWSRetryContextError(ctx); cancelErr != nil {
+				wsErr = cancelErr
+				break
+			}
 			wsAttempts = attempt
 			wsResult, wsErr = s.forwardOpenAIWSV2(
 				ctx,
@@ -2212,6 +2387,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if err != nil {
 		return nil, err
 	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 
 	// 透传客户端请求头（安全白名单）。
 	allowTimeoutHeaders := s.isOpenAIPassthroughTimeoutHeadersAllowed()
@@ -2592,6 +2768,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if err != nil {
 		return nil, err
 	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 
 	// Set authentication header
 	req.Header.Set("authorization", "Bearer "+token)
@@ -2944,13 +3121,14 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 			}
 
-			dataBytes := []byte(data)
-
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
-			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
-				dataBytes = correctedData
-				data = string(correctedData)
-				line = "data: " + data
+			// 仅在 toolCorrector 存在时才转换为 []byte，避免热路径无谓分配
+			if s.toolCorrector != nil {
+				dataBytes := []byte(data)
+				if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
+					data = string(correctedData)
+					line = "data: " + data
+				}
 			}
 
 			// 写入客户端（客户端断开后继续 drain 上游）
@@ -2979,7 +3157,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
-			s.parseSSEUsageBytes(dataBytes, usage)
+			// 使用 string 版本解析 usage，避免 string→[]byte 转换
+			s.parseSSEUsageString(data, usage)
 			return
 		}
 
@@ -3153,24 +3332,50 @@ func (s *OpenAIGatewayService) correctToolCallsInResponseBody(body []byte) []byt
 }
 
 func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
-	s.parseSSEUsageBytes([]byte(data), usage)
+	s.parseSSEUsageString(data, usage)
+}
+
+// parseSSEUsageString 使用 gjson.Get（string 版本）解析 usage，避免 string→[]byte 转换
+func (s *OpenAIGatewayService) parseSSEUsageString(data string, usage *OpenAIUsage) {
+	if usage == nil || len(data) == 0 || data == "[DONE]" {
+		return
+	}
+	if len(data) < 80 || !strings.Contains(data, `"response.completed"`) {
+		return
+	}
+	if gjson.Get(data, "type").String() != "response.completed" {
+		return
+	}
+	usageFields := gjson.GetMany(data,
+		"response.usage.input_tokens",
+		"response.usage.output_tokens",
+		"response.usage.input_tokens_details.cached_tokens",
+	)
+	usage.InputTokens = int(usageFields[0].Int())
+	usage.OutputTokens = int(usageFields[1].Int())
+	usage.CacheReadInputTokens = int(usageFields[2].Int())
 }
 
 func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsage) {
-	if usage == nil || len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+	if usage == nil || len(data) == 0 || bytes.Equal(data, sseDataDone) {
 		return
 	}
 	// 选择性解析：仅在数据中包含 completed 事件标识时才进入字段提取。
-	if len(data) < 80 || !bytes.Contains(data, []byte(`"response.completed"`)) {
+	if len(data) < 80 || !bytes.Contains(data, sseResponseCompletedMark) {
 		return
 	}
 	if gjson.GetBytes(data, "type").String() != "response.completed" {
 		return
 	}
-
-	usage.InputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens").Int())
-	usage.OutputTokens = int(gjson.GetBytes(data, "response.usage.output_tokens").Int())
-	usage.CacheReadInputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens_details.cached_tokens").Int())
+	// 使用 GetManyBytes 一次提取 3 个 usage 字段
+	usageFields := gjson.GetManyBytes(data,
+		"response.usage.input_tokens",
+		"response.usage.output_tokens",
+		"response.usage.input_tokens_details.cached_tokens",
+	)
+	usage.InputTokens = int(usageFields[0].Int())
+	usage.OutputTokens = int(usageFields[1].Int())
+	usage.CacheReadInputTokens = int(usageFields[2].Int())
 }
 
 func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
@@ -3375,14 +3580,184 @@ func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel
 
 // OpenAIRecordUsageInput input for recording usage
 type OpenAIRecordUsageInput struct {
-	Result        *OpenAIForwardResult
-	APIKey        *APIKey
-	User          *User
-	Account       *Account
-	Subscription  *UserSubscription
-	UserAgent     string // 请求的 User-Agent
-	IPAddress     string // 请求的客户端 IP 地址
-	APIKeyService APIKeyQuotaUpdater
+	Result            *OpenAIForwardResult
+	APIKey            *APIKey
+	User              *User
+	Account           *Account
+	Subscription      *UserSubscription
+	UserAgent         string // 请求的 User-Agent
+	IPAddress         string // 请求的客户端 IP 地址
+	FallbackRequestID string // 当上游 request_id 缺失时，用于生成稳定幂等 request_id
+	APIKeyService     APIKeyQuotaUpdater
+}
+
+func (s *OpenAIGatewayService) usageBillingEntryStore() UsageBillingEntryStore {
+	store, ok := s.usageLogRepo.(UsageBillingEntryStore)
+	if !ok {
+		return nil
+	}
+	return store
+}
+
+func (s *OpenAIGatewayService) usageBillingTxRunner() UsageBillingTxRunner {
+	runner, ok := s.usageLogRepo.(UsageBillingTxRunner)
+	if !ok {
+		return nil
+	}
+	return runner
+}
+
+func (s *OpenAIGatewayService) runUsageBillingTx(ctx context.Context, fn func(txCtx context.Context) error) error {
+	runner := s.usageBillingTxRunner()
+	if runner == nil {
+		return fn(ctx)
+	}
+	return runner.WithUsageBillingTx(ctx, fn)
+}
+
+func (s *OpenAIGatewayService) prepareUsageBillingEntry(
+	ctx context.Context,
+	usageLog *UsageLog,
+	inserted bool,
+	billingType int8,
+	deltaUSD float64,
+) (*UsageBillingEntry, bool, error) {
+	if deltaUSD <= 0 {
+		return nil, false, nil
+	}
+
+	store := s.usageBillingEntryStore()
+	if store == nil {
+		if inserted {
+			return nil, true, nil
+		}
+		return nil, false, nil
+	}
+
+	if !inserted {
+		entry, err := store.GetUsageBillingEntryByUsageLogID(ctx, usageLog.ID)
+		if err != nil {
+			if errors.Is(err, ErrUsageBillingEntryNotFound) {
+				logger.LegacyPrintf(
+					"service.openai_gateway",
+					"[BillingReconcile] missing billing entry for duplicate usage log, skip immediate billing: usage_log=%d request_id=%s",
+					usageLog.ID,
+					usageLog.RequestID,
+				)
+				return nil, false, nil
+			}
+			logger.LegacyPrintf(
+				"service.openai_gateway",
+				"[BillingReconcile] load billing entry failed for duplicate usage log, skip immediate billing: usage_log=%d request_id=%s err=%v",
+				usageLog.ID,
+				usageLog.RequestID,
+				err,
+			)
+			return nil, false, nil
+		}
+		return entry, !entry.Applied, nil
+	}
+
+	entry, _, err := store.UpsertUsageBillingEntry(ctx, &UsageBillingEntry{
+		UsageLogID:     usageLog.ID,
+		UserID:         usageLog.UserID,
+		APIKeyID:       usageLog.APIKeyID,
+		SubscriptionID: usageLog.SubscriptionID,
+		BillingType:    billingType,
+		DeltaUSD:       deltaUSD,
+		Status:         UsageBillingEntryStatusPending,
+	})
+	if err != nil {
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"[BillingReconcile] upsert billing entry failed, fallback to inline billing: usage_log=%d request_id=%s err=%v",
+			usageLog.ID,
+			usageLog.RequestID,
+			err,
+		)
+		return nil, true, nil
+	}
+
+	return entry, !entry.Applied, nil
+}
+
+func (s *OpenAIGatewayService) markUsageBillingRetry(ctx context.Context, entry *UsageBillingEntry, cause error) {
+	if entry == nil || cause == nil {
+		return
+	}
+	store := s.usageBillingEntryStore()
+	if store == nil {
+		return
+	}
+	errMsg := strings.TrimSpace(cause.Error())
+	if len(errMsg) > 500 {
+		errMsg = errMsg[:500]
+	}
+	nextRetryAt := time.Now().Add(usageBillingRetryBackoff(entry.AttemptCount + 1))
+	if err := store.MarkUsageBillingEntryRetry(ctx, entry.ID, nextRetryAt, errMsg); err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "[BillingReconcile] mark retry failed: entry=%d err=%v", entry.ID, err)
+	}
+}
+
+func resolveOpenAIUsageRequestID(input *OpenAIRecordUsageInput) string {
+	if input == nil || input.Result == nil {
+		return ""
+	}
+	if requestID := strings.TrimSpace(input.Result.RequestID); requestID != "" {
+		return requestID
+	}
+	return buildOpenAIUsageFallbackRequestID(input)
+}
+
+func buildOpenAIUsageFallbackRequestID(input *OpenAIRecordUsageInput) string {
+	if input == nil || input.Result == nil {
+		return ""
+	}
+	result := input.Result
+	usage := result.Usage
+
+	seed := strings.Builder{}
+	seed.Grow(192)
+	seed.WriteString(strings.TrimSpace(input.FallbackRequestID))
+	seed.WriteByte('|')
+	if input.APIKey != nil {
+		seed.WriteString(strconv.FormatInt(input.APIKey.ID, 10))
+	}
+	seed.WriteByte('|')
+	if input.Account != nil {
+		seed.WriteString(strconv.FormatInt(input.Account.ID, 10))
+	}
+	seed.WriteByte('|')
+	seed.WriteString(strings.TrimSpace(result.Model))
+	seed.WriteByte('|')
+	seed.WriteString(strings.TrimSpace(result.TerminalEventType))
+	seed.WriteByte('|')
+	seed.WriteString(strconv.FormatBool(result.Stream))
+	seed.WriteByte('|')
+	seed.WriteString(strconv.FormatBool(result.OpenAIWSMode))
+	seed.WriteByte('|')
+	seed.WriteString(strconv.Itoa(usage.InputTokens))
+	seed.WriteByte('|')
+	seed.WriteString(strconv.Itoa(usage.OutputTokens))
+	seed.WriteByte('|')
+	seed.WriteString(strconv.Itoa(usage.CacheCreationInputTokens))
+	seed.WriteByte('|')
+	seed.WriteString(strconv.Itoa(usage.CacheReadInputTokens))
+	seed.WriteByte('|')
+	seed.WriteString(strconv.FormatInt(result.Duration.Milliseconds(), 10))
+	seed.WriteByte('|')
+	firstTokenMs := -1
+	if result.FirstTokenMs != nil {
+		firstTokenMs = *result.FirstTokenMs
+	}
+	seed.WriteString(strconv.Itoa(firstTokenMs))
+	seed.WriteByte('|')
+	if result.ReasoningEffort != nil {
+		seed.WriteString(strings.TrimSpace(*result.ReasoningEffort))
+	}
+
+	sum := sha256.Sum256([]byte(seed.String()))
+	return "wsf_" + hex.EncodeToString(sum[:16])
 }
 
 // RecordUsage records usage and deducts balance
@@ -3416,7 +3791,25 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	cost, err := s.billingService.CalculateCost(result.Model, tokens, multiplier)
 	if err != nil {
-		cost = &CostBreakdown{ActualCost: 0}
+		if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+			logger.LegacyPrintf(
+				"service.openai_gateway",
+				"[PricingWarn] calculate cost failed in simple mode, fallback to zero cost: model=%s request_id=%s err=%v",
+				result.Model,
+				result.RequestID,
+				err,
+			)
+			cost = &CostBreakdown{}
+		} else {
+			logger.LegacyPrintf(
+				"service.openai_gateway",
+				"[PricingAlert] calculate cost failed, reject usage record: model=%s request_id=%s err=%v",
+				result.Model,
+				result.RequestID,
+				err,
+			)
+			return fmt.Errorf("calculate cost: %w", err)
+		}
 	}
 
 	// Determine billing type
@@ -3429,11 +3822,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Create usage log
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
+	requestID := resolveOpenAIUsageRequestID(input)
 	usageLog := &UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
 		AccountID:             account.ID,
-		RequestID:             result.RequestID,
+		RequestID:             requestID,
 		Model:                 result.Model,
 		ReasoningEffort:       result.ReasoningEffort,
 		InputTokens:           actualInputTokens,
@@ -3483,18 +3877,58 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		return nil
 	}
 
-	shouldBill := inserted
-
-	// Deduct based on billing type
+	billAmount := cost.ActualCost
 	if isSubscriptionBilling {
-		if shouldBill && cost.TotalCost > 0 {
-			_ = s.userSubRepo.IncrementUsage(ctx, subscription.ID, cost.TotalCost)
-			s.billingCacheService.QueueUpdateSubscriptionUsage(user.ID, *apiKey.GroupID, cost.TotalCost)
+		billAmount = cost.TotalCost
+	}
+	billingEntry, shouldBill, err := s.prepareUsageBillingEntry(ctx, usageLog, inserted, billingType, billAmount)
+	if err != nil {
+		return fmt.Errorf("prepare usage billing entry: %w", err)
+	}
+
+	if shouldBill {
+		cacheDeducted := false
+		if !isSubscriptionBilling && billAmount > 0 && s.billingCacheService != nil {
+			// 同步扣减缓存，避免并发场景下仅靠“先查后扣”产生透支窗口。
+			if err := s.billingCacheService.DeductBalanceCache(ctx, user.ID, billAmount); err != nil {
+				s.markUsageBillingRetry(ctx, billingEntry, err)
+				return fmt.Errorf("deduct balance cache: %w", err)
+			}
+			cacheDeducted = true
 		}
-	} else {
-		if shouldBill && cost.ActualCost > 0 {
-			_ = s.userRepo.DeductBalance(ctx, user.ID, cost.ActualCost)
-			s.billingCacheService.QueueDeductBalance(user.ID, cost.ActualCost)
+
+		applyErr := s.runUsageBillingTx(ctx, func(txCtx context.Context) error {
+			if isSubscriptionBilling {
+				if err := s.userSubRepo.IncrementUsage(txCtx, subscription.ID, cost.TotalCost); err != nil {
+					return fmt.Errorf("increment subscription usage: %w", err)
+				}
+			} else if billAmount > 0 {
+				if err := s.userRepo.DeductBalance(txCtx, user.ID, billAmount); err != nil {
+					return fmt.Errorf("deduct balance: %w", err)
+				}
+			}
+			if billingEntry == nil {
+				return nil
+			}
+			store := s.usageBillingEntryStore()
+			if store == nil {
+				return nil
+			}
+			if err := store.MarkUsageBillingEntryApplied(txCtx, billingEntry.ID); err != nil {
+				return fmt.Errorf("mark usage billing entry applied: %w", err)
+			}
+			return nil
+		})
+		if applyErr != nil {
+			if !isSubscriptionBilling && cacheDeducted && s.billingCacheService != nil {
+				_ = s.billingCacheService.InvalidateUserBalance(context.Background(), user.ID)
+			}
+			s.markUsageBillingRetry(ctx, billingEntry, applyErr)
+			return applyErr
+		}
+
+		if isSubscriptionBilling && s.billingCacheService != nil && apiKey.GroupID != nil && cost.TotalCost > 0 {
+			s.billingCacheService.QueueUpdateSubscriptionUsage(user.ID, *apiKey.GroupID, cost.TotalCost)
 		}
 	}
 
@@ -3681,13 +4115,42 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	if len(updates) == 0 {
 		return
 	}
+	if !s.tryAcquireCodexUsageUpdateSlot() {
+		return
+	}
 
 	// Update account's Extra field asynchronously
 	go func() {
+		defer s.releaseCodexUsageUpdateSlot()
 		updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = s.accountRepo.UpdateExtra(updateCtx, accountID, updates)
 	}()
+}
+
+func (s *OpenAIGatewayService) tryAcquireCodexUsageUpdateSlot() bool {
+	if s == nil {
+		return false
+	}
+	s.codexUsageUpdateOnce.Do(func() {
+		s.codexUsageUpdateSem = make(chan struct{}, openAICodexUsageUpdateConcurrency)
+	})
+	select {
+	case s.codexUsageUpdateSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *OpenAIGatewayService) releaseCodexUsageUpdateSlot() {
+	if s == nil || s.codexUsageUpdateSem == nil {
+		return
+	}
+	select {
+	case <-s.codexUsageUpdateSem:
+	default:
+	}
 }
 
 func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any) (value string, present bool) {
@@ -3734,6 +4197,32 @@ func deriveOpenAIReasoningEffortFromModel(model string) string {
 	}
 
 	return normalizeOpenAIReasoningEffort(parts[len(parts)-1])
+}
+
+// OpenAIRequestMeta 缓存已提取的请求元数据，避免重复解析
+type OpenAIRequestMeta struct {
+	Model          string
+	Stream         bool
+	PromptCacheKey string
+	extracted      bool // 标记是否已从 body 补充提取完整字段
+}
+
+// extractOpenAIRequestMeta 优先从 context 读取已缓存的 meta，回退到 body 解析
+func extractOpenAIRequestMeta(c *gin.Context, body []byte) (model string, stream bool, promptCacheKey string) {
+	if c != nil {
+		if cached, ok := c.Get(OpenAIRequestMetaKey); ok {
+			if meta, ok := cached.(*OpenAIRequestMeta); ok && meta != nil {
+				// prompt_cache_key 在 Handler 层未提取，需在 Service 层按需补充
+				if !meta.extracted && len(body) > 0 {
+					meta.PromptCacheKey = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+					meta.extracted = true
+				}
+				return meta.Model, meta.Stream, meta.PromptCacheKey
+			}
+		}
+	}
+	// 回退到原始解析（WebSocket 等其他入口）
+	return extractOpenAIRequestMetaFromBody(body)
 }
 
 func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, promptCacheKey string) {

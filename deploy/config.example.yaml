@@ -276,6 +276,24 @@ gateway:
       queue: 0.7
       error_rate: 0.8
       ttft: 0.5
+  # OpenAI HTTP upstream protocol strategy
+  # OpenAI HTTP 上游协议策略
+  openai_http2:
+    # Enable OpenAI HTTP/2 preference (default on)
+    # 启用 OpenAI HTTP/2 优先策略（默认开启）
+    enabled: true
+    # Allow fallback to HTTP/1.1 for incompatible HTTP proxies
+    # 当 HTTP 代理不兼容时允许回退到 HTTP/1.1
+    allow_proxy_fallback_to_http1: true
+    # Fallback triggers after N HTTP/2 compatibility errors within window
+    # 在窗口期内累计 N 次 HTTP/2 兼容错误后触发回退
+    fallback_error_threshold: 2
+    # Error counting window (seconds)
+    # 错误计数窗口（秒）
+    fallback_window_seconds: 60
+    # How long to stay in HTTP/1.1 fallback mode (seconds)
+    # 进入 HTTP/1.1 回退态后的持续时间（秒）
+    fallback_ttl_seconds: 600
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts
@@ -310,6 +328,15 @@ gateway:
   # SSE max line size in bytes (default: 40MB)
   # SSE 单行最大字节数（默认 40MB）
   max_line_size: 41943040
+  # Usage record worker pool (bounded queue)
+  # 使用量记录异步池（有界队列）
+  usage_record:
+    # queue overflow policy: drop/sample/sync
+    # 队列溢出策略：drop/sample/sync
+    overflow_policy: sync
+    # only used when overflow_policy=sample
+    # 仅在 overflow_policy=sample 时生效
+    overflow_sample_percent: 10
   # Log upstream error response body summary (safe/truncated; does not log request content)
   # 记录上游错误响应体摘要（安全/截断；不记录请求内容）
   log_upstream_error_body: true
