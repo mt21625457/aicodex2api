@@ -419,11 +419,19 @@ func (p *openAIWSIngressContextPool) Acquire(
 						queueWait += time.Since(waitStart)
 						waitRetries++
 						if waitRetries >= openAIWSIngressAcquireMaxWaitRetries || queueWait >= openAIWSIngressAcquireMaxQueueWait {
+							logOpenAIWSModeInfo(
+								"ctx_pool_owner_wait_exhausted account_id=%d ctx_id=%s owner_id=%s wait_retries=%d queue_wait_ms=%d",
+								accountID, existing.id, ownerID, waitRetries, queueWait.Milliseconds(),
+							)
 							return nil, errOpenAIWSIngressContextBusy
 						}
 						continue
 					case <-ctx.Done():
 						queueWait += time.Since(waitStart)
+						logOpenAIWSModeInfo(
+							"ctx_pool_owner_wait_canceled account_id=%d ctx_id=%s owner_id=%s wait_retries=%d queue_wait_ms=%d",
+							accountID, existing.id, ownerID, waitRetries, queueWait.Milliseconds(),
+						)
 						return nil, errOpenAIWSIngressContextBusy
 					}
 				}
@@ -439,6 +447,10 @@ func (p *openAIWSIngressContextPool) Acquire(
 				if !allowMigration {
 					ap.mu.Unlock()
 					closeOpenAIWSClientConns(deferredClose)
+					logOpenAIWSModeInfo(
+						"ctx_pool_full_no_migration account_id=%d capacity=%d stickiness=%s",
+						accountID, capacity, stickiness,
+					)
 					return nil, errOpenAIWSConnQueueFull
 				}
 
@@ -446,6 +458,10 @@ func (p *openAIWSIngressContextPool) Acquire(
 				if recycle == nil {
 					ap.mu.Unlock()
 					closeOpenAIWSClientConns(deferredClose)
+					logOpenAIWSModeInfo(
+						"ctx_pool_no_migration_candidate account_id=%d capacity=%d min_score=%.1f",
+						accountID, capacity, minMigrationScore,
+					)
 					return nil, errOpenAIWSConnQueueFull
 				}
 				recycle.mu.Lock()
@@ -491,6 +507,11 @@ func (p *openAIWSIngressContextPool) Acquire(
 					p.releaseContext(selected, ownerID)
 					return nil, ensureErr
 				}
+				logOpenAIWSModeInfo(
+					"ctx_pool_migration account_id=%d ctx_id=%s old_session=%s new_session=%s migration_count=%d",
+					accountID, selected.id, truncateOpenAIWSLogValue(oldSessionKey, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(sessionKey, openAIWSIDValueMaxLen), selected.migrationCount,
+				)
 				return &openAIWSIngressContextLease{
 					pool:          p,
 					context:       selected,
@@ -825,7 +846,12 @@ func (p *openAIWSIngressContextPool) ensureContextUpstream(
 				c.dialDone = nil
 			}
 			close(dialDone)
+			failureStreak := c.failureStreak
 			c.mu.Unlock()
+			logOpenAIWSModeInfo(
+				"ctx_pool_dial_fail account_id=%d ctx_id=%s status_code=%d failure_streak=%d cause=%s",
+				c.accountID, c.id, statusCode, failureStreak, truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
+			)
 			return false, wrappedErr
 		}
 
@@ -844,7 +870,12 @@ func (p *openAIWSIngressContextPool) ensureContextUpstream(
 			c.dialDone = nil
 		}
 		close(dialDone)
+		connID := c.upstreamConnID
 		c.mu.Unlock()
+		logOpenAIWSModeInfo(
+			"ctx_pool_dial_ok account_id=%d ctx_id=%s conn_id=%s",
+			c.accountID, c.id, connID,
+		)
 		return false, nil
 	}
 }
@@ -910,7 +941,12 @@ func (p *openAIWSIngressContextPool) markContextBroken(c *openAIWSIngressContext
 	c.lastFailureAt = time.Now()
 	// 注意：此处不发送 releaseDone 信号。ownerID 仍被占用，等待者被唤醒后
 	// 会发现 owner 未释放而重新阻塞，造成信号浪费。实际释放由 Release() 完成。
+	failureStreak := c.failureStreak
 	c.mu.Unlock()
+	logOpenAIWSModeInfo(
+		"ctx_pool_mark_broken account_id=%d ctx_id=%s failure_streak=%d",
+		c.accountID, c.id, failureStreak,
+	)
 	if upstream != nil {
 		_ = upstream.Close()
 	}

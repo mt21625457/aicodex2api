@@ -2999,6 +2999,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		)
 	}
 	ingressMode := account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
+	logOpenAIWSModeInfo(
+		"ingress_ws_validate account_id=%d ingress_mode=%s transport=%s",
+		account.ID,
+		normalizeOpenAIWSLogValue(string(ingressMode)),
+		normalizeOpenAIWSLogValue(string(wsDecision.Transport)),
+	)
 	if ingressMode == OpenAIWSIngressModeOff {
 		return NewOpenAIWSClientCloseError(
 			coderws.StatusPolicyViolation,
@@ -3033,6 +3039,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		wsPath = normalizeOpenAIWSLogValue(parsedURL.Path)
 	}
 	debugEnabled := isOpenAIWSModeDebugEnabled()
+	logOpenAIWSModeInfo(
+		"ingress_ws_session_init account_id=%d ws_host=%s ws_path=%s ctx_pool=%v session_scope=%s debug=%v",
+		account.ID,
+		wsHost,
+		wsPath,
+		ctxPoolMode,
+		truncateOpenAIWSLogValue(ctxPoolSessionScope, openAIWSIDValueMaxLen),
+		debugEnabled,
+	)
 
 	type openAIWSClientPayload struct {
 		payloadRaw         []byte
@@ -4133,6 +4148,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return true
 	}
 	advanceToNextClientTurn := func(turn int, connID string) (bool, error) {
+		logOpenAIWSModeInfo(
+			"ingress_ws_advance_wait_client account_id=%d turn=%d conn_id=%s",
+			account.ID,
+			turn,
+			truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+		)
 		nextClientMessage, readErr := readClientMessage()
 		if readErr != nil {
 			if isOpenAIWSClientDisconnectError(readErr) {
@@ -4146,6 +4167,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 				return true, nil
 			}
+			logOpenAIWSModeInfo(
+				"ingress_ws_advance_read_fail account_id=%d turn=%d conn_id=%s cause=%s",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(readErr.Error(), openAIWSLogValueMaxLen),
+			)
 			return false, fmt.Errorf("read client websocket request: %w", readErr)
 		}
 
@@ -4252,6 +4280,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 			}
 		}
+		logOpenAIWSModeInfo(
+			"ingress_ws_turn_begin account_id=%d turn=%d conn_id=%s previous_response_id=%s expected_previous_response_id=%s store_disabled=%v has_session_lease=%v",
+			account.ID,
+			turn,
+			truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+			truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
+			truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+			storeDisabled,
+			sessionLease != nil,
+		)
 		pendingExpectedCallIDs := []string(nil)
 		if storeDisabled && expectedPrev != "" && stateStore != nil {
 			if pendingCallIDs, ok := stateStore.GetResponsePendingToolCalls(groupID, expectedPrev); ok {
@@ -4499,6 +4537,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						}
 					}
 				}
+				logOpenAIWSModeInfo(
+					"ingress_ws_acquire_lease_fail account_id=%d turn=%d conn_id=%s cause=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(acquireErr.Error(), openAIWSLogValueMaxLen),
+				)
 				return fmt.Errorf("acquire upstream websocket: %w", acquireErr)
 			}
 			sessionLease = acquiredLease
@@ -4722,6 +4767,17 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		responseID := strings.TrimSpace(result.RequestID)
 		persistLastResponseID := responseID != "" && shouldPersistOpenAIWSLastResponseID(result.TerminalEventType)
+		logOpenAIWSModeInfo(
+			"ingress_ws_turn_completed account_id=%d turn=%d conn_id=%s response_id=%s duration_ms=%d persist_response_id=%v has_function_call_output=%v pending_function_calls=%d",
+			account.ID,
+			turn,
+			truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+			truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
+			result.Duration.Milliseconds(),
+			persistLastResponseID,
+			hasFunctionCallOutput,
+			len(result.PendingFunctionCallIDs),
+		)
 		if persistLastResponseID {
 			lastTurnResponseID = responseID
 		} else {
