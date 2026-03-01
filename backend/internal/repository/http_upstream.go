@@ -272,7 +272,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	isolation := s.getIsolationMode()
 	proxyKey, parsedProxy := normalizeProxyURL(proxyURL)
 	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID)
+	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
 	poolKey := s.buildPoolKey(isolation, accountConcurrency, upstreamProtocolModeDefault) + ":tls"
 
 	now := time.Now()
@@ -429,7 +429,7 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	// 根据请求 profile（例如 OpenAI）选择协议模式
 	protocolMode := s.resolveProtocolMode(profile, proxyKey, parsedProxy)
 	// 构建缓存键（根据隔离策略不同）
-	cacheKey := buildCacheKey(isolation, proxyKey, accountID)
+	cacheKey := buildCacheKey(isolation, proxyKey, accountID, protocolMode)
 	// 构建连接池配置键（用于检测配置变更）
 	poolKey := s.buildPoolKey(isolation, accountConcurrency, protocolMode)
 
@@ -709,15 +709,20 @@ func (s *httpUpstreamService) buildPoolKey(isolation string, accountConcurrency 
 //   - proxy 模式: "proxy:{proxyKey}"
 //   - account 模式: "account:{accountID}"
 //   - account_proxy 模式: "account:{accountID}|proxy:{proxyKey}"
-func buildCacheKey(isolation, proxyKey string, accountID int64) string {
+func buildCacheKey(isolation, proxyKey string, accountID int64, protocolMode string) string {
+	var base string
 	switch isolation {
 	case config.ConnectionPoolIsolationAccount:
-		return fmt.Sprintf("account:%d", accountID)
+		base = fmt.Sprintf("account:%d", accountID)
 	case config.ConnectionPoolIsolationAccountProxy:
-		return fmt.Sprintf("account:%d|proxy:%s", accountID, proxyKey)
+		base = fmt.Sprintf("account:%d|proxy:%s", accountID, proxyKey)
 	default:
-		return fmt.Sprintf("proxy:%s", proxyKey)
+		base = fmt.Sprintf("proxy:%s", proxyKey)
 	}
+	if protocolMode != "" && protocolMode != upstreamProtocolModeDefault {
+		base += "|proto:" + protocolMode
+	}
+	return base
 }
 
 // normalizeProxyURL 标准化代理 URL

@@ -491,9 +491,10 @@ func (s *HTTPUpstreamSuite) TestShouldReuseEntryAndEvictBranches() {
 
 func (s *HTTPUpstreamSuite) TestBuildCacheKeyAndIsolationMode() {
 	svc := s.newService()
-	require.Equal(s.T(), "account:1", buildCacheKey(config.ConnectionPoolIsolationAccount, "direct", 1))
-	require.Equal(s.T(), "account:2|proxy:px", buildCacheKey(config.ConnectionPoolIsolationAccountProxy, "px", 2))
-	require.Equal(s.T(), "proxy:direct", buildCacheKey(config.ConnectionPoolIsolationProxy, "direct", 3))
+	require.Equal(s.T(), "account:1", buildCacheKey(config.ConnectionPoolIsolationAccount, "direct", 1, ""))
+	require.Equal(s.T(), "account:2|proxy:px", buildCacheKey(config.ConnectionPoolIsolationAccountProxy, "px", 2, ""))
+	require.Equal(s.T(), "proxy:direct", buildCacheKey(config.ConnectionPoolIsolationProxy, "direct", 3, ""))
+	require.Equal(s.T(), "account:1|proto:openai_h2", buildCacheKey(config.ConnectionPoolIsolationAccount, "direct", 1, "openai_h2"))
 
 	s.cfg.Gateway.ConnectionPoolIsolation = "invalid"
 	require.Equal(s.T(), config.ConnectionPoolIsolationAccountProxy, svc.getIsolationMode())

@@ -188,11 +188,21 @@ func TestErrorFrom(t *testing.T) {
 			},
 		},
 		{
-			name:         "context_canceled_maps_to_499",
+			name:         "context_canceled_without_request_cancel_remains_500",
 			err:          context.Canceled,
-			cancelRequestContext: true,
 			wantWritten:  true,
-			wantHTTPCode: 499,
+			wantHTTPCode: http.StatusInternalServerError,
+			wantBody: Response{
+				Code:    http.StatusInternalServerError,
+				Message: errors2.UnknownMessage,
+			},
+		},
+		{
+			name:                 "context_canceled_maps_to_499",
+			err:                  context.Canceled,
+			cancelRequestContext: true,
+			wantWritten:          true,
+			wantHTTPCode:         499,
 			wantBody: Response{
 				Code:    499,
 				Message: "client closed request",
@@ -200,11 +210,11 @@ func TestErrorFrom(t *testing.T) {
 			},
 		},
 		{
-			name:         "wrapped_context_canceled_maps_to_499",
-			err:          fmt.Errorf("query aborted: %w", context.Canceled),
+			name:                 "wrapped_context_canceled_maps_to_499",
+			err:                  fmt.Errorf("query aborted: %w", context.Canceled),
 			cancelRequestContext: true,
-			wantWritten:  true,
-			wantHTTPCode: 499,
+			wantWritten:          true,
+			wantHTTPCode:         499,
 			wantBody: Response{
 				Code:    499,
 				Message: "client closed request",
@@ -222,11 +232,11 @@ func TestErrorFrom(t *testing.T) {
 			},
 		},
 		{
-			name:         "deadline_exceeded_with_request_canceled_maps_to_499",
-			err:          context.DeadlineExceeded,
+			name:                 "deadline_exceeded_with_request_canceled_maps_to_499",
+			err:                  context.DeadlineExceeded,
 			cancelRequestContext: true,
-			wantWritten:  true,
-			wantHTTPCode: 499,
+			wantWritten:          true,
+			wantHTTPCode:         499,
 			wantBody: Response{
 				Code:    499,
 				Message: "client closed request",

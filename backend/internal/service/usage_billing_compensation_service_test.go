@@ -16,11 +16,14 @@ type usageBillingCompRepoStub struct {
 	claimErr error
 	claims   []UsageBillingEntry
 
-	markAppliedCalls int
-	markRetryCalls   int
-	lastRetryID      int64
-	lastRetryAt      time.Time
-	lastRetryErr     string
+	markAppliedCalls   int
+	markRetryCalls     int
+	lastRetryID        int64
+	lastRetryAt        time.Time
+	lastRetryErr       string
+	lastMarkAppliedCtx context.Context
+	lastMarkRetryCtx   context.Context
+	lastTxCtx          context.Context
 }
 
 func (s *usageBillingCompRepoStub) GetUsageBillingEntryByUsageLogID(ctx context.Context, usageLogID int64) (*UsageBillingEntry, error) {
@@ -33,6 +36,7 @@ func (s *usageBillingCompRepoStub) UpsertUsageBillingEntry(ctx context.Context, 
 
 func (s *usageBillingCompRepoStub) MarkUsageBillingEntryApplied(ctx context.Context, entryID int64) error {
 	s.markAppliedCalls++
+	s.lastMarkAppliedCtx = ctx
 	return nil
 }
 
@@ -41,6 +45,7 @@ func (s *usageBillingCompRepoStub) MarkUsageBillingEntryRetry(ctx context.Contex
 	s.lastRetryID = entryID
 	s.lastRetryAt = nextRetryAt
 	s.lastRetryErr = lastError
+	s.lastMarkRetryCtx = ctx
 	return nil
 }
 
@@ -55,6 +60,7 @@ func (s *usageBillingCompRepoStub) ClaimUsageBillingEntries(ctx context.Context,
 }
 
 func (s *usageBillingCompRepoStub) WithUsageBillingTx(ctx context.Context, fn func(txCtx context.Context) error) error {
+	s.lastTxCtx = ctx
 	if fn == nil {
 		return nil
 	}
@@ -64,26 +70,32 @@ func (s *usageBillingCompRepoStub) WithUsageBillingTx(ctx context.Context, fn fu
 type usageBillingCompUserRepoStub struct {
 	UserRepository
 
-	deductCalls int
-	deductErr   error
+	deductCalls   int
+	deductErr     error
+	lastDeductCtx context.Context
 }
 
 func (s *usageBillingCompUserRepoStub) DeductBalance(ctx context.Context, id int64, amount float64) error {
 	s.deductCalls++
+	s.lastDeductCtx = ctx
 	return s.deductErr
 }
 
 type usageBillingCompSubRepoStub struct {
 	UserSubscriptionRepository
 
-	incrementCalls int
-	incrementErr   error
+	incrementCalls   int
+	incrementErr     error
+	lastIncrementCtx context.Context
 }
 
 func (s *usageBillingCompSubRepoStub) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {
 	s.incrementCalls++
+	s.lastIncrementCtx = ctx
 	return s.incrementErr
 }
+
+type usageBillingCompCtxKey string
 
 func TestUsageBillingCompensationService_ProcessOnceBalanceSuccess(t *testing.T) {
 	repo := &usageBillingCompRepoStub{
@@ -160,4 +172,60 @@ func TestUsageBillingCompensationService_ProcessOnceSubscriptionSuccess(t *testi
 	require.Equal(t, 1, subRepo.incrementCalls)
 	require.Equal(t, 1, repo.markAppliedCalls)
 	require.Equal(t, 0, repo.markRetryCalls)
+}
+
+func TestUsageBillingCompensationService_ApplyBalanceEntryPropagatesContext(t *testing.T) {
+	repo := &usageBillingCompRepoStub{}
+	userRepo := &usageBillingCompUserRepoStub{}
+	subRepo := &usageBillingCompSubRepoStub{}
+	svc := NewUsageBillingCompensationService(repo, userRepo, subRepo, nil, &config.Config{})
+
+	entry := UsageBillingEntry{
+		ID:          10,
+		UsageLogID:  1010,
+		UserID:      2010,
+		BillingType: BillingTypeBalance,
+		DeltaUSD:    1.11,
+	}
+	key := usageBillingCompCtxKey("trace")
+	ctx := context.WithValue(context.Background(), key, "balance")
+
+	err := svc.applyBalanceEntry(ctx, entry)
+	require.NoError(t, err)
+	require.Equal(t, 1, userRepo.deductCalls)
+	require.NotNil(t, repo.lastTxCtx)
+	require.NotNil(t, userRepo.lastDeductCtx)
+	require.NotNil(t, repo.lastMarkAppliedCtx)
+	require.Equal(t, "balance", repo.lastTxCtx.Value(key))
+	require.Equal(t, "balance", userRepo.lastDeductCtx.Value(key))
+	require.Equal(t, "balance", repo.lastMarkAppliedCtx.Value(key))
+}
+
+func TestUsageBillingCompensationService_ApplySubscriptionEntryPropagatesContext(t *testing.T) {
+	subID := int64(4010)
+	repo := &usageBillingCompRepoStub{}
+	userRepo := &usageBillingCompUserRepoStub{}
+	subRepo := &usageBillingCompSubRepoStub{}
+	svc := NewUsageBillingCompensationService(repo, userRepo, subRepo, nil, &config.Config{})
+
+	entry := UsageBillingEntry{
+		ID:             11,
+		UsageLogID:     1011,
+		UserID:         2011,
+		SubscriptionID: &subID,
+		BillingType:    BillingTypeSubscription,
+		DeltaUSD:       2.22,
+	}
+	key := usageBillingCompCtxKey("trace")
+	ctx := context.WithValue(context.Background(), key, "subscription")
+
+	err := svc.applySubscriptionEntry(ctx, entry)
+	require.NoError(t, err)
+	require.Equal(t, 1, subRepo.incrementCalls)
+	require.NotNil(t, repo.lastTxCtx)
+	require.NotNil(t, subRepo.lastIncrementCtx)
+	require.NotNil(t, repo.lastMarkAppliedCtx)
+	require.Equal(t, "subscription", repo.lastTxCtx.Value(key))
+	require.Equal(t, "subscription", subRepo.lastIncrementCtx.Value(key))
+	require.Equal(t, "subscription", repo.lastMarkAppliedCtx.Value(key))
 }

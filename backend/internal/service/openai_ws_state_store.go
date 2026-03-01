@@ -191,17 +191,15 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 	ttl = normalizeOpenAIWSTTL(ttl)
 	s.maybeCleanup()
 
+	var redisErr error
 	if s.cache != nil {
 		cacheKey := openAIWSResponseAccountCacheKey(id)
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
-		err := s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
+		redisErr = s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
 		cancel()
-		if err != nil {
-			return err
-		}
 	}
 
-	// 本地仅保留短时热缓存，优先保证跨实例读取一致性。
+	// 无论 Redis 是否写成功，都写入本地缓存作为降级保障。
 	localTTL := openAIWSStateStoreLocalHotTTL(ttl)
 	s.responseToAccountMu.Lock()
 	ensureBindingCapacity(s.responseToAccount, id, openAIWSStateStoreMaxEntriesPerMap)
@@ -211,7 +209,7 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 	}
 	s.responseToAccountMu.Unlock()
 
-	return nil
+	return redisErr
 }
 
 func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, groupID int64, responseID string) (int64, error) {

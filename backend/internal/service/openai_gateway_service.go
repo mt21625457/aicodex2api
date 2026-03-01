@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -614,6 +615,7 @@ func (s *OpenAIGatewayService) writeOpenAIWSV1UnsupportedResponse(c *gin.Context
 				"message": clientMessage,
 			},
 		})
+		c.Abort()
 	}
 	return errors.New(upstreamMessage)
 }
@@ -4097,6 +4099,10 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 		return
 	}
 	if !s.tryAcquireCodexUsageUpdateSlot() {
+		slog.Warn("openai_gateway.codex_usage_update_dropped",
+			"account_id", accountID,
+			"reason", "concurrency_limit_reached",
+		)
 		return
 	}
 
@@ -4185,19 +4191,14 @@ type OpenAIRequestMeta struct {
 	Model          string
 	Stream         bool
 	PromptCacheKey string
-	extracted      bool // 标记是否已从 body 补充提取完整字段
 }
 
-// extractOpenAIRequestMeta 优先从 context 读取已缓存的 meta，回退到 body 解析
+// extractOpenAIRequestMeta 优先从 context 读取已缓存的 meta（只读），回退到 body 解析。
+// Handler 层已完成所有字段提取（含 prompt_cache_key），此处不再修改 meta，避免并发竞态。
 func extractOpenAIRequestMeta(c *gin.Context, body []byte) (model string, stream bool, promptCacheKey string) {
 	if c != nil {
 		if cached, ok := c.Get(OpenAIRequestMetaKey); ok {
 			if meta, ok := cached.(*OpenAIRequestMeta); ok && meta != nil {
-				// prompt_cache_key 在 Handler 层未提取，需在 Service 层按需补充
-				if !meta.extracted && len(body) > 0 {
-					meta.PromptCacheKey = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-					meta.extracted = true
-				}
 				return meta.Model, meta.Stream, meta.PromptCacheKey
 			}
 		}

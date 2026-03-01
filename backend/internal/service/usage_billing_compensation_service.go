@@ -99,6 +99,13 @@ func (s *UsageBillingCompensationService) processOnce() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), defaultUsageBillingCompensationTaskTimout)
 	defer cancel()
+	go func() {
+		select {
+		case <-s.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	entries, err := store.ClaimUsageBillingEntries(ctx, defaultUsageBillingCompensationBatchSize, defaultUsageBillingCompensationStaleAfter)
 	if err != nil {
@@ -106,59 +113,62 @@ func (s *UsageBillingCompensationService) processOnce() {
 		return
 	}
 	for i := range entries {
-		s.processEntry(entries[i])
+		if ctx.Err() != nil {
+			return
+		}
+		s.processEntry(ctx, entries[i])
 	}
 }
 
-func (s *UsageBillingCompensationService) processEntry(entry UsageBillingEntry) {
+func (s *UsageBillingCompensationService) processEntry(ctx context.Context, entry UsageBillingEntry) {
 	if entry.Applied || entry.DeltaUSD <= 0 {
-		s.markApplied(entry)
+		s.markApplied(ctx, entry)
 		return
 	}
 
-	if err := s.applyEntry(entry); err != nil {
-		s.markRetry(entry, err)
+	if err := s.applyEntry(ctx, entry); err != nil {
+		s.markRetry(ctx, entry, err)
 		return
 	}
 }
 
-func (s *UsageBillingCompensationService) applyEntry(entry UsageBillingEntry) error {
+func (s *UsageBillingCompensationService) applyEntry(ctx context.Context, entry UsageBillingEntry) error {
 	switch entry.BillingType {
 	case BillingTypeSubscription:
-		return s.applySubscriptionEntry(entry)
+		return s.applySubscriptionEntry(ctx, entry)
 	default:
-		return s.applyBalanceEntry(entry)
+		return s.applyBalanceEntry(ctx, entry)
 	}
 }
 
-func (s *UsageBillingCompensationService) applyBalanceEntry(entry UsageBillingEntry) error {
+func (s *UsageBillingCompensationService) applyBalanceEntry(ctx context.Context, entry UsageBillingEntry) error {
 	if s.userRepo == nil {
 		return errors.New("user repository unavailable")
 	}
 
 	cacheDeducted := false
 	if s.billingCache != nil {
-		if err := s.billingCache.DeductBalanceCache(context.Background(), entry.UserID, entry.DeltaUSD); err != nil {
+		if err := s.billingCache.DeductBalanceCache(ctx, entry.UserID, entry.DeltaUSD); err != nil {
 			slog.Warn("usage_billing_compensation.balance_cache_deduct_failed",
 				"entry_id", entry.ID,
 				"user_id", entry.UserID,
 				"amount", entry.DeltaUSD,
 				"error", err,
 			)
-			_ = s.billingCache.InvalidateUserBalance(context.Background(), entry.UserID)
+			_ = s.billingCache.InvalidateUserBalance(ctx, entry.UserID)
 		} else {
 			cacheDeducted = true
 		}
 	}
 
-	if err := s.runWithTx(context.Background(), func(txCtx context.Context) error {
+	if err := s.runWithTx(ctx, func(txCtx context.Context) error {
 		if err := s.userRepo.DeductBalance(txCtx, entry.UserID, entry.DeltaUSD); err != nil {
 			return err
 		}
 		return s.store().MarkUsageBillingEntryApplied(txCtx, entry.ID)
 	}); err != nil {
 		if s.billingCache != nil && cacheDeducted {
-			_ = s.billingCache.InvalidateUserBalance(context.Background(), entry.UserID)
+			_ = s.billingCache.InvalidateUserBalance(ctx, entry.UserID)
 		}
 		return err
 	}
@@ -166,7 +176,7 @@ func (s *UsageBillingCompensationService) applyBalanceEntry(entry UsageBillingEn
 	return nil
 }
 
-func (s *UsageBillingCompensationService) applySubscriptionEntry(entry UsageBillingEntry) error {
+func (s *UsageBillingCompensationService) applySubscriptionEntry(ctx context.Context, entry UsageBillingEntry) error {
 	if s.userSubRepo == nil {
 		return errors.New("subscription repository unavailable")
 	}
@@ -174,7 +184,7 @@ func (s *UsageBillingCompensationService) applySubscriptionEntry(entry UsageBill
 		return errors.New("subscription_id is nil for subscription billing")
 	}
 
-	if err := s.runWithTx(context.Background(), func(txCtx context.Context) error {
+	if err := s.runWithTx(ctx, func(txCtx context.Context) error {
 		if err := s.userSubRepo.IncrementUsage(txCtx, *entry.SubscriptionID, entry.DeltaUSD); err != nil {
 			return err
 		}
@@ -184,26 +194,26 @@ func (s *UsageBillingCompensationService) applySubscriptionEntry(entry UsageBill
 	}
 
 	if s.billingCache != nil {
-		sub, err := s.userSubRepo.GetByID(context.Background(), *entry.SubscriptionID)
+		sub, err := s.userSubRepo.GetByID(ctx, *entry.SubscriptionID)
 		if err == nil && sub != nil {
-			_ = s.billingCache.InvalidateSubscription(context.Background(), entry.UserID, sub.GroupID)
+			_ = s.billingCache.InvalidateSubscription(ctx, entry.UserID, sub.GroupID)
 		}
 	}
 
 	return nil
 }
 
-func (s *UsageBillingCompensationService) markApplied(entry UsageBillingEntry) {
+func (s *UsageBillingCompensationService) markApplied(ctx context.Context, entry UsageBillingEntry) {
 	store := s.store()
 	if store == nil {
 		return
 	}
-	if err := store.MarkUsageBillingEntryApplied(context.Background(), entry.ID); err != nil {
+	if err := store.MarkUsageBillingEntryApplied(ctx, entry.ID); err != nil {
 		slog.Warn("usage_billing_compensation.mark_applied_failed", "entry_id", entry.ID, "error", err)
 	}
 }
 
-func (s *UsageBillingCompensationService) markRetry(entry UsageBillingEntry, cause error) {
+func (s *UsageBillingCompensationService) markRetry(ctx context.Context, entry UsageBillingEntry, cause error) {
 	store := s.store()
 	if store == nil {
 		return
@@ -214,7 +224,7 @@ func (s *UsageBillingCompensationService) markRetry(entry UsageBillingEntry, cau
 	}
 	backoff := usageBillingRetryBackoff(entry.AttemptCount)
 	nextRetryAt := time.Now().Add(backoff)
-	if err := store.MarkUsageBillingEntryRetry(context.Background(), entry.ID, nextRetryAt, errMsg); err != nil {
+	if err := store.MarkUsageBillingEntryRetry(ctx, entry.ID, nextRetryAt, errMsg); err != nil {
 		slog.Warn("usage_billing_compensation.mark_retry_failed",
 			"entry_id", entry.ID,
 			"next_retry_at", nextRetryAt,
