@@ -157,10 +157,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
 
-	// 缓存已提取的 meta 到 context，供 Service 层复用，避免重复解析请求体
+	// 缓存已提取的 meta 到 context，供 Service 层复用，避免重复解析请求体。
+	// prompt_cache_key 也在此处提前提取，确保 meta 设置后只读不写，避免并发竞态。
+	promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 	c.Set(service.OpenAIRequestMetaKey, &service.OpenAIRequestMeta{
-		Model:  reqModel,
-		Stream: reqStream,
+		Model:          reqModel,
+		Stream:         reqStream,
+		PromptCacheKey: promptCacheKey,
 	})
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。

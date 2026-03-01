@@ -103,12 +103,17 @@ func normalizeHTTPError(c *gin.Context, err error) error {
 }
 
 func isClientCanceledError(reqCtx context.Context, err error) bool {
-	if errors.Is(err, context.Canceled) {
+	if reqCtx == nil {
+		return false
+	}
+	// 只有请求上下文本身被取消时，才认为是客户端断开；
+	// 避免将服务端主动 cancel 导致的 context.Canceled 误归为 499。
+	if errors.Is(err, context.Canceled) && errors.Is(reqCtx.Err(), context.Canceled) {
 		return true
 	}
 
 	// Some drivers can surface deadline errors after the request context was already canceled.
-	return errors.Is(err, context.DeadlineExceeded) && reqCtx != nil && errors.Is(reqCtx.Err(), context.Canceled)
+	return errors.Is(err, context.DeadlineExceeded) && errors.Is(reqCtx.Err(), context.Canceled)
 }
 
 // BadRequest 返回400错误

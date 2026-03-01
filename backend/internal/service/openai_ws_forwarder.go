@@ -1288,8 +1288,8 @@ func (s *OpenAIGatewayService) openAIWSReadTimeout() time.Duration {
 }
 
 func (s *OpenAIGatewayService) openAIWSClientReadIdleTimeout() time.Duration {
-	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ReadTimeoutSeconds > 0 {
-		return time.Duration(s.cfg.Gateway.OpenAIWS.ReadTimeoutSeconds) * time.Second
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ClientReadIdleTimeoutSeconds > 0 {
+		return time.Duration(s.cfg.Gateway.OpenAIWS.ClientReadIdleTimeoutSeconds) * time.Second
 	}
 	return openAIWSClientReadIdleTimeoutDefault
 }

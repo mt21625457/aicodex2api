@@ -684,6 +684,53 @@ func TestOpenAIWSIngressContextPool_EnsureContextUpstreamBranches(t *testing.T) 
 	require.GreaterOrEqual(t, failureStreak, 1, "dial 失败后应累计 failure_streak")
 }
 
+func TestOpenAIWSIngressContextPool_MarkBrokenDoesNotSignalWaiterBeforeRelease(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	upstream := &openAIWSCaptureConn{}
+	ctxItem := &openAIWSIngressContext{
+		id:          "ctx_mark_broken",
+		ownerID:     "owner_broken",
+		releaseDone: make(chan struct{}, 1),
+		upstream:    upstream,
+	}
+
+	pool.markContextBroken(ctxItem)
+
+	select {
+	case <-ctxItem.releaseDone:
+		t.Fatal("markContextBroken should not wake waiters before owner is released")
+	default:
+	}
+
+	ctxItem.mu.Lock()
+	require.True(t, ctxItem.broken)
+	require.Equal(t, "owner_broken", ctxItem.ownerID)
+	require.Nil(t, ctxItem.upstream)
+	ctxItem.mu.Unlock()
+
+	upstream.mu.Lock()
+	require.True(t, upstream.closed, "mark broken should close current upstream connection")
+	upstream.mu.Unlock()
+
+	pool.releaseContext(ctxItem, "owner_broken")
+
+	select {
+	case <-ctxItem.releaseDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("releaseContext should signal one waiting acquire after owner is released")
+	}
+
+	ctxItem.mu.Lock()
+	require.Equal(t, "", ctxItem.ownerID)
+	require.False(t, ctxItem.broken)
+	ctxItem.mu.Unlock()
+}
+
 type openAIWSWriteDisconnectConn struct{}
 
 func (c *openAIWSWriteDisconnectConn) WriteJSON(context.Context, any) error {

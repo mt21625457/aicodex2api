@@ -204,6 +204,36 @@ func TestClaudeTokenRefresher_NeedsRefresh_OutsideWindow(t *testing.T) {
 	}
 }
 
+func TestNeedsRefreshWithoutExpiry_RecentlyUpdated(t *testing.T) {
+	refreshWindow := 30 * time.Minute
+
+	t.Run("recently_updated_skips_refresh", func(t *testing.T) {
+		// 账号近期更新过（5 分钟前），不需要刷新
+		account := &Account{
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeOAuth,
+			Credentials: map[string]any{},
+			UpdatedAt:   time.Now().Add(-5 * time.Minute),
+		}
+		refresher := &ClaudeTokenRefresher{}
+		require.False(t, refresher.NeedsRefresh(account, refreshWindow),
+			"近期更新过的账号无 expires_at 时不应刷新")
+	})
+
+	t.Run("old_updated_needs_refresh", func(t *testing.T) {
+		// 账号很久没更新（2 小时前），需要刷新
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Credentials: map[string]any{},
+			UpdatedAt:   time.Now().Add(-2 * time.Hour),
+		}
+		refresher := &OpenAITokenRefresher{}
+		require.True(t, refresher.NeedsRefresh(account, refreshWindow),
+			"长期未更新的账号无 expires_at 时应刷新")
+	})
+}
+
 func TestClaudeTokenRefresher_CanRefresh(t *testing.T) {
 	refresher := &ClaudeTokenRefresher{}
 

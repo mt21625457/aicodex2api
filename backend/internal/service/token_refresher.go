@@ -9,6 +9,16 @@ import (
 
 const openAISoraSyncConcurrencyLimit = 8
 
+// needsRefreshWithoutExpiry 在 expires_at 缺失时判断是否需要刷新。
+// 通过 Account.UpdatedAt 避免每轮刷新周期都发起无效刷新：
+// 如果账号在 refreshWindow 内曾被更新，说明最近可能已刷新过，跳过本轮。
+func needsRefreshWithoutExpiry(account *Account, refreshWindow time.Duration) bool {
+	if refreshWindow <= 0 {
+		return true
+	}
+	return time.Since(account.UpdatedAt) >= refreshWindow
+}
+
 // TokenRefresher 定义平台特定的token刷新策略接口
 // 通过此接口可以扩展支持不同平台（Anthropic/OpenAI/Gemini）
 type TokenRefresher interface {
@@ -48,7 +58,8 @@ func (r *ClaudeTokenRefresher) CanRefresh(account *Account) bool {
 func (r *ClaudeTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
-		return true
+		// 无过期时间：如果账号近期已更新（可能刚刷新过），跳过本轮
+		return needsRefreshWithoutExpiry(account, refreshWindow)
 	}
 	return time.Until(*expiresAt) < refreshWindow
 }
@@ -127,7 +138,8 @@ func (r *OpenAITokenRefresher) CanRefresh(account *Account) bool {
 func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
-		return true
+		// 无过期时间：如果账号近期已更新（可能刚刷新过），跳过本轮
+		return needsRefreshWithoutExpiry(account, refreshWindow)
 	}
 
 	return time.Until(*expiresAt) < refreshWindow

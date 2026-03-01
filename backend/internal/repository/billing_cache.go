@@ -116,8 +116,11 @@ func (c *billingCache) DeductUserBalance(ctx context.Context, userID int64, amou
 		return err
 	}
 	switch result {
-	case 1, 2:
+	case 1:
 		return nil
+	case 2:
+		// 缓存 key 不存在（已过期），返回特定错误让调用方区分处理
+		return service.ErrBalanceCacheNotFound
 	case 0:
 		return service.ErrInsufficientBalance
 	case -1:

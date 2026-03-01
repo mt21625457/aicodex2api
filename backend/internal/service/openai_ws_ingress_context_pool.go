@@ -895,13 +895,8 @@ func (p *openAIWSIngressContextPool) markContextBroken(c *openAIWSIngressContext
 	c.broken = true
 	c.failureStreak++
 	c.lastFailureAt = time.Now()
-	// broken 后通知一个等待者重试调度。
-	if c.releaseDone != nil {
-		select {
-		case c.releaseDone <- struct{}{}:
-		default:
-		}
-	}
+	// 注意：此处不发送 releaseDone 信号。ownerID 仍被占用，等待者被唤醒后
+	// 会发现 owner 未释放而重新阻塞，造成信号浪费。实际释放由 Release() 完成。
 	c.mu.Unlock()
 	if upstream != nil {
 		_ = upstream.Close()

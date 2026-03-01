@@ -147,38 +147,38 @@ func TestExtractOpenAIRequestMeta_CacheHit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 
-	// 预设缓存
+	// 预设缓存（Handler 层已提取所有字段，包括 PromptCacheKey）
 	c.Set(OpenAIRequestMetaKey, &OpenAIRequestMeta{
-		Model:  "gpt-5",
-		Stream: true,
+		Model:          "gpt-5",
+		Stream:         true,
+		PromptCacheKey: "key-1",
 	})
 
-	body := []byte(`{"model":"gpt-4","stream":false,"prompt_cache_key":"key-1"}`)
+	body := []byte(`{"model":"gpt-4","stream":false,"prompt_cache_key":"key-other"}`)
 	model, stream, promptKey := extractOpenAIRequestMeta(c, body)
 
 	// 应返回缓存值而非 body 中的值
 	require.Equal(t, "gpt-5", model)
 	require.True(t, stream)
-	// prompt_cache_key 应从 body 补充提取
 	require.Equal(t, "key-1", promptKey)
 }
 
-func TestExtractOpenAIRequestMeta_CacheHit_PromptCacheKeyExtractedOnce(t *testing.T) {
+func TestExtractOpenAIRequestMeta_CacheHit_PromptCacheKeyFromHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 
-	meta := &OpenAIRequestMeta{Model: "gpt-5", Stream: false}
+	// Handler 层已提取 PromptCacheKey，meta 设置后只读不写
+	meta := &OpenAIRequestMeta{Model: "gpt-5", Stream: false, PromptCacheKey: "pk-abc"}
 	c.Set(OpenAIRequestMetaKey, meta)
 
-	body := []byte(`{"model":"gpt-4","prompt_cache_key":" pk-abc "}`)
+	body := []byte(`{"model":"gpt-4","prompt_cache_key":"pk-other"}`)
 
-	// 首次调用：应提取 prompt_cache_key
+	// 应返回缓存中的值（Handler 层提取），而非 body 中的值
 	_, _, promptKey1 := extractOpenAIRequestMeta(c, body)
 	require.Equal(t, "pk-abc", promptKey1)
-	require.True(t, meta.extracted)
 
-	// 第二次调用：应直接返回已缓存的值，不再重复提取
+	// 多次调用结果一致
 	_, _, promptKey2 := extractOpenAIRequestMeta(c, body)
 	require.Equal(t, "pk-abc", promptKey2)
 }
@@ -261,5 +261,4 @@ func TestOpenAIRequestMeta_Fields(t *testing.T) {
 	require.Equal(t, "gpt-5", meta.Model)
 	require.True(t, meta.Stream)
 	require.Equal(t, "pk", meta.PromptCacheKey)
-	require.False(t, meta.extracted)
 }
