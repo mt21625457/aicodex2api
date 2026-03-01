@@ -93,6 +93,18 @@ const (
 	openAIWSIngressTurnAbortDispositionCloseGracefully openAIWSIngressTurnAbortDisposition = "close_gracefully"
 )
 
+// openAIWSUpstreamPumpEvent 是上游事件读取泵传递给主 goroutine 的消息载体。
+type openAIWSUpstreamPumpEvent struct {
+	message []byte
+	err     error
+}
+
+const (
+	// openAIWSUpstreamPumpBufferSize 是上游事件读取泵的缓冲 channel 大小。
+	// 缓冲允许上游读取和客户端写入并发执行，吸收客户端写入延迟波动。
+	openAIWSUpstreamPumpBufferSize = 16
+)
+
 var openAIWSLogValueReplacer = strings.NewReplacer(
 	"error", "err",
 	"fallback", "fb",
@@ -3503,35 +3515,61 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				mappedModelBytes = []byte(mappedModel)
 			}
 		}
-		for {
-			readTimeout := s.openAIWSReadTimeout()
-			if clientDisconnected {
-				resolvedTimeout, expired := openAIWSIngressResolveDrainReadTimeout(
-					readTimeout,
-					clientDisconnectDrainDeadline,
-					time.Now(),
-				)
-				if expired {
-					logOpenAIWSModeInfo(
-						"ingress_ws_client_disconnected_drain_timeout account_id=%d turn=%d conn_id=%s timeout_ms=%d",
-						account.ID,
-						turn,
-						truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
-						openAIWSIngressClientDisconnectDrainTimeout.Milliseconds(),
-					)
-					lease.MarkBroken()
-					return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
-						"client_disconnected_drain_timeout",
-						openAIWSIngressClientDisconnectedDrainTimeoutError(openAIWSIngressClientDisconnectDrainTimeout),
-						wroteDownstream,
-						buildPartialResult("client_disconnected_drain_timeout"),
-					)
+		// 启动上游事件读取泵：解耦上游读取和客户端写入，允许二者并发执行。
+		// 读取 goroutine 将上游事件推送到缓冲 channel，主 goroutine 从 channel 消费并处理/转发。
+		// 缓冲 channel 允许上游在客户端写入阻塞时继续读取后续事件，降低端到端延迟。
+		pumpEventCh := make(chan openAIWSUpstreamPumpEvent, openAIWSUpstreamPumpBufferSize)
+		pumpCtx, pumpCancel := context.WithCancel(ctx)
+		defer pumpCancel()
+		go func() {
+			defer close(pumpEventCh)
+			for {
+				msg, readErr := lease.ReadMessageWithContextTimeout(pumpCtx, s.openAIWSReadTimeout())
+				select {
+				case pumpEventCh <- openAIWSUpstreamPumpEvent{message: msg, err: readErr}:
+				case <-pumpCtx.Done():
+					return
 				}
-				readTimeout = resolvedTimeout
+				if readErr != nil {
+					return
+				}
+				// 检测终端/错误事件以终止读取泵。
+				evtType, _ := parseOpenAIWSEventType(msg)
+				if isOpenAIWSTerminalEvent(evtType) || evtType == "error" {
+					return
+				}
 			}
-			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, readTimeout)
-			if readErr != nil {
-				if clientDisconnected && errors.Is(readErr, context.DeadlineExceeded) {
+		}()
+		var drainTimer *time.Timer
+		defer func() {
+			if drainTimer != nil {
+				drainTimer.Stop()
+			}
+		}()
+		for evt := range pumpEventCh {
+			// 排水超时检查：客户端已断连且排水截止时间已过，终止读取。
+			if clientDisconnected && !clientDisconnectDrainDeadline.IsZero() && time.Now().After(clientDisconnectDrainDeadline) {
+				pumpCancel()
+				logOpenAIWSModeInfo(
+					"ingress_ws_client_disconnected_drain_timeout account_id=%d turn=%d conn_id=%s timeout_ms=%d",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+					openAIWSIngressClientDisconnectDrainTimeout.Milliseconds(),
+				)
+				lease.MarkBroken()
+				return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
+					"client_disconnected_drain_timeout",
+					openAIWSIngressClientDisconnectedDrainTimeoutError(openAIWSIngressClientDisconnectDrainTimeout),
+					wroteDownstream,
+					buildPartialResult("client_disconnected_drain_timeout"),
+				)
+			}
+			upstreamMessage := evt.message
+			if evt.err != nil {
+				readErr := evt.err
+				if clientDisconnected {
+					// 排水期间读取失败（上游关闭或读取泵被取消），按排水超时处理。
 					logOpenAIWSModeInfo(
 						"ingress_ws_client_disconnected_drain_timeout account_id=%d turn=%d conn_id=%s timeout_ms=%d",
 						account.ID,
@@ -3710,6 +3748,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						clientDisconnected = true
 						if clientDisconnectDrainDeadline.IsZero() {
 							clientDisconnectDrainDeadline = time.Now().Add(openAIWSIngressClientDisconnectDrainTimeout)
+							// 排水定时器到期后取消读取泵，确保不会无限等待上游。
+							drainTimer = time.AfterFunc(openAIWSIngressClientDisconnectDrainTimeout, pumpCancel)
 						}
 						closeStatus, closeReason := summarizeOpenAIWSReadCloseError(err)
 						logOpenAIWSModeInfo(
@@ -3790,6 +3830,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}, nil
 			}
 		}
+		// 读取泵 channel 关闭但未收到终端事件（上游异常断连），按读取错误处理。
+		lease.MarkBroken()
+		return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
+			"read_upstream",
+			errors.New("upstream event pump closed unexpectedly"),
+			wroteDownstream,
+			buildPartialResult("read_upstream"),
+		)
 	}
 
 	currentPayload := firstPayload.payloadRaw
