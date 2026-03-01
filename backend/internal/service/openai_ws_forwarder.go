@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -266,6 +267,16 @@ func isOpenAIWSIngressToolOutputNotFound(err error) bool {
 		return false
 	}
 	return !turnErr.wroteDownstream
+}
+
+// openAIWSIngressTurnWroteDownstream 返回本次 turn 是否已向客户端写入过数据。
+// 用于 ContinueTurn abort 时判断是否需要补发 error 事件。
+func openAIWSIngressTurnWroteDownstream(err error) bool {
+	var turnErr *openAIWSIngressTurnError
+	if !errors.As(err, &turnErr) || turnErr == nil {
+		return false
+	}
+	return turnErr.wroteDownstream
 }
 
 func isOpenAIWSIngressUpstreamErrorEvent(err error) bool {
@@ -3521,6 +3532,27 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						buildPartialResult("client_disconnected_drain_timeout"),
 					)
 				}
+				readErrClass := "unknown"
+				if errors.Is(readErr, context.Canceled) {
+					readErrClass = "context_canceled"
+				} else if errors.Is(readErr, context.DeadlineExceeded) {
+					readErrClass = "deadline_exceeded"
+				} else if isOpenAIWSClientDisconnectError(readErr) {
+					readErrClass = "upstream_closed"
+				} else if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+					readErrClass = "eof"
+				}
+				logOpenAIWSModeInfo(
+					"ingress_ws_upstream_read_error account_id=%d turn=%d conn_id=%s class=%s events_received=%d wrote_downstream=%v response_id=%s cause=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+					normalizeOpenAIWSLogValue(readErrClass),
+					eventCount,
+					wroteDownstream,
+					truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(readErr.Error(), openAIWSLogValueMaxLen),
+				)
 				lease.MarkBroken()
 				return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
 					"read_upstream",
@@ -3833,6 +3865,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return false
 		}
 		if turnPrevRecoveryTried || !s.openAIWSIngressPreviousResponseRecoveryEnabled() {
+			skipReason := "already_tried"
+			if !s.openAIWSIngressPreviousResponseRecoveryEnabled() {
+				skipReason = "recovery_disabled"
+			}
+			logOpenAIWSModeInfo(
+				"ingress_ws_prev_response_recovery_skipped account_id=%d turn=%d conn_id=%s reason=%s is_prev_not_found=%v is_tool_output_missing=%v",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				normalizeOpenAIWSLogValue(skipReason),
+				isPrevNotFound,
+				isToolOutputMissing,
+			)
 			return false
 		}
 		currentPreviousResponseID := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id"))
@@ -3978,15 +4023,49 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					return true
 				}
 			}
+			// Layer 2 降级：set/align 策略均失败，移除 previous_response_id 后完整重放。
+			// 保留无效 ID 重试 (retry_keep) 100% 必败，改为 drop 以避免死循环。
 			logOpenAIWSModeInfo(
-				"ingress_ws_prev_response_recovery account_id=%d turn=%d conn_id=%s action=retry_keep_previous_response_id previous_response_id=%s",
+				"ingress_ws_prev_response_recovery account_id=%d turn=%d conn_id=%s action=drop_previous_response_id_function_call_fallback previous_response_id=%s",
 				account.ID,
 				turn,
 				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
 				truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
 			)
+			droppedPayload, removed, dropErr := dropPreviousResponseIDFromRawPayload(currentPayload)
+			if dropErr != nil || !removed {
+				dropReason := "not_removed"
+				if dropErr != nil {
+					dropReason = "drop_error"
+				}
+				logOpenAIWSModeInfo(
+					"ingress_ws_prev_response_recovery_skip account_id=%d turn=%d conn_id=%s reason=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+					normalizeOpenAIWSLogValue(dropReason),
+				)
+				return false
+			}
+			droppedWithInput, setInputErr := setOpenAIWSPayloadInputSequence(
+				droppedPayload,
+				currentTurnReplayInput,
+				currentTurnReplayInputExists,
+			)
+			if setInputErr != nil {
+				logOpenAIWSModeInfo(
+					"ingress_ws_prev_response_recovery_skip account_id=%d turn=%d conn_id=%s reason=set_full_input_error cause=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(setInputErr.Error(), openAIWSLogValueMaxLen),
+				)
+				return false
+			}
+			currentPayload = droppedWithInput
+			currentPayloadBytes = len(droppedWithInput)
+			clearSessionLastResponseID()
 			resetSessionLease(true)
-			strictAffinityBypassOnce = true
 			skipBeforeTurn = true
 			return true
 		}
@@ -4047,6 +4126,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 	retryIngressTurn := func(relayErr error, turn int, connID string) bool {
 		if !isOpenAIWSIngressTurnRetryable(relayErr) || turnRetry >= 1 {
+			retrySkipReason := "not_retryable"
+			if turnRetry >= 1 {
+				retrySkipReason = "retry_exhausted"
+			}
+			logOpenAIWSModeInfo(
+				"ingress_ws_turn_retry_skipped account_id=%d turn=%d conn_id=%s reason=%s retry_count=%d err_stage=%s",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				normalizeOpenAIWSLogValue(retrySkipReason),
+				turnRetry,
+				truncateOpenAIWSLogValue(openAIWSIngressTurnRetryReason(relayErr), openAIWSLogValueMaxLen),
+			)
 			return false
 		}
 		if isStrictAffinityTurn(currentPayload) {
@@ -4596,6 +4688,35 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			case openAIWSIngressTurnAbortDispositionContinueTurn:
 				// turn 级终止：当前 turn 失败，但客户端 WS 会话继续。
 				// 这样可与 Codex 客户端语义对齐：后续 turn 允许在新上游连接上继续进行。
+				//
+				// 关键修复：若未向客户端写入过任何数据 (wroteDownstream=false)，
+				// 必须补发 error 事件通知客户端本轮失败，否则客户端会一直等待响应，
+				// 而服务端在 advanceToNextClientTurn 中等待客户端下一条消息 → 双向死锁。
+				if !openAIWSIngressTurnWroteDownstream(relayErr) {
+					abortMessage := "turn failed: " + string(abortReason)
+					if finalErr != nil {
+						abortMessage = finalErr.Error()
+					}
+					errorEvent := []byte(`{"type":"error","error":{"type":"server_error","code":"` + string(abortReason) + `","message":` + strconv.Quote(abortMessage) + `}}`)
+					if writeErr := writeClientMessage(errorEvent); writeErr != nil {
+						logOpenAIWSModeInfo(
+							"ingress_ws_turn_abort_notify_failed account_id=%d turn=%d conn_id=%s reason=%s cause=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+							normalizeOpenAIWSLogValue(string(abortReason)),
+							truncateOpenAIWSLogValue(writeErr.Error(), openAIWSLogValueMaxLen),
+						)
+					} else {
+						logOpenAIWSModeInfo(
+							"ingress_ws_turn_abort_notified account_id=%d turn=%d conn_id=%s reason=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+							normalizeOpenAIWSLogValue(string(abortReason)),
+						)
+					}
+				}
 				resetSessionLease(true)
 				clearSessionLastResponseID()
 				turnRetry = 0
