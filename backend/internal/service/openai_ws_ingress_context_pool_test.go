@@ -379,24 +379,24 @@ func TestOpenAIWSIngressContextPool_ScoreAndStickinessHelpers(t *testing.T) {
 
 	allowStrong, scoreStrong := openAIWSIngressMigrationPolicyByStickiness(openAIWSIngressStickinessStrong)
 	require.False(t, allowStrong)
-	require.Equal(t, 85.0, scoreStrong)
+	require.Equal(t, 80.0, scoreStrong)
 	allowBalanced, scoreBalanced := openAIWSIngressMigrationPolicyByStickiness(openAIWSIngressStickinessBalanced)
 	require.True(t, allowBalanced)
-	require.Equal(t, 68.0, scoreBalanced)
+	require.Equal(t, 65.0, scoreBalanced)
 	allowWeak, scoreWeak := openAIWSIngressMigrationPolicyByStickiness("weak_or_unknown")
 	require.True(t, allowWeak)
-	require.Equal(t, 45.0, scoreWeak)
+	require.Equal(t, 40.0, scoreWeak)
 
 	busyCtx := &openAIWSIngressContext{ownerID: "owner_busy"}
-	_, _, ok := scoreOpenAIWSIngressMigrationCandidate(busyCtx, now)
+	_, _, ok := scoreOpenAIWSIngressMigrationCandidate(busyCtx, now, nil)
 	require.False(t, ok, "owner 占用中的 context 不应作为迁移候选")
 
 	oldIdle := &openAIWSIngressContext{}
 	oldIdle.setLastUsedAt(now.Add(-5 * time.Minute))
 	recentIdle := &openAIWSIngressContext{}
 	recentIdle.setLastUsedAt(now.Add(-10 * time.Second))
-	scoreOld, _, okOld := scoreOpenAIWSIngressMigrationCandidate(oldIdle, now)
-	scoreRecent, _, okRecent := scoreOpenAIWSIngressMigrationCandidate(recentIdle, now)
+	scoreOld, _, okOld := scoreOpenAIWSIngressMigrationCandidate(oldIdle, now, nil)
+	scoreRecent, _, okRecent := scoreOpenAIWSIngressMigrationCandidate(recentIdle, now, nil)
 	require.True(t, okOld)
 	require.True(t, okRecent)
 	require.Greater(t, scoreOld, scoreRecent, "更久未使用的空闲 context 应该更易被迁移")
@@ -409,7 +409,7 @@ func TestOpenAIWSIngressContextPool_ScoreAndStickinessHelpers(t *testing.T) {
 		lastMigrationAt: now.Add(-10 * time.Second),
 	}
 	penalized.setLastUsedAt(now.Add(-5 * time.Minute))
-	scorePenalized, _, okPenalized := scoreOpenAIWSIngressMigrationCandidate(penalized, now)
+	scorePenalized, _, okPenalized := scoreOpenAIWSIngressMigrationCandidate(penalized, now, nil)
 	require.True(t, okPenalized)
 	require.Less(t, scorePenalized, scoreOld, "近期失败和频繁迁移应降低迁移分数")
 }
@@ -563,12 +563,14 @@ func TestOpenAIWSIngressContextLease_AccessorsAndPingGuards(t *testing.T) {
 	ctxItem.mu.Lock()
 	ctxItem.ownerID = "other_owner"
 	ctxItem.mu.Unlock()
+	lease.cachedConn = nil // clear cache to force re-validation (simulates migration)
 	require.ErrorIs(t, lease.PingWithTimeout(time.Millisecond), errOpenAIWSConnClosed, "owner 不匹配时应拒绝访问")
 
 	ctxItem.mu.Lock()
 	ctxItem.ownerID = "owner_ok"
 	ctxItem.upstream = &openAIWSPingFailConn{}
 	ctxItem.mu.Unlock()
+	lease.cachedConn = nil // clear cache to pick up new upstream
 	require.Error(t, lease.PingWithTimeout(time.Millisecond), "上游 ping 失败应透传错误")
 
 	lease.Release()
@@ -788,4 +790,270 @@ func (d *openAIWSBlockingDialer) DialCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.dialCount
+}
+
+// ---------------------------------------------------------------------------
+// Load-aware migration scoring tests
+// ---------------------------------------------------------------------------
+
+func TestScoreOpenAIWSIngressMigrationCandidate_HighErrorRatePenalty(t *testing.T) {
+	now := time.Now()
+	stats := newOpenAIAccountRuntimeStats()
+	accountID := int64(9001)
+
+	// Report a pattern of failures interspersed with occasional successes.
+	// This pushes the error rate high without tripping the circuit breaker
+	// (consecutive failures stay below the default threshold of 5).
+	for i := 0; i < 6; i++ {
+		stats.report(accountID, false, nil, "", 0)
+		stats.report(accountID, false, nil, "", 0)
+		stats.report(accountID, false, nil, "", 0)
+		stats.report(accountID, true, nil, "", 0) // reset consecutive fail counter
+	}
+	require.False(t, stats.isCircuitOpen(accountID), "circuit breaker should remain closed for this test")
+
+	ctx := &openAIWSIngressContext{accountID: accountID}
+	ctx.setLastUsedAt(now.Add(-5 * time.Minute))
+
+	scoreWithStats, _, okStats := scoreOpenAIWSIngressMigrationCandidate(ctx, now, stats)
+	require.True(t, okStats)
+
+	// Score the same context without stats (nil) for comparison.
+	scoreWithout, _, okWithout := scoreOpenAIWSIngressMigrationCandidate(ctx, now, nil)
+	require.True(t, okWithout)
+
+	require.Less(t, scoreWithStats, scoreWithout,
+		"a context on a high-error-rate account should receive a lower migration score")
+
+	// The error rate penalty should be approximately errorRate * 30.
+	// Since the circuit breaker is not open, the only load-aware penalty is
+	// errorRate * 30.
+	errorRate, _, _ := stats.snapshot(accountID)
+	expectedPenalty := errorRate * 30
+	require.InDelta(t, expectedPenalty, scoreWithout-scoreWithStats, 1.0,
+		"penalty should be approximately errorRate * 30")
+}
+
+func TestScoreOpenAIWSIngressMigrationCandidate_CircuitOpenPenalty(t *testing.T) {
+	now := time.Now()
+	stats := newOpenAIAccountRuntimeStats()
+	accountID := int64(9002)
+
+	// Trip the circuit breaker by reporting consecutive failures beyond the
+	// default threshold (5).
+	for i := 0; i < defaultCircuitBreakerFailThreshold+1; i++ {
+		stats.report(accountID, false, nil, "", 0)
+	}
+	require.True(t, stats.isCircuitOpen(accountID), "circuit breaker should be open after many failures")
+
+	ctx := &openAIWSIngressContext{accountID: accountID}
+	ctx.setLastUsedAt(now.Add(-5 * time.Minute))
+
+	scoreCircuitOpen, _, ok := scoreOpenAIWSIngressMigrationCandidate(ctx, now, stats)
+	require.True(t, ok)
+
+	// Score without stats for comparison.
+	scoreBaseline, _, okBase := scoreOpenAIWSIngressMigrationCandidate(ctx, now, nil)
+	require.True(t, okBase)
+
+	// The circuit-open penalty is -50, plus errorRate*30, so the score should
+	// be substantially lower.
+	require.Less(t, scoreCircuitOpen, scoreBaseline-45,
+		"a context on a circuit-open account should have a very low migration score")
+
+	// In practice, the combined penalty should bring the score below any
+	// reasonable minimum migration threshold (weakest = 40).
+	_, weakMin := openAIWSIngressMigrationPolicyByStickiness(openAIWSIngressStickinessWeak)
+	require.Less(t, scoreCircuitOpen, weakMin,
+		"circuit-open accounts should score below even the weakest migration threshold")
+}
+
+func TestScoreOpenAIWSIngressMigrationCandidate_NilStatsFallback(t *testing.T) {
+	now := time.Now()
+
+	ctx := &openAIWSIngressContext{accountID: 9003}
+	ctx.setLastUsedAt(now.Add(-5 * time.Minute))
+
+	scoreNil, _, okNil := scoreOpenAIWSIngressMigrationCandidate(ctx, now, nil)
+	require.True(t, okNil)
+
+	// Create stats but report nothing for this account -- snapshot returns 0.
+	emptyStats := newOpenAIAccountRuntimeStats()
+	scoreEmpty, _, okEmpty := scoreOpenAIWSIngressMigrationCandidate(ctx, now, emptyStats)
+	require.True(t, okEmpty)
+
+	// With no data for the account, the load-aware path should add zero
+	// penalty, yielding the same score as nil stats.
+	require.InDelta(t, scoreNil, scoreEmpty, 0.001,
+		"when scheduler stats have no data for the account, score should match nil-stats baseline")
+}
+
+func TestScoreOpenAIWSIngressMigrationCandidate_NilContext(t *testing.T) {
+	now := time.Now()
+	score, _, ok := scoreOpenAIWSIngressMigrationCandidate(nil, now, nil)
+	require.False(t, ok)
+	require.Equal(t, 0.0, score)
+}
+
+func TestScoreOpenAIWSIngressMigrationCandidate_IdleDurationBranches(t *testing.T) {
+	now := time.Now()
+
+	// Very recently used (≤15s): penalty of -15
+	recentCtx := &openAIWSIngressContext{}
+	recentCtx.setLastUsedAt(now.Add(-5 * time.Second))
+	scoreRecent, _, ok := scoreOpenAIWSIngressMigrationCandidate(recentCtx, now, nil)
+	require.True(t, ok)
+	require.InDelta(t, 100.0-15.0, scoreRecent, 0.5, "very recently used should get -15 penalty")
+
+	// Medium idle (between 15s and 3min): bonus = idleDuration.Seconds() / 12
+	mediumCtx := &openAIWSIngressContext{}
+	mediumCtx.setLastUsedAt(now.Add(-90 * time.Second)) // 90s idle
+	scoreMedium, _, ok := scoreOpenAIWSIngressMigrationCandidate(mediumCtx, now, nil)
+	require.True(t, ok)
+	expectedBonus := 90.0 / 12.0 // 7.5
+	require.InDelta(t, 100.0+expectedBonus, scoreMedium, 0.5, "medium idle should get proportional bonus")
+
+	// Long idle (≥3min): bonus of +16
+	longCtx := &openAIWSIngressContext{}
+	longCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreLong, _, ok := scoreOpenAIWSIngressMigrationCandidate(longCtx, now, nil)
+	require.True(t, ok)
+	require.InDelta(t, 100.0+16.0, scoreLong, 0.5, "long idle should get +16 bonus")
+
+	// Verify ordering: long > medium > recent
+	require.Greater(t, scoreLong, scoreMedium, "longer idle should score higher than medium")
+	require.Greater(t, scoreMedium, scoreRecent, "medium idle should score higher than very recent")
+}
+
+func TestScoreOpenAIWSIngressMigrationCandidate_BrokenAndFailures(t *testing.T) {
+	now := time.Now()
+
+	// Broken context: -30
+	brokenCtx := &openAIWSIngressContext{broken: true}
+	brokenCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreBroken, _, ok := scoreOpenAIWSIngressMigrationCandidate(brokenCtx, now, nil)
+	require.True(t, ok)
+
+	cleanCtx := &openAIWSIngressContext{}
+	cleanCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreClean, _, ok := scoreOpenAIWSIngressMigrationCandidate(cleanCtx, now, nil)
+	require.True(t, ok)
+	require.InDelta(t, 30.0, scoreClean-scoreBroken, 0.5, "broken should subtract 30")
+
+	// High failure streak (capped at 40)
+	highFailCtx := &openAIWSIngressContext{failureStreak: 5}
+	highFailCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreHighFail, _, ok := scoreOpenAIWSIngressMigrationCandidate(highFailCtx, now, nil)
+	require.True(t, ok)
+	// 5*12=60 but capped at 40
+	require.InDelta(t, 40.0, scoreClean-scoreHighFail, 0.5, "failure streak penalty should cap at 40")
+
+	// Recent failure (within 2 min): -18
+	recentFailCtx := &openAIWSIngressContext{lastFailureAt: now.Add(-30 * time.Second)}
+	recentFailCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreRecentFail, _, ok := scoreOpenAIWSIngressMigrationCandidate(recentFailCtx, now, nil)
+	require.True(t, ok)
+	require.InDelta(t, 18.0, scoreClean-scoreRecentFail, 0.5, "recent failure should subtract 18")
+
+	// Old failure (>2 min): no penalty
+	oldFailCtx := &openAIWSIngressContext{lastFailureAt: now.Add(-5 * time.Minute)}
+	oldFailCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreOldFail, _, ok := scoreOpenAIWSIngressMigrationCandidate(oldFailCtx, now, nil)
+	require.True(t, ok)
+	require.InDelta(t, scoreClean, scoreOldFail, 0.5, "old failure should have no penalty")
+}
+
+func TestScoreOpenAIWSIngressMigrationCandidate_MigrationPenalties(t *testing.T) {
+	now := time.Now()
+
+	cleanCtx := &openAIWSIngressContext{}
+	cleanCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreClean, _, _ := scoreOpenAIWSIngressMigrationCandidate(cleanCtx, now, nil)
+
+	// Recent migration (within 1 min): -10
+	recentMigCtx := &openAIWSIngressContext{lastMigrationAt: now.Add(-30 * time.Second)}
+	recentMigCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreRecentMig, _, ok := scoreOpenAIWSIngressMigrationCandidate(recentMigCtx, now, nil)
+	require.True(t, ok)
+	require.InDelta(t, 10.0, scoreClean-scoreRecentMig, 0.5, "recent migration should subtract 10")
+
+	// High migration count (capped at 20)
+	highMigCtx := &openAIWSIngressContext{migrationCount: 6}
+	highMigCtx.setLastUsedAt(now.Add(-5 * time.Minute))
+	scoreHighMig, _, ok := scoreOpenAIWSIngressMigrationCandidate(highMigCtx, now, nil)
+	require.True(t, ok)
+	// 6*4=24 but capped at 20
+	require.InDelta(t, 20.0, scoreClean-scoreHighMig, 0.5, "migration count penalty should cap at 20")
+}
+
+func TestScoreOpenAIWSIngressMigrationCandidate_CombinedPenalties(t *testing.T) {
+	now := time.Now()
+	// All penalties combined: broken(-30) + failStreak 1*12(-12) + recentFail(-18) + recentMig(-10) + migCount 1*4(-4) + recentIdle(-15)
+	worstCtx := &openAIWSIngressContext{
+		broken:          true,
+		failureStreak:   1,
+		lastFailureAt:   now.Add(-30 * time.Second),
+		migrationCount:  1,
+		lastMigrationAt: now.Add(-30 * time.Second),
+	}
+	worstCtx.setLastUsedAt(now.Add(-5 * time.Second))
+	score, _, ok := scoreOpenAIWSIngressMigrationCandidate(worstCtx, now, nil)
+	require.True(t, ok)
+	expected := 100.0 - 30.0 - 12.0 - 18.0 - 10.0 - 4.0 - 15.0 // = 11.0
+	require.InDelta(t, expected, score, 0.5, "all penalties should stack correctly")
+}
+
+func TestOpenAIWSIngressContextPool_MigrationBlockedByCircuitBreaker(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	stats := newOpenAIAccountRuntimeStats()
+	pool.schedulerStats = stats
+
+	accountID := int64(9004)
+
+	// Trip circuit breaker for this account.
+	for i := 0; i < defaultCircuitBreakerFailThreshold+1; i++ {
+		stats.report(accountID, false, nil, "", 0)
+	}
+	require.True(t, stats.isCircuitOpen(accountID))
+
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{
+			&openAIWSCaptureConn{},
+		},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: accountID, Concurrency: 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Acquire the only slot.
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     30,
+		SessionHash: "session_cb_a",
+		OwnerID:     "owner_a",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease1)
+	lease1.Release()
+
+	// Now try a different session -- migration should fail because the only
+	// candidate context is on a circuit-open account, whose score will be
+	// below the minimum threshold.
+	_, err = pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     30,
+		SessionHash: "session_cb_b",
+		OwnerID:     "owner_b",
+		WSURL:       "ws://test-upstream",
+	})
+	require.ErrorIs(t, err, errOpenAIWSConnQueueFull,
+		"migration to a circuit-open account should be blocked")
 }

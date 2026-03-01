@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
@@ -125,3 +127,142 @@ func BenchmarkReplaceOpenAIWSMessageModel_DualReplace(b *testing.B) {
 		benchmarkOpenAIWSBytesSink = replaceOpenAIWSMessageModel(event, "gpt-5.1", "custom-model")
 	}
 }
+
+// --- Optimization benchmarks ---
+
+var benchmarkOpenAIWSConnSink openAIWSClientConn
+
+func BenchmarkTouchLease_Full(b *testing.B) {
+	ctx := &openAIWSIngressContext{}
+	ttl := 10 * time.Minute
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx.touchLease(time.Now(), ttl)
+	}
+}
+
+func BenchmarkMaybeTouchLease_Throttled(b *testing.B) {
+	ctx := &openAIWSIngressContext{}
+	ttl := 10 * time.Minute
+	ctx.touchLease(time.Now(), ttl) // seed the initial touch
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx.maybeTouchLease(ttl)
+	}
+}
+
+func BenchmarkActiveConn_CachedPath(b *testing.B) {
+	conn := &benchmarkOpenAIWSNoopConn{}
+	ctx := &openAIWSIngressContext{ownerID: "bench_owner", upstream: conn}
+	lease := &openAIWSIngressContextLease{context: ctx, ownerID: "bench_owner"}
+	// Prime the cache
+	_, _ = lease.activeConn()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSConnSink, _ = lease.activeConn()
+	}
+}
+
+func BenchmarkActiveConn_MutexPath(b *testing.B) {
+	conn := &benchmarkOpenAIWSNoopConn{}
+	ctx := &openAIWSIngressContext{ownerID: "bench_owner", upstream: conn}
+	lease := &openAIWSIngressContextLease{context: ctx, ownerID: "bench_owner"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		lease.cachedConn = nil // force mutex path each iteration
+		benchmarkOpenAIWSConnSink, _ = lease.activeConn()
+	}
+}
+
+func BenchmarkParseOpenAIWSEventType_Lightweight(b *testing.B) {
+	event := []byte(`{"type":"response.output_text.delta","delta":"hello","response":{"id":"resp_1","model":"gpt-5.1"}}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		et, rid := parseOpenAIWSEventType(event)
+		benchmarkOpenAIWSStringSink = et
+		benchmarkOpenAIWSStringSink = rid
+	}
+}
+
+func BenchmarkParseOpenAIWSEventEnvelope_Full(b *testing.B) {
+	event := []byte(`{"type":"response.output_text.delta","delta":"hello","response":{"id":"resp_1","model":"gpt-5.1"}}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		et, rid, resp := parseOpenAIWSEventEnvelope(event)
+		benchmarkOpenAIWSStringSink = et
+		benchmarkOpenAIWSStringSink = rid
+		benchmarkOpenAIWSBoolSink = resp.Exists()
+	}
+}
+
+func BenchmarkSessionTurnStateKey_Strconv(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSStringSink = openAIWSSessionTurnStateKey(int64(i%1000+1), "session_hash_bench")
+	}
+}
+
+func BenchmarkResponseAccountCacheKey_XXHash(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSStringSink = openAIWSResponseAccountCacheKey(fmt.Sprintf("resp_bench_%d", i%1000))
+	}
+}
+
+func BenchmarkIsOpenAIWSTerminalEvent(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSBoolSink = isOpenAIWSTerminalEvent("response.completed")
+	}
+}
+
+func BenchmarkIsOpenAIWSTokenEvent(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSBoolSink = isOpenAIWSTokenEvent("response.output_text.delta")
+	}
+}
+
+func BenchmarkStateStore_ShardedBindGet(b *testing.B) {
+	store := NewOpenAIWSStateStore(nil).(*defaultOpenAIWSStateStore)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := fmt.Sprintf("resp_%d", i%1000)
+		store.BindResponseConn(key, "conn_bench", time.Minute)
+		benchmarkOpenAIWSStringSink, benchmarkOpenAIWSBoolSink = store.GetResponseConn(key)
+	}
+}
+
+func BenchmarkDeriveOpenAISessionHash(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSStringSink = deriveOpenAISessionHash("session-id-benchmark-value")
+	}
+}
+
+func BenchmarkDeriveOpenAILegacySessionHash(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkOpenAIWSStringSink = deriveOpenAILegacySessionHash("session-id-benchmark-value")
+	}
+}
+
+type benchmarkOpenAIWSNoopConn struct{}
+
+func (c *benchmarkOpenAIWSNoopConn) WriteJSON(_ context.Context, _ any) error      { return nil }
+func (c *benchmarkOpenAIWSNoopConn) ReadMessage(_ context.Context) ([]byte, error)  { return nil, nil }
+func (c *benchmarkOpenAIWSNoopConn) Ping(_ context.Context) error                   { return nil }
+func (c *benchmarkOpenAIWSNoopConn) Close() error                                   { return nil }

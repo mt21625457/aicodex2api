@@ -271,7 +271,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
@@ -288,7 +288,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				)
 				continue
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 			fields := []zap.Field{
 				zap.Int64("account_id", account.ID),
@@ -303,9 +303,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 		if result != nil {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			var ttftMsVal float64
+			if result.FirstTokenMs != nil && *result.FirstTokenMs > 0 {
+				ttftMsVal = float64(*result.FirstTokenMs)
+			}
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs, reqModel, ttftMsVal)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil, reqModel, 0)
 		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
@@ -672,11 +676,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 
 	account := selection.Account
-	wsIngressMode, wsDedicatedMode, wsModeRouterV2Enabled := h.resolveOpenAIWSIngressMode(account)
+	wsIngressMode, wsModeRouterV2Enabled := h.resolveOpenAIWSIngressMode(account)
 	reqLog = reqLog.With(
 		zap.Bool("openai_ws_mode_router_v2_enabled", wsModeRouterV2Enabled),
 		zap.String("openai_ws_ingress_mode", wsIngressMode),
-		zap.Bool("openai_ws_dedicated_mode", wsDedicatedMode),
 	)
 	accountMaxConcurrency := account.Concurrency
 	if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
@@ -723,7 +726,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.Int("candidate_count", scheduleDecision.CandidateCount),
 		zap.Bool("openai_ws_mode_router_v2_enabled", wsModeRouterV2Enabled),
 		zap.String("openai_ws_ingress_mode", wsIngressMode),
-		zap.Bool("openai_ws_dedicated_mode", wsDedicatedMode),
 	)
 
 	hooks := &service.OpenAIWSIngressHooks{
@@ -763,7 +765,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			if turnErr != nil || result == nil {
 				return
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			var turnTTFTMs float64
+			if result.FirstTokenMs != nil && *result.FirstTokenMs > 0 {
+				turnTTFTMs = float64(*result.FirstTokenMs)
+			}
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs, reqModel, turnTTFTMs)
 			h.submitUsageRecordTask(func(taskCtx context.Context) {
 				if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
 					Result:        result,
@@ -786,7 +792,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 
 	if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, firstMessage, hooks); err != nil {
-		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
 		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
 		reqLog.Warn("openai.websocket_proxy_failed",
 			zap.Int64("account_id", account.ID),
@@ -893,11 +899,18 @@ func (h *OpenAIGatewayHandler) submitUsageRecordTask(task service.UsageRecordTas
 		return
 	}
 	if h.usageRecordWorkerPool != nil {
-		h.usageRecordWorkerPool.Submit(task)
-		return
+		mode := h.usageRecordWorkerPool.Submit(task)
+		if mode != service.UsageRecordSubmitModeDropped {
+			return
+		}
+		// 队列溢出导致 submit 丢弃时，同步兜底执行，避免 usage 漏记费。
+		logger.L().With(
+			zap.String("component", "handler.openai_gateway.responses"),
+			zap.String("submit_mode", mode.String()),
+		).Warn("openai.usage_record_task_submit_dropped_sync_fallback")
 	}
 	// 回退路径：worker 池未注入时同步执行，避免退回到无界 goroutine 模式。
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), h.usageRecordSyncFallbackTimeout())
 	defer cancel()
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -908,6 +921,21 @@ func (h *OpenAIGatewayHandler) submitUsageRecordTask(task service.UsageRecordTas
 		}
 	}()
 	task(ctx)
+}
+
+func (h *OpenAIGatewayHandler) usageRecordSyncFallbackTimeout() time.Duration {
+	timeout := 10 * time.Second
+	if h != nil && h.cfg != nil && h.cfg.Gateway.UsageRecord.TaskTimeoutSeconds > 0 {
+		timeout = time.Duration(h.cfg.Gateway.UsageRecord.TaskTimeoutSeconds) * time.Second
+	}
+	// keep a sane bound on synchronous fallback to limit request-path blocking.
+	if timeout < time.Second {
+		return time.Second
+	}
+	if timeout > 10*time.Second {
+		return 10 * time.Second
+	}
+	return timeout
 }
 
 // handleConcurrencyError handles concurrency-related errors with proper 429 response
@@ -1037,22 +1065,22 @@ func openAIWSIngressFallbackSessionSeed(userID, apiKeyID int64, groupID *int64) 
 	return fmt.Sprintf("openai_ws_ingress:%d:%d:%d", gid, userID, apiKeyID)
 }
 
-func (h *OpenAIGatewayHandler) resolveOpenAIWSIngressMode(account *service.Account) (mode string, dedicated bool, modeRouterV2Enabled bool) {
+func (h *OpenAIGatewayHandler) resolveOpenAIWSIngressMode(account *service.Account) (mode string, modeRouterV2Enabled bool) {
 	if account == nil {
-		return "account_missing", false, false
+		return "account_missing", false
 	}
 	if h == nil || h.cfg == nil {
-		return "config_missing", false, false
+		return "config_missing", false
 	}
 	modeRouterV2Enabled = h.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
 	if !modeRouterV2Enabled {
-		return "legacy", false, false
+		return "legacy", false
 	}
 	resolvedMode := account.ResolveOpenAIResponsesWebSocketV2Mode(h.cfg.Gateway.OpenAIWS.IngressModeDefault)
 	if resolvedMode == "" {
-		resolvedMode = service.OpenAIWSIngressModeShared
+		resolvedMode = service.OpenAIWSIngressModeOff
 	}
-	return resolvedMode, resolvedMode == service.OpenAIWSIngressModeDedicated, true
+	return resolvedMode, true
 }
 
 func isOpenAIWSUpgradeRequest(r *http.Request) bool {

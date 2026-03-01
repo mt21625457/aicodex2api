@@ -6342,7 +6342,7 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 
 	inserted, err := s.usageLogRepo.Create(ctx, usageLog)
 	if err != nil {
-		logger.LegacyPrintf("service.gateway", "Create usage log failed: %v", err)
+		return fmt.Errorf("create usage log: %w", err)
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -6351,7 +6351,7 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		return nil
 	}
 
-	shouldBill := inserted || err != nil
+	shouldBill := inserted
 
 	// 根据计费类型执行扣费
 	if isSubscriptionBilling {
@@ -6532,7 +6532,7 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 
 	inserted, err := s.usageLogRepo.Create(ctx, usageLog)
 	if err != nil {
-		logger.LegacyPrintf("service.gateway", "Create usage log failed: %v", err)
+		return fmt.Errorf("create usage log: %w", err)
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -6541,7 +6541,7 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 		return nil
 	}
 
-	shouldBill := inserted || err != nil
+	shouldBill := inserted
 
 	// 根据计费类型执行扣费
 	if isSubscriptionBilling {

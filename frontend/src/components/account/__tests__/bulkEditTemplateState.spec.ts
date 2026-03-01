@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { OPENAI_WS_MODE_SHARED } from '@/utils/openaiWsMode'
+import { OPENAI_WS_MODE_CTX_POOL } from '@/utils/openaiWsMode'
 import {
   createBulkEditTemplateStateSnapshot,
   createDefaultBulkEditTemplateState,
@@ -28,7 +28,7 @@ describe('bulkEditTemplateState', () => {
       allowedModels: ['a', 1, 'b'],
       modelMappings: [{ from: 'x', to: 'y' }, { from: 'bad' }, 'bad-item'],
       selectedErrorCodes: [429, '503', 529.8],
-      openAIWSMode: 'shared',
+      openAIWSMode: 'ctx_pool',
       proxyId: 18.9,
       concurrency: 0,
       priority: 9.4,
@@ -43,7 +43,7 @@ describe('bulkEditTemplateState', () => {
     expect(state.allowedModels).toEqual(['a', 'b'])
     expect(state.modelMappings).toEqual([{ from: 'x', to: 'y' }])
     expect(state.selectedErrorCodes).toEqual([429, 529])
-    expect(state.openAIWSMode).toBe('shared')
+    expect(state.openAIWSMode).toBe('ctx_pool')
     expect(state.proxyId).toBe(18)
     expect(state.concurrency).toBe(1)
     expect(state.priority).toBe(9)
@@ -63,7 +63,7 @@ describe('bulkEditTemplateState', () => {
 
   it('creates snapshot as deep-normalized clone', () => {
     const source = createDefaultBulkEditTemplateState()
-    source.openAIWSMode = OPENAI_WS_MODE_SHARED
+    source.openAIWSMode = OPENAI_WS_MODE_CTX_POOL
     source.allowedModels.push('gpt-5.2-codex')
     source.modelMappings.push({ from: 'a', to: 'b' })
     source.groupIds.push(9)
@@ -73,7 +73,7 @@ describe('bulkEditTemplateState', () => {
     source.modelMappings[0].to = 'changed'
     source.groupIds[0] = 0
 
-    expect(snapshot.openAIWSMode).toBe('shared')
+    expect(snapshot.openAIWSMode).toBe('ctx_pool')
     expect(snapshot.allowedModels).toEqual(['gpt-5.2-codex'])
     expect(snapshot.modelMappings).toEqual([{ from: 'a', to: 'b' }])
     expect(snapshot.groupIds).toEqual([9])
