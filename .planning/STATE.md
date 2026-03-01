@@ -46,6 +46,7 @@ Progress: [████████░░] 75%
 ## Pending Todos
 
 - 2026-02-28: Refactor ctx_pool WSv2 normalization invariants (`.planning/todos/pending/2026-02-28-refactor-ctx-pool-wsv2-normalization-invariants.md`)
+- 2026-03-01: Harden WSv2 ctx_pool usage billing minimal fixes (`.planning/todos/pending/2026-03-01-harden-wsv2-ctx-pool-usage-billing-minimal-fixes.md`)
 
 ## Blockers/Concerns
 
