@@ -197,6 +197,12 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
 		redisErr = s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
 		cancel()
+		if redisErr != nil {
+			logOpenAIWSModeInfo(
+				"state_store_bind_response_account_redis_fail group_id=%d response_id=%s account_id=%d cause=%s",
+				groupID, truncateOpenAIWSLogValue(id, openAIWSIDValueMaxLen), accountID, truncateOpenAIWSLogValue(redisErr.Error(), openAIWSLogValueMaxLen),
+			)
+		}
 	}
 
 	// 无论 Redis 是否写成功，都写入本地缓存作为降级保障。
@@ -250,6 +256,11 @@ func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, grou
 		// 缓存读取失败不阻断主流程，按未命中降级。
 		return 0, nil
 	}
+
+	logOpenAIWSModeInfo(
+		"state_store_get_response_account_legacy_fallback group_id=%d response_id=%s account_id=%d",
+		groupID, truncateOpenAIWSLogValue(id, openAIWSIDValueMaxLen), legacyAccountID,
+	)
 
 	// Best effort: backfill v2 key so subsequent reads avoid legacy fallback.
 	backfillCtx, backfillCancel := withOpenAIWSStateStoreRedisTimeout(ctx)
@@ -355,7 +366,12 @@ func (s *defaultOpenAIWSStateStore) BindResponsePendingToolCalls(groupID int64, 
 	if cache := s.responsePendingToolCallsCache(); cache != nil {
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
 		defer cancel()
-		_ = cache.SetOpenAIWSResponsePendingToolCalls(cacheCtx, groupID, id, normalizedCallIDs, ttl)
+		if redisErr := cache.SetOpenAIWSResponsePendingToolCalls(cacheCtx, groupID, id, normalizedCallIDs, ttl); redisErr != nil {
+			logOpenAIWSModeInfo(
+				"state_store_bind_response_pending_tool_calls_redis_fail group_id=%d response_id=%s call_count=%d cause=%s",
+				groupID, truncateOpenAIWSLogValue(id, openAIWSIDValueMaxLen), len(normalizedCallIDs), truncateOpenAIWSLogValue(redisErr.Error(), openAIWSLogValueMaxLen),
+			)
+		}
 	}
 }
 
@@ -383,8 +399,19 @@ func (s *defaultOpenAIWSStateStore) GetResponsePendingToolCalls(groupID int64, r
 		callIDs, err := cache.GetOpenAIWSResponsePendingToolCalls(cacheCtx, groupID, id)
 		normalizedCallIDs := normalizeOpenAIWSPendingToolCallIDs(callIDs)
 		if err != nil || len(normalizedCallIDs) == 0 {
+			if err != nil {
+				logOpenAIWSModeInfo(
+					"state_store_get_response_pending_tool_calls_redis_fail group_id=%d response_id=%s cause=%s",
+					groupID, truncateOpenAIWSLogValue(id, openAIWSIDValueMaxLen), truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
+				)
+			}
 			return nil, false
 		}
+
+		logOpenAIWSModeInfo(
+			"state_store_get_response_pending_tool_calls_redis_hit group_id=%d response_id=%s call_count=%d",
+			groupID, truncateOpenAIWSLogValue(id, openAIWSIDValueMaxLen), len(normalizedCallIDs),
+		)
 
 		// Redis 命中后回填本地热缓存，降低后续访问开销。
 		s.responsePendingToolMu.Lock()
@@ -484,7 +511,12 @@ func (s *defaultOpenAIWSStateStore) BindSessionLastResponseID(groupID int64, ses
 	if cache := s.sessionLastResponseCache(); cache != nil {
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
 		defer cancel()
-		_ = cache.SetOpenAIWSSessionLastResponseID(cacheCtx, groupID, strings.TrimSpace(sessionHash), id, ttl)
+		if redisErr := cache.SetOpenAIWSSessionLastResponseID(cacheCtx, groupID, strings.TrimSpace(sessionHash), id, ttl); redisErr != nil {
+			logOpenAIWSModeInfo(
+				"state_store_bind_session_last_response_redis_fail group_id=%d session_hash=%s response_id=%s cause=%s",
+				groupID, truncateOpenAIWSLogValue(sessionHash, openAIWSIDValueMaxLen), truncateOpenAIWSLogValue(id, openAIWSIDValueMaxLen), truncateOpenAIWSLogValue(redisErr.Error(), openAIWSLogValueMaxLen),
+			)
+		}
 	}
 }
 
@@ -511,8 +543,19 @@ func (s *defaultOpenAIWSStateStore) GetSessionLastResponseID(groupID int64, sess
 	responseID, err := cache.GetOpenAIWSSessionLastResponseID(cacheCtx, groupID, strings.TrimSpace(sessionHash))
 	responseID = normalizeOpenAIWSResponseID(responseID)
 	if err != nil || responseID == "" {
+		if err != nil {
+			logOpenAIWSModeInfo(
+				"state_store_get_session_last_response_redis_fail group_id=%d session_hash=%s cause=%s",
+				groupID, truncateOpenAIWSLogValue(sessionHash, openAIWSIDValueMaxLen), truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
+			)
+		}
 		return "", false
 	}
+
+	logOpenAIWSModeInfo(
+		"state_store_get_session_last_response_redis_hit group_id=%d session_hash=%s response_id=%s",
+		groupID, truncateOpenAIWSLogValue(sessionHash, openAIWSIDValueMaxLen), truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
+	)
 
 	// Redis 命中后回填本地热缓存，降低后续访问开销。
 	s.sessionToLastRespMu.Lock()
