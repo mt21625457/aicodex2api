@@ -3,12 +3,37 @@
 package service
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/stretchr/testify/require"
 )
+
+type openAIOAuthClientStubForRefresher struct {
+	tokenResp *openai.TokenResponse
+	err       error
+}
+
+func (s *openAIOAuthClientStubForRefresher) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
+	return nil, s.err
+}
+
+func (s *openAIOAuthClientStubForRefresher) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*openai.TokenResponse, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.tokenResp, nil
+}
+
+func (s *openAIOAuthClientStubForRefresher) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.tokenResp, nil
+}
 
 func TestClaudeTokenRefresher_NeedsRefresh(t *testing.T) {
 	refresher := &ClaudeTokenRefresher{}
@@ -64,26 +89,26 @@ func TestClaudeTokenRefresher_NeedsRefresh(t *testing.T) {
 		{
 			name:        "expires_at missing",
 			credentials: map[string]any{},
-			wantRefresh: false,
+			wantRefresh: true,
 		},
 		{
 			name: "expires_at is nil",
 			credentials: map[string]any{
 				"expires_at": nil,
 			},
-			wantRefresh: false,
+			wantRefresh: true,
 		},
 		{
 			name: "expires_at is invalid string",
 			credentials: map[string]any{
 				"expires_at": "invalid",
 			},
-			wantRefresh: false,
+			wantRefresh: true,
 		},
 		{
 			name:        "credentials is nil",
 			credentials: nil,
-			wantRefresh: false,
+			wantRefresh: true,
 		},
 	}
 
@@ -264,5 +289,161 @@ func TestOpenAITokenRefresher_CanRefresh(t *testing.T) {
 			}
 			require.Equal(t, tt.want, refresher.CanRefresh(account))
 		})
+	}
+}
+
+func TestOpenAITokenRefresher_NeedsRefresh(t *testing.T) {
+	refresher := &OpenAITokenRefresher{}
+	refreshWindow := 30 * time.Minute
+
+	tests := []struct {
+		name        string
+		credentials map[string]any
+		wantRefresh bool
+	}{
+		{
+			name: "expires_at missing",
+			credentials: map[string]any{
+				"access_token": "token",
+			},
+			wantRefresh: true,
+		},
+		{
+			name: "expires_at invalid",
+			credentials: map[string]any{
+				"expires_at": "invalid",
+			},
+			wantRefresh: true,
+		},
+		{
+			name: "expires_at expired",
+			credentials: map[string]any{
+				"expires_at": strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10),
+			},
+			wantRefresh: true,
+		},
+		{
+			name: "expires_at far future",
+			credentials: map[string]any{
+				"expires_at": strconv.FormatInt(time.Now().Add(2*time.Hour).Unix(), 10),
+			},
+			wantRefresh: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			account := &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Credentials: tt.credentials,
+			}
+			require.Equal(t, tt.wantRefresh, refresher.NeedsRefresh(account, refreshWindow))
+		})
+	}
+}
+
+func TestOpenAITokenRefresher_Refresh_AsyncSyncUsesCopiedCredentials(t *testing.T) {
+	oauthSvc := NewOpenAIOAuthService(nil, &openAIOAuthClientStubForRefresher{
+		tokenResp: &openai.TokenResponse{
+			AccessToken:  "new_access_token",
+			RefreshToken: "new_refresh_token",
+			ExpiresIn:    3600,
+		},
+	})
+	refresher := NewOpenAITokenRefresher(oauthSvc, &mockAccountRepoForGemini{})
+	refresher.SetSyncLinkedSoraAccounts(true)
+	refresher.syncLinkedSoraSem = make(chan struct{}, 1)
+
+	readNow := make(chan struct{})
+	seenValue := make(chan string, 1)
+	refresher.syncLinkedSoraAccountsFn = func(ctx context.Context, openaiAccountID int64, newCredentials map[string]any) {
+		<-readNow
+		if v, ok := newCredentials["custom"].(string); ok {
+			seenValue <- v
+			return
+		}
+		seenValue <- ""
+	}
+
+	account := &Account{
+		ID:       1001,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"refresh_token": "old_refresh_token",
+			"client_id":     "test-client",
+			"custom":        "original",
+		},
+	}
+
+	newCredentials, err := refresher.Refresh(context.Background(), account)
+	require.NoError(t, err)
+	require.NotNil(t, newCredentials)
+
+	newCredentials["custom"] = "mutated_after_return"
+	close(readNow)
+
+	select {
+	case got := <-seenValue:
+		require.Equal(t, "original", got, "异步同步应使用 credentials 副本，避免并发写污染")
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for sync hook")
+	}
+}
+
+func TestOpenAITokenRefresher_Refresh_FallsBackToSyncWhenLimiterFull(t *testing.T) {
+	oauthSvc := NewOpenAIOAuthService(nil, &openAIOAuthClientStubForRefresher{
+		tokenResp: &openai.TokenResponse{
+			AccessToken:  "new_access_token",
+			RefreshToken: "new_refresh_token",
+			ExpiresIn:    3600,
+		},
+	})
+	refresher := NewOpenAITokenRefresher(oauthSvc, &mockAccountRepoForGemini{})
+	refresher.SetSyncLinkedSoraAccounts(true)
+	refresher.syncLinkedSoraSem = make(chan struct{}, 1)
+	refresher.syncLinkedSoraSem <- struct{}{} // 填满 limiter，强制走同步降级路径
+
+	entered := make(chan struct{})
+	releaseSync := make(chan struct{})
+	refresher.syncLinkedSoraAccountsFn = func(ctx context.Context, openaiAccountID int64, newCredentials map[string]any) {
+		close(entered)
+		<-releaseSync
+	}
+
+	account := &Account{
+		ID:       1002,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"refresh_token": "old_refresh_token",
+			"client_id":     "test-client",
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = refresher.Refresh(context.Background(), account)
+		close(done)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("sync hook was not invoked")
+	}
+
+	select {
+	case <-done:
+		t.Fatal("Refresh should block when falling back to synchronous linked-sora sync")
+	default:
+	}
+
+	close(releaseSync)
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Refresh did not finish after releasing synchronous sync hook")
 	}
 }

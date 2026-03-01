@@ -53,9 +53,20 @@ var (
 	deductBalanceScript = redis.NewScript(`
 		local current = redis.call('GET', KEYS[1])
 		if current == false then
+			return 2
+		end
+		local cur = tonumber(current)
+		local delta = tonumber(ARGV[1])
+		if cur == nil or delta == nil then
+			return -1
+		end
+		if delta < 0 then
+			return -2
+		end
+		if cur < delta then
 			return 0
 		end
-		local newVal = tonumber(current) - tonumber(ARGV[1])
+		local newVal = cur - delta
 		redis.call('SET', KEYS[1], newVal)
 		redis.call('EXPIRE', KEYS[1], ARGV[2])
 		return 1
@@ -99,12 +110,23 @@ func (c *billingCache) SetUserBalance(ctx context.Context, userID int64, balance
 
 func (c *billingCache) DeductUserBalance(ctx context.Context, userID int64, amount float64) error {
 	key := billingBalanceKey(userID)
-	_, err := deductBalanceScript.Run(ctx, c.rdb, []string{key}, amount, int(jitteredTTL().Seconds())).Result()
+	result, err := deductBalanceScript.Run(ctx, c.rdb, []string{key}, amount, int(jitteredTTL().Seconds())).Int64()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		log.Printf("Warning: deduct balance cache failed for user %d: %v", userID, err)
 		return err
 	}
-	return nil
+	switch result {
+	case 1, 2:
+		return nil
+	case 0:
+		return service.ErrInsufficientBalance
+	case -1:
+		return fmt.Errorf("invalid cached balance for user %d", userID)
+	case -2:
+		return fmt.Errorf("invalid deduct amount for user %d", userID)
+	default:
+		return fmt.Errorf("unexpected deduct balance cache result for user %d: %d", userID, result)
+	}
 }
 
 func (c *billingCache) InvalidateUserBalance(ctx context.Context, userID int64) error {

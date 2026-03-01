@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,6 +57,33 @@ func (r stubOpenAIAccountRepo) ListSchedulableByPlatform(ctx context.Context, pl
 		}
 	}
 	return result, nil
+}
+
+type codexUsageUpdateAccountRepoStub struct {
+	stubOpenAIAccountRepo
+
+	calls    atomic.Int32
+	entered  chan struct{}
+	release  chan struct{}
+	enterSig sync.Once
+}
+
+func (r *codexUsageUpdateAccountRepoStub) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	r.calls.Add(1)
+	r.enterSig.Do(func() {
+		if r.entered != nil {
+			close(r.entered)
+		}
+	})
+	if r.release == nil {
+		return nil
+	}
+	select {
+	case <-r.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 type stubConcurrencyCache struct {
@@ -331,6 +360,37 @@ func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulableWhenNoConcurre
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_BoundedAsyncUpdates(t *testing.T) {
+	repo := &codexUsageUpdateAccountRepoStub{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:         repo,
+		codexUsageUpdateSem: make(chan struct{}, 1),
+	}
+	svc.codexUsageUpdateOnce.Do(func() {})
+
+	snapshot := &OpenAICodexUsageSnapshot{
+		UpdatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	svc.updateCodexUsageSnapshot(context.Background(), 1, snapshot)
+
+	select {
+	case <-repo.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first codex usage snapshot update did not start")
+	}
+
+	// first async update is still holding the single slot
+	svc.updateCodexUsageSnapshot(context.Background(), 1, snapshot)
+	time.Sleep(80 * time.Millisecond)
+	require.Equal(t, int32(1), repo.calls.Load(), "slot full 时应拒绝新异步写入，避免 goroutine 无界增长")
+
+	close(repo.release)
 }
 
 func TestOpenAISelectAccountForModelWithExclusions_StickyUnschedulableClearsSession(t *testing.T) {
@@ -810,6 +870,33 @@ func TestOpenAISelectAccountForModelWithExclusions_LeastRecentlyUsed(t *testing.
 	}
 }
 
+func TestOpenAISelectAccountForModelWithExclusions_EqualPriorityTieBreakRandomized(t *testing.T) {
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Priority: 1},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Priority: 1},
+		},
+	}
+	cache := &stubGatewayCache{}
+
+	calls := 0
+	svc := &OpenAIGatewayService{
+		accountRepo: repo,
+		cache:       cache,
+		accountTieBreakIntnFn: func(n int) int {
+			calls++
+			require.Equal(t, 2, n)
+			return 0
+		},
+	}
+
+	acc, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, "", "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, acc)
+	require.Equal(t, int64(2), acc.ID, "tie-break should allow later equal-priority candidate to be selected")
+	require.Equal(t, 1, calls, "tie-break should be invoked exactly once for two equal candidates")
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
 	groupID := int64(1)
 	lastUsed := time.Now().Add(-1 * time.Hour)
@@ -1165,6 +1252,53 @@ func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for invalid base_url when allowlist disabled")
 	}
+}
+
+func TestOpenAIBuildUpstreamRequestSetsHTTPUpstreamProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(req.Context()))
+}
+
+func TestOpenAIBuildUpstreamPassthroughRequestSetsHTTPUpstreamProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}
+
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
+	require.NoError(t, err)
+	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(req.Context()))
 }
 
 func TestOpenAIValidateUpstreamBaseURLDisabledRequiresHTTPS(t *testing.T) {

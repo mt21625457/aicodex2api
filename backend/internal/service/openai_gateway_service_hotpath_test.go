@@ -139,3 +139,127 @@ func TestGetOpenAIRequestBodyMap_WriteBackContextCache(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, got, cachedMap)
 }
+
+// --- extractOpenAIRequestMeta context 缓存测试 ---
+
+func TestExtractOpenAIRequestMeta_CacheHit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	// 预设缓存
+	c.Set(OpenAIRequestMetaKey, &OpenAIRequestMeta{
+		Model:  "gpt-5",
+		Stream: true,
+	})
+
+	body := []byte(`{"model":"gpt-4","stream":false,"prompt_cache_key":"key-1"}`)
+	model, stream, promptKey := extractOpenAIRequestMeta(c, body)
+
+	// 应返回缓存值而非 body 中的值
+	require.Equal(t, "gpt-5", model)
+	require.True(t, stream)
+	// prompt_cache_key 应从 body 补充提取
+	require.Equal(t, "key-1", promptKey)
+}
+
+func TestExtractOpenAIRequestMeta_CacheHit_PromptCacheKeyExtractedOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	meta := &OpenAIRequestMeta{Model: "gpt-5", Stream: false}
+	c.Set(OpenAIRequestMetaKey, meta)
+
+	body := []byte(`{"model":"gpt-4","prompt_cache_key":" pk-abc "}`)
+
+	// 首次调用：应提取 prompt_cache_key
+	_, _, promptKey1 := extractOpenAIRequestMeta(c, body)
+	require.Equal(t, "pk-abc", promptKey1)
+	require.True(t, meta.extracted)
+
+	// 第二次调用：应直接返回已缓存的值，不再重复提取
+	_, _, promptKey2 := extractOpenAIRequestMeta(c, body)
+	require.Equal(t, "pk-abc", promptKey2)
+}
+
+func TestExtractOpenAIRequestMeta_CacheHit_EmptyBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	c.Set(OpenAIRequestMetaKey, &OpenAIRequestMeta{
+		Model:  "gpt-5",
+		Stream: true,
+	})
+
+	// body 为空时不应 panic，prompt_cache_key 应为空
+	model, stream, promptKey := extractOpenAIRequestMeta(c, nil)
+	require.Equal(t, "gpt-5", model)
+	require.True(t, stream)
+	require.Equal(t, "", promptKey)
+}
+
+func TestExtractOpenAIRequestMeta_FallbackToBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	// 不设缓存，应回退到 body 解析
+	body := []byte(`{"model":"gpt-4o","stream":true,"prompt_cache_key":"ses-2"}`)
+	model, stream, promptKey := extractOpenAIRequestMeta(c, body)
+
+	require.Equal(t, "gpt-4o", model)
+	require.True(t, stream)
+	require.Equal(t, "ses-2", promptKey)
+}
+
+func TestExtractOpenAIRequestMeta_NilContext(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","stream":false,"prompt_cache_key":"k"}`)
+	model, stream, promptKey := extractOpenAIRequestMeta(nil, body)
+
+	require.Equal(t, "gpt-4", model)
+	require.False(t, stream)
+	require.Equal(t, "k", promptKey)
+}
+
+func TestExtractOpenAIRequestMeta_InvalidCacheType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	// 缓存类型错误，应回退到 body 解析
+	c.Set(OpenAIRequestMetaKey, "invalid-type")
+
+	body := []byte(`{"model":"gpt-4o","stream":true}`)
+	model, stream, _ := extractOpenAIRequestMeta(c, body)
+
+	require.Equal(t, "gpt-4o", model)
+	require.True(t, stream)
+}
+
+func TestExtractOpenAIRequestMeta_NilCacheValue(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	c.Set(OpenAIRequestMetaKey, (*OpenAIRequestMeta)(nil))
+
+	body := []byte(`{"model":"gpt-5","stream":false}`)
+	model, stream, _ := extractOpenAIRequestMeta(c, body)
+
+	require.Equal(t, "gpt-5", model)
+	require.False(t, stream)
+}
+
+func TestOpenAIRequestMeta_Fields(t *testing.T) {
+	meta := &OpenAIRequestMeta{
+		Model:          "gpt-5",
+		Stream:         true,
+		PromptCacheKey: "pk",
+	}
+	require.Equal(t, "gpt-5", meta.Model)
+	require.True(t, meta.Stream)
+	require.Equal(t, "pk", meta.PromptCacheKey)
+	require.False(t, meta.extracted)
+}

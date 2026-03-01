@@ -118,6 +118,9 @@ type defaultOpenAIWSStateStore struct {
 	sessionToConn         map[string]openAIWSSessionConnBinding
 
 	lastCleanupUnixNano atomic.Int64
+	stopCh              chan struct{}
+	stopOnce            sync.Once
+	workerWg            sync.WaitGroup
 }
 
 func (s *defaultOpenAIWSStateStore) connShard(key string) *openAIWSConnBindingShard {
@@ -127,6 +130,10 @@ func (s *defaultOpenAIWSStateStore) connShard(key string) *openAIWSConnBindingSh
 
 // NewOpenAIWSStateStore 创建默认 WS 状态存储。
 func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
+	return newOpenAIWSStateStore(cache, openAIWSStateStoreCleanupInterval)
+}
+
+func newOpenAIWSStateStore(cache GatewayCache, cleanupInterval time.Duration) *defaultOpenAIWSStateStore {
 	store := &defaultOpenAIWSStateStore{
 		cache:               cache,
 		responseToAccount:   make(map[string]openAIWSAccountBinding, 256),
@@ -134,12 +141,46 @@ func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
 		sessionToTurnState:  make(map[string]openAIWSTurnStateBinding, 256),
 		sessionToLastResp:   make(map[string]openAIWSSessionLastResponseBinding, 256),
 		sessionToConn:       make(map[string]openAIWSSessionConnBinding, 256),
+		stopCh:              make(chan struct{}),
 	}
 	for i := range store.responseToConnShards {
 		store.responseToConnShards[i].m = make(map[string]openAIWSConnBinding, 16)
 	}
 	store.lastCleanupUnixNano.Store(time.Now().UnixNano())
+	store.startCleanupWorker(cleanupInterval)
 	return store
+}
+
+func (s *defaultOpenAIWSStateStore) startCleanupWorker(interval time.Duration) {
+	if s == nil || interval <= 0 {
+		return
+	}
+	s.workerWg.Add(1)
+	go func() {
+		defer s.workerWg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case <-ticker.C:
+				s.maybeCleanup()
+			}
+		}
+	}()
+}
+
+func (s *defaultOpenAIWSStateStore) Close() {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() {
+		if s.stopCh != nil {
+			close(s.stopCh)
+		}
+	})
+	s.workerWg.Wait()
 }
 
 func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, groupID int64, responseID string, accountID int64, ttl time.Duration) error {
@@ -150,19 +191,27 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 	ttl = normalizeOpenAIWSTTL(ttl)
 	s.maybeCleanup()
 
-	expiresAt := time.Now().Add(ttl)
+	if s.cache != nil {
+		cacheKey := openAIWSResponseAccountCacheKey(id)
+		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+		err := s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+
+	// 本地仅保留短时热缓存，优先保证跨实例读取一致性。
+	localTTL := openAIWSStateStoreLocalHotTTL(ttl)
 	s.responseToAccountMu.Lock()
 	ensureBindingCapacity(s.responseToAccount, id, openAIWSStateStoreMaxEntriesPerMap)
-	s.responseToAccount[id] = openAIWSAccountBinding{accountID: accountID, expiresAt: expiresAt}
+	s.responseToAccount[id] = openAIWSAccountBinding{
+		accountID: accountID,
+		expiresAt: time.Now().Add(localTTL),
+	}
 	s.responseToAccountMu.Unlock()
 
-	if s.cache == nil {
-		return nil
-	}
-	cacheKey := openAIWSResponseAccountCacheKey(id)
-	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
-	defer cancel()
-	return s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
+	return nil
 }
 
 func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, groupID int64, responseID string) (int64, error) {
@@ -698,7 +747,7 @@ func ensureBindingCapacity[T expiringBinding](bindings map[string]T, incomingKey
 	if _, exists := bindings[incomingKey]; exists {
 		return
 	}
-	// 优先驱逐已过期的条目；如果找不到则淘汰任意一项保证内存有界。
+	// 优先驱逐已过期条目；若不存在过期项，则按 expiresAt 最早驱逐，避免随机删除活跃绑定。
 	now := time.Now()
 	for key, val := range bindings {
 		if !val.getExpiresAt().IsZero() && now.After(val.getExpiresAt()) {
@@ -706,9 +755,30 @@ func ensureBindingCapacity[T expiringBinding](bindings map[string]T, incomingKey
 			return
 		}
 	}
-	for key := range bindings {
-		delete(bindings, key)
-		return
+	var (
+		evictKey      string
+		evictExpireAt time.Time
+		hasCandidate  bool
+	)
+	for key, val := range bindings {
+		expiresAt := val.getExpiresAt()
+		if !hasCandidate {
+			evictKey = key
+			evictExpireAt = expiresAt
+			hasCandidate = true
+			continue
+		}
+		switch {
+		case expiresAt.IsZero() && !evictExpireAt.IsZero():
+			evictKey = key
+			evictExpireAt = expiresAt
+		case !expiresAt.IsZero() && !evictExpireAt.IsZero() && expiresAt.Before(evictExpireAt):
+			evictKey = key
+			evictExpireAt = expiresAt
+		}
+	}
+	if hasCandidate {
+		delete(bindings, evictKey)
 	}
 }
 
@@ -763,6 +833,14 @@ func openAIWSResponseAccountLegacyCacheKey(responseID string) string {
 func normalizeOpenAIWSTTL(ttl time.Duration) time.Duration {
 	if ttl <= 0 {
 		return time.Hour
+	}
+	return ttl
+}
+
+func openAIWSStateStoreLocalHotTTL(ttl time.Duration) time.Duration {
+	ttl = normalizeOpenAIWSTTL(ttl)
+	if ttl > openAIWSStateStoreHotCacheTTL {
+		return openAIWSStateStoreHotCacheTTL
 	}
 	return ttl
 }

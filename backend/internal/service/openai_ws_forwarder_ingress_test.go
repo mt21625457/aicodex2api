@@ -8,9 +8,11 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	coderws "github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -42,6 +44,256 @@ func TestIsOpenAIWSClientDisconnectError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(t, tt.want, isOpenAIWSClientDisconnectError(tt.err))
+		})
+	}
+}
+
+func TestOpenAIWSIngressFallbackSessionSeedFromContext(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, openAIWSIngressFallbackSessionSeedFromContext(nil))
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(nil)
+	require.Empty(t, openAIWSIngressFallbackSessionSeedFromContext(c))
+
+	c.Set("api_key", "not_api_key")
+	require.Empty(t, openAIWSIngressFallbackSessionSeedFromContext(c))
+
+	groupID := int64(99)
+	c.Set("api_key", &APIKey{
+		ID:      101,
+		GroupID: &groupID,
+		User:    &User{ID: 202},
+	})
+	require.Equal(t, "openai_ws_ingress:99:202:101", openAIWSIngressFallbackSessionSeedFromContext(c))
+
+	c.Set("api_key", &APIKey{
+		ID:   303,
+		User: nil,
+	})
+	require.Equal(t, "openai_ws_ingress:0:0:303", openAIWSIngressFallbackSessionSeedFromContext(c))
+}
+
+func TestClassifyOpenAIWSIngressTurnAbortReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		err          error
+		wantReason   openAIWSIngressTurnAbortReason
+		wantExpected bool
+	}{
+		{
+			name:         "nil",
+			err:          nil,
+			wantReason:   openAIWSIngressTurnAbortReasonUnknown,
+			wantExpected: false,
+		},
+		{
+			name:         "context canceled",
+			err:          context.Canceled,
+			wantReason:   openAIWSIngressTurnAbortReasonContextCanceled,
+			wantExpected: true,
+		},
+		{
+			name:         "context deadline",
+			err:          context.DeadlineExceeded,
+			wantReason:   openAIWSIngressTurnAbortReasonContextDeadline,
+			wantExpected: false,
+		},
+		{
+			name:         "client close",
+			err:          coderws.CloseError{Code: coderws.StatusNormalClosure},
+			wantReason:   openAIWSIngressTurnAbortReasonClientClosed,
+			wantExpected: true,
+		},
+		{
+			name: "previous response not found",
+			err: wrapOpenAIWSIngressTurnError(
+				openAIWSIngressStagePreviousResponseNotFound,
+				errors.New("previous response not found"),
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonPreviousResponse,
+			wantExpected: true,
+		},
+		{
+			name: "tool output not found",
+			err: wrapOpenAIWSIngressTurnError(
+				openAIWSIngressStageToolOutputNotFound,
+				errors.New("no tool output found"),
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonToolOutput,
+			wantExpected: true,
+		},
+		{
+			name: "upstream error event",
+			err: wrapOpenAIWSIngressTurnError(
+				"upstream_error_event",
+				errors.New("upstream error event"),
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonUpstreamError,
+			wantExpected: true,
+		},
+		{
+			name: "write upstream",
+			err: wrapOpenAIWSIngressTurnError(
+				"write_upstream",
+				errors.New("write upstream fail"),
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonWriteUpstream,
+			wantExpected: false,
+		},
+		{
+			name: "continuation unavailable close",
+			err: NewOpenAIWSClientCloseError(
+				coderws.StatusPolicyViolation,
+				openAIWSContinuationUnavailableReason,
+				nil,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonContinuationUnavailable,
+			wantExpected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reason, expected := classifyOpenAIWSIngressTurnAbortReason(tt.err)
+			require.Equal(t, tt.wantReason, reason)
+			require.Equal(t, tt.wantExpected, expected)
+		})
+	}
+}
+
+func TestClassifyOpenAIWSIngressTurnAbortReason_ClientDisconnectedDrainTimeout(t *testing.T) {
+	t.Parallel()
+
+	err := wrapOpenAIWSIngressTurnError(
+		"client_disconnected_drain_timeout",
+		openAIWSIngressClientDisconnectedDrainTimeoutError(2*time.Second),
+		true,
+	)
+	reason, expected := classifyOpenAIWSIngressTurnAbortReason(err)
+	require.Equal(t, openAIWSIngressTurnAbortReasonContextCanceled, reason)
+	require.True(t, expected)
+	require.Equal(t, openAIWSIngressTurnAbortDispositionCloseGracefully, openAIWSIngressTurnAbortDispositionForReason(reason))
+}
+
+func TestOpenAIWSIngressResolveDrainReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	tests := []struct {
+		name       string
+		base       time.Duration
+		deadline   time.Time
+		want       time.Duration
+		wantExpire bool
+	}{
+		{
+			name:       "no_deadline_uses_base",
+			base:       15 * time.Second,
+			deadline:   time.Time{},
+			want:       15 * time.Second,
+			wantExpire: false,
+		},
+		{
+			name:       "remaining_shorter_than_base",
+			base:       10 * time.Second,
+			deadline:   now.Add(3 * time.Second),
+			want:       3 * time.Second,
+			wantExpire: false,
+		},
+		{
+			name:       "base_shorter_than_remaining",
+			base:       2 * time.Second,
+			deadline:   now.Add(8 * time.Second),
+			want:       2 * time.Second,
+			wantExpire: false,
+		},
+		{
+			name:       "base_zero_uses_remaining",
+			base:       0,
+			deadline:   now.Add(5 * time.Second),
+			want:       5 * time.Second,
+			wantExpire: false,
+		},
+		{
+			name:       "expired_deadline",
+			base:       10 * time.Second,
+			deadline:   now.Add(-time.Millisecond),
+			want:       0,
+			wantExpire: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, expired := openAIWSIngressResolveDrainReadTimeout(tt.base, tt.deadline, now)
+			require.Equal(t, tt.want, got)
+			require.Equal(t, tt.wantExpire, expired)
+		})
+	}
+}
+
+func TestOpenAIWSIngressTurnAbortDispositionForReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   openAIWSIngressTurnAbortReason
+		want openAIWSIngressTurnAbortDisposition
+	}{
+		{
+			name: "continue turn on previous response mismatch",
+			in:   openAIWSIngressTurnAbortReasonPreviousResponse,
+			want: openAIWSIngressTurnAbortDispositionContinueTurn,
+		},
+		{
+			name: "continue turn on tool output mismatch",
+			in:   openAIWSIngressTurnAbortReasonToolOutput,
+			want: openAIWSIngressTurnAbortDispositionContinueTurn,
+		},
+		{
+			name: "continue turn on upstream error event",
+			in:   openAIWSIngressTurnAbortReasonUpstreamError,
+			want: openAIWSIngressTurnAbortDispositionContinueTurn,
+		},
+		{
+			name: "close gracefully on context canceled",
+			in:   openAIWSIngressTurnAbortReasonContextCanceled,
+			want: openAIWSIngressTurnAbortDispositionCloseGracefully,
+		},
+		{
+			name: "close gracefully on client closed",
+			in:   openAIWSIngressTurnAbortReasonClientClosed,
+			want: openAIWSIngressTurnAbortDispositionCloseGracefully,
+		},
+		{
+			name: "default fail request on unknown reason",
+			in:   openAIWSIngressTurnAbortReasonUnknown,
+			want: openAIWSIngressTurnAbortDispositionFailRequest,
+		},
+		{
+			name: "default fail request on write upstream reason",
+			in:   openAIWSIngressTurnAbortReasonWriteUpstream,
+			want: openAIWSIngressTurnAbortDispositionFailRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, openAIWSIngressTurnAbortDispositionForReason(tt.in))
 		})
 	}
 }
