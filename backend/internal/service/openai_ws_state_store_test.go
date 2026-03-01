@@ -43,19 +43,22 @@ func TestOpenAIWSStateStore_ResponseConnTTL(t *testing.T) {
 
 func TestOpenAIWSStateStore_ResponsePendingToolCallsTTL(t *testing.T) {
 	store := NewOpenAIWSStateStore(nil)
-	store.BindResponsePendingToolCalls("resp_pending_tool_1", []string{"call_1", "call_2", "call_1", " "}, 30*time.Millisecond)
+	groupID := int64(9)
+	store.BindResponsePendingToolCalls(groupID, "resp_pending_tool_1", []string{"call_1", "call_2", "call_1", " "}, 30*time.Millisecond)
 
-	callIDs, ok := store.GetResponsePendingToolCalls("resp_pending_tool_1")
+	callIDs, ok := store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_1")
 	require.True(t, ok)
 	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
+	_, ok = store.GetResponsePendingToolCalls(groupID+1, "resp_pending_tool_1")
+	require.False(t, ok, "pending tool calls should be group-isolated")
 
-	store.DeleteResponsePendingToolCalls("resp_pending_tool_1")
-	_, ok = store.GetResponsePendingToolCalls("resp_pending_tool_1")
+	store.DeleteResponsePendingToolCalls(groupID, "resp_pending_tool_1")
+	_, ok = store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_1")
 	require.False(t, ok)
 
-	store.BindResponsePendingToolCalls("resp_pending_tool_2", []string{"call_3"}, 30*time.Millisecond)
+	store.BindResponsePendingToolCalls(groupID, "resp_pending_tool_2", []string{"call_3"}, 30*time.Millisecond)
 	time.Sleep(60 * time.Millisecond)
-	_, ok = store.GetResponsePendingToolCalls("resp_pending_tool_2")
+	_, ok = store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_2")
 	require.False(t, ok)
 }
 
@@ -204,29 +207,30 @@ func (c *openAIWSResponsePendingToolCallsProbeCache) DeleteSessionAccountID(cont
 	return nil
 }
 
-func (c *openAIWSResponsePendingToolCallsProbeCache) SetOpenAIWSResponsePendingToolCalls(_ context.Context, responseID string, callIDs []string, _ time.Duration) error {
+func (c *openAIWSResponsePendingToolCallsProbeCache) SetOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string, callIDs []string, _ time.Duration) error {
 	if c.pendingData == nil {
 		c.pendingData = make(map[string][]string)
 	}
+	key := fmt.Sprintf("%d:%s", groupID, responseID)
 	normalized := normalizeOpenAIWSPendingToolCallIDs(callIDs)
 	if len(normalized) == 0 {
-		delete(c.pendingData, responseID)
+		delete(c.pendingData, key)
 	} else {
-		c.pendingData[responseID] = append([]string(nil), normalized...)
+		c.pendingData[key] = append([]string(nil), normalized...)
 	}
 	c.setCalls++
 	return nil
 }
 
-func (c *openAIWSResponsePendingToolCallsProbeCache) GetOpenAIWSResponsePendingToolCalls(_ context.Context, responseID string) ([]string, error) {
+func (c *openAIWSResponsePendingToolCallsProbeCache) GetOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string) ([]string, error) {
 	c.getCalls++
-	callIDs := c.pendingData[responseID]
+	callIDs := c.pendingData[fmt.Sprintf("%d:%s", groupID, responseID)]
 	return append([]string(nil), callIDs...), nil
 }
 
-func (c *openAIWSResponsePendingToolCallsProbeCache) DeleteOpenAIWSResponsePendingToolCalls(_ context.Context, responseID string) error {
+func (c *openAIWSResponsePendingToolCallsProbeCache) DeleteOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string) error {
 	c.delCalls++
-	delete(c.pendingData, responseID)
+	delete(c.pendingData, fmt.Sprintf("%d:%s", groupID, responseID))
 	return nil
 }
 
@@ -236,28 +240,31 @@ func TestOpenAIWSStateStore_ResponsePendingToolCalls_UsesOptionalCacheFallback(t
 	store, ok := raw.(*defaultOpenAIWSStateStore)
 	require.True(t, ok)
 
+	groupID := int64(11)
 	responseID := "resp_pending_tool_cache_1"
-	store.BindResponsePendingToolCalls(responseID, []string{"call_1", "call_2", "call_1"}, time.Minute)
+	store.BindResponsePendingToolCalls(groupID, responseID, []string{"call_1", "call_2", "call_1"}, time.Minute)
 	require.Equal(t, 1, probe.setCalls, "绑定 pending_tool_calls 时应写入可选缓存")
 
 	store.responsePendingToolMu.Lock()
-	delete(store.responsePendingTool, normalizeOpenAIWSResponseID(responseID))
+	delete(store.responsePendingTool, openAIWSResponsePendingToolCallsBindingKey(groupID, responseID))
 	store.responsePendingToolMu.Unlock()
 
-	callIDs, found := store.GetResponsePendingToolCalls(responseID)
+	callIDs, found := store.GetResponsePendingToolCalls(groupID, responseID)
 	require.True(t, found, "本地缓存缺失时应降级读取可选缓存")
 	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
 	require.Equal(t, 1, probe.getCalls)
 
 	// 回填后再次读取应命中本地缓存，不再触发 Redis 回源。
-	callIDs, found = store.GetResponsePendingToolCalls(responseID)
+	callIDs, found = store.GetResponsePendingToolCalls(groupID, responseID)
 	require.True(t, found)
 	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
 	require.Equal(t, 1, probe.getCalls)
+	_, found = store.GetResponsePendingToolCalls(groupID+1, responseID)
+	require.False(t, found, "optional cache fallback should remain group-isolated")
 
-	store.DeleteResponsePendingToolCalls(responseID)
+	store.DeleteResponsePendingToolCalls(groupID, responseID)
 	require.Equal(t, 1, probe.delCalls, "删除 pending_tool_calls 时应同步删除可选缓存")
-	_, found = store.GetResponsePendingToolCalls(responseID)
+	_, found = store.GetResponsePendingToolCalls(groupID, responseID)
 	require.False(t, found)
 }
 

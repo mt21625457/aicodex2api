@@ -1789,7 +1789,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledPen
 	require.Equal(t, openAIWSAutoAbortedToolOutputValue, gjson.Get(secondWrite, `input.#(type=="function_call_output").output`).String(), "应自动补齐 aborted 输出")
 
 	stateStore := svc.getOpenAIWSStateStore()
-	_, hasPending := stateStore.GetResponsePendingToolCalls("resp_pending_abort_1")
+	_, hasPending := stateStore.GetResponsePendingToolCalls(0, "resp_pending_abort_1")
 	require.False(t, hasPending, "pending function_call 在成功续链后应被清理")
 }
 

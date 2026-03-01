@@ -63,6 +63,31 @@ const (
 	openAIWSAutoAbortedToolOutputValue           = `{"error":"tool call aborted by gateway"}`
 )
 
+type openAIWSIngressTurnAbortReason string
+
+const (
+	openAIWSIngressTurnAbortReasonUnknown openAIWSIngressTurnAbortReason = "unknown"
+
+	openAIWSIngressTurnAbortReasonClientClosed            openAIWSIngressTurnAbortReason = "client_closed"
+	openAIWSIngressTurnAbortReasonContextCanceled         openAIWSIngressTurnAbortReason = "ctx_canceled"
+	openAIWSIngressTurnAbortReasonContextDeadline         openAIWSIngressTurnAbortReason = "ctx_deadline_exceeded"
+	openAIWSIngressTurnAbortReasonPreviousResponse        openAIWSIngressTurnAbortReason = openAIWSIngressStagePreviousResponseNotFound
+	openAIWSIngressTurnAbortReasonToolOutput              openAIWSIngressTurnAbortReason = openAIWSIngressStageToolOutputNotFound
+	openAIWSIngressTurnAbortReasonUpstreamError           openAIWSIngressTurnAbortReason = "upstream_error_event"
+	openAIWSIngressTurnAbortReasonWriteUpstream           openAIWSIngressTurnAbortReason = "write_upstream"
+	openAIWSIngressTurnAbortReasonReadUpstream            openAIWSIngressTurnAbortReason = "read_upstream"
+	openAIWSIngressTurnAbortReasonWriteClient             openAIWSIngressTurnAbortReason = "write_client"
+	openAIWSIngressTurnAbortReasonContinuationUnavailable openAIWSIngressTurnAbortReason = "continuation_unavailable"
+)
+
+type openAIWSIngressTurnAbortDisposition string
+
+const (
+	openAIWSIngressTurnAbortDispositionFailRequest     openAIWSIngressTurnAbortDisposition = "fail_request"
+	openAIWSIngressTurnAbortDispositionContinueTurn    openAIWSIngressTurnAbortDisposition = "continue_turn"
+	openAIWSIngressTurnAbortDispositionCloseGracefully openAIWSIngressTurnAbortDisposition = "close_gracefully"
+)
+
 var openAIWSLogValueReplacer = strings.NewReplacer(
 	"error", "err",
 	"fallback", "fb",
@@ -878,6 +903,29 @@ func logOpenAIWSBindResponseAccountWarn(groupID, accountID int64, responseID str
 	)
 }
 
+func logOpenAIWSIngressTurnAbort(
+	accountID int64,
+	turn int,
+	connID string,
+	reason openAIWSIngressTurnAbortReason,
+	expected bool,
+	cause error,
+) {
+	causeValue := "-"
+	if cause != nil {
+		causeValue = truncateOpenAIWSLogValue(cause.Error(), openAIWSLogValueMaxLen)
+	}
+	logOpenAIWSModeInfo(
+		"ingress_ws_turn_aborted account_id=%d turn=%d conn_id=%s reason=%s expected=%v cause=%s",
+		accountID,
+		turn,
+		truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+		normalizeOpenAIWSLogValue(string(reason)),
+		expected,
+		causeValue,
+	)
+}
+
 func summarizeOpenAIWSReadCloseError(err error) (status string, reason string) {
 	if err == nil {
 		return "-", "-"
@@ -1014,6 +1062,60 @@ func isOpenAIWSClientDisconnectError(err error) bool {
 		strings.Contains(message, "broken pipe")
 }
 
+func classifyOpenAIWSIngressTurnAbortReason(err error) (openAIWSIngressTurnAbortReason, bool) {
+	if err == nil {
+		return openAIWSIngressTurnAbortReasonUnknown, false
+	}
+	if isOpenAIWSIngressPreviousResponseNotFound(err) {
+		return openAIWSIngressTurnAbortReasonPreviousResponse, true
+	}
+	if isOpenAIWSIngressToolOutputNotFound(err) {
+		return openAIWSIngressTurnAbortReasonToolOutput, true
+	}
+	if isOpenAIWSIngressUpstreamErrorEvent(err) {
+		return openAIWSIngressTurnAbortReasonUpstreamError, true
+	}
+	if isOpenAIWSContinuationUnavailableCloseError(err) {
+		return openAIWSIngressTurnAbortReasonContinuationUnavailable, true
+	}
+	if errors.Is(err, context.Canceled) {
+		return openAIWSIngressTurnAbortReasonContextCanceled, true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return openAIWSIngressTurnAbortReasonContextDeadline, false
+	}
+	if isOpenAIWSClientDisconnectError(err) {
+		return openAIWSIngressTurnAbortReasonClientClosed, true
+	}
+
+	var turnErr *openAIWSIngressTurnError
+	if errors.As(err, &turnErr) && turnErr != nil {
+		switch strings.TrimSpace(turnErr.stage) {
+		case "write_upstream":
+			return openAIWSIngressTurnAbortReasonWriteUpstream, false
+		case "read_upstream":
+			return openAIWSIngressTurnAbortReasonReadUpstream, false
+		case "write_client":
+			return openAIWSIngressTurnAbortReasonWriteClient, false
+		}
+	}
+	return openAIWSIngressTurnAbortReasonUnknown, false
+}
+
+func openAIWSIngressTurnAbortDispositionForReason(reason openAIWSIngressTurnAbortReason) openAIWSIngressTurnAbortDisposition {
+	switch reason {
+	case openAIWSIngressTurnAbortReasonPreviousResponse,
+		openAIWSIngressTurnAbortReasonToolOutput,
+		openAIWSIngressTurnAbortReasonUpstreamError:
+		return openAIWSIngressTurnAbortDispositionContinueTurn
+	case openAIWSIngressTurnAbortReasonContextCanceled,
+		openAIWSIngressTurnAbortReasonClientClosed:
+		return openAIWSIngressTurnAbortDispositionCloseGracefully
+	default:
+		return openAIWSIngressTurnAbortDispositionFailRequest
+	}
+}
+
 func classifyOpenAIWSReadFallbackReason(err error) string {
 	if err == nil {
 		return "read_event"
@@ -1080,6 +1182,7 @@ func (s *OpenAIGatewayService) SnapshotOpenAIWSPoolMetrics() OpenAIWSPoolMetrics
 type OpenAIWSPerformanceMetricsSnapshot struct {
 	Pool      OpenAIWSPoolMetricsSnapshot      `json:"pool"`
 	Retry     OpenAIWSRetryMetricsSnapshot     `json:"retry"`
+	Abort     OpenAIWSAbortMetricsSnapshot     `json:"abort"`
 	Transport OpenAIWSTransportMetricsSnapshot `json:"transport"`
 }
 
@@ -1087,6 +1190,7 @@ func (s *OpenAIGatewayService) SnapshotOpenAIWSPerformanceMetrics() OpenAIWSPerf
 	pool := s.getOpenAIWSConnPool()
 	snapshot := OpenAIWSPerformanceMetricsSnapshot{
 		Retry: s.SnapshotOpenAIWSRetryMetrics(),
+		Abort: s.SnapshotOpenAIWSAbortMetrics(),
 	}
 	if pool == nil {
 		return snapshot
@@ -3887,7 +3991,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		pendingExpectedCallIDs := []string(nil)
 		if storeDisabled && expectedPrev != "" && stateStore != nil {
-			if pendingCallIDs, ok := stateStore.GetResponsePendingToolCalls(expectedPrev); ok {
+			if pendingCallIDs, ok := stateStore.GetResponsePendingToolCalls(groupID, expectedPrev); ok {
 				pendingExpectedCallIDs = openAIWSNormalizeCallIDs(pendingCallIDs)
 			}
 		}
@@ -4473,11 +4577,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if unwrapped := errors.Unwrap(relayErr); unwrapped != nil {
 				finalErr = unwrapped
 			}
+			abortReason, abortExpected := classifyOpenAIWSIngressTurnAbortReason(relayErr)
+			s.recordOpenAIWSTurnAbort(abortReason, abortExpected)
+			logOpenAIWSIngressTurnAbort(account.ID, turn, connID, abortReason, abortExpected, finalErr)
 			if hooks != nil && hooks.AfterTurn != nil {
 				hooks.AfterTurn(turn, nil, finalErr)
 			}
-			if isOpenAIWSIngressUpstreamErrorEvent(relayErr) || isOpenAIWSIngressPreviousResponseNotFound(relayErr) || isOpenAIWSIngressToolOutputNotFound(relayErr) {
-				// 对上游 error 事件采用 turn 级终止：当前 turn 失败，但客户端 WS 会话继续。
+			switch openAIWSIngressTurnAbortDispositionForReason(abortReason) {
+			case openAIWSIngressTurnAbortDispositionContinueTurn:
+				// turn 级终止：当前 turn 失败，但客户端 WS 会话继续。
 				// 这样可与 Codex 客户端语义对齐：后续 turn 允许在新上游连接上继续进行。
 				resetSessionLease(true)
 				clearSessionLastResponseID()
@@ -4491,11 +4599,17 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				if exit {
 					return nil
 				}
+				s.recordOpenAIWSTurnAbortRecovered()
 				turn++
 				continue
+			case openAIWSIngressTurnAbortDispositionCloseGracefully:
+				resetSessionLease(true)
+				clearSessionLastResponseID()
+				return nil
+			case openAIWSIngressTurnAbortDispositionFailRequest:
+				sessionLease.MarkBroken()
+				return finalErr
 			}
-			sessionLease.MarkBroken()
-			return finalErr
 		}
 		turnRetry = 0
 		turnPrevRecoveryTried = false
@@ -4535,7 +4649,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			expectedPrev != "" &&
 			currentPreviousResponseID == expectedPrev &&
 			(hasFunctionCallOutput || len(pendingExpectedCallIDs) > 0) {
-			stateStore.DeleteResponsePendingToolCalls(expectedPrev)
+			stateStore.DeleteResponsePendingToolCalls(groupID, expectedPrev)
 		}
 
 		if responseID != "" && stateStore != nil {
@@ -4545,9 +4659,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				stateStore.BindResponseConn(responseID, poolConnID, ttl)
 			}
 			if pendingFunctionCallIDs := openAIWSNormalizeCallIDs(result.PendingFunctionCallIDs); len(pendingFunctionCallIDs) > 0 {
-				stateStore.BindResponsePendingToolCalls(responseID, pendingFunctionCallIDs, ttl)
+				stateStore.BindResponsePendingToolCalls(groupID, responseID, pendingFunctionCallIDs, ttl)
 			} else {
-				stateStore.DeleteResponsePendingToolCalls(responseID)
+				stateStore.DeleteResponsePendingToolCalls(groupID, responseID)
 			}
 			if sessionHash != "" && persistLastResponseID {
 				stateStore.BindSessionLastResponseID(groupID, sessionHash, responseID, s.openAIWSSessionStickyTTL())

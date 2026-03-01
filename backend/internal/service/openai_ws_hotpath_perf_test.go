@@ -750,7 +750,7 @@ func TestStateStore_GetPaths_DoNotTriggerCleanup(t *testing.T) {
 
 	// Seed some data so Get paths have something to read
 	store.BindResponseConn("resp_get_noclean", "conn_1", time.Minute)
-	store.BindResponsePendingToolCalls("resp_get_noclean", []string{"call_1"}, time.Minute)
+	store.BindResponsePendingToolCalls(0, "resp_get_noclean", []string{"call_1"}, time.Minute)
 	store.BindSessionTurnState(1, "session_get_noclean", "state_1", time.Minute)
 	store.BindSessionConn(1, "session_get_noclean", "conn_1", time.Minute)
 
@@ -764,7 +764,7 @@ func TestStateStore_GetPaths_DoNotTriggerCleanup(t *testing.T) {
 	// Perform many Get calls
 	for i := 0; i < 100; i++ {
 		store.GetResponseConn("resp_get_noclean")
-		store.GetResponsePendingToolCalls("resp_get_noclean")
+		store.GetResponsePendingToolCalls(0, "resp_get_noclean")
 		store.GetSessionTurnState(1, "session_get_noclean")
 		store.GetSessionConn(1, "session_get_noclean")
 	}
@@ -804,15 +804,15 @@ func TestGetResponsePendingToolCalls_ReturnsInternalSlice(t *testing.T) {
 	raw := NewOpenAIWSStateStore(nil)
 	store := raw.(*defaultOpenAIWSStateStore)
 
-	store.BindResponsePendingToolCalls("resp_slice_identity", []string{"call_x", "call_y"}, time.Minute)
+	store.BindResponsePendingToolCalls(0, "resp_slice_identity", []string{"call_x", "call_y"}, time.Minute)
 
-	callIDs, ok := store.GetResponsePendingToolCalls("resp_slice_identity")
+	callIDs, ok := store.GetResponsePendingToolCalls(0, "resp_slice_identity")
 	require.True(t, ok)
 	require.Equal(t, []string{"call_x", "call_y"}, callIDs)
 
 	// Verify it's the same underlying slice as stored in the binding (pointer equality).
 	// The binding stores callIDs as a copied slice at bind time, but Get returns it directly.
-	id := normalizeOpenAIWSResponseID("resp_slice_identity")
+	id := openAIWSResponsePendingToolCallsBindingKey(0, "resp_slice_identity")
 	store.responsePendingToolMu.RLock()
 	binding, exists := store.responsePendingTool[id]
 	store.responsePendingToolMu.RUnlock()
