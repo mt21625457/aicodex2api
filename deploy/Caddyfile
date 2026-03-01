@@ -47,9 +47,6 @@ api.sub2api.com {
 
 		# 传递真实客户端信息
 		header_up X-Real-IP {remote_host}
-		header_up X-Forwarded-For {remote_host}
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Forwarded-Host {host}
 		header_up CF-Connecting-IP {http.request.header.CF-Connecting-IP}
 
 		transport http {
@@ -78,9 +75,6 @@ api.sub2api.com {
 		# 传递真实客户端信息
 		# 兼容 Cloudflare 和直连：后端应优先读取 CF-Connecting-IP，其次 X-Real-IP
 		header_up X-Real-IP {remote_host}
-		header_up X-Forwarded-For {remote_host}
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Forwarded-Host {host}
 		# 保留 Cloudflare 原始头（如果存在）
 		# 后端获取 IP 的优先级建议: CF-Connecting-IP → X-Real-IP → X-Forwarded-For
 		header_up CF-Connecting-IP {http.request.header.CF-Connecting-IP}
