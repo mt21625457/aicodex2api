@@ -366,6 +366,8 @@ type GatewayConfig struct {
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
+	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
+	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -452,6 +454,21 @@ type GatewayConfig struct {
 	ModelsListCacheTTLSeconds int `mapstructure:"models_list_cache_ttl_seconds"`
 }
 
+// GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
+// 默认启用 HTTP/2，多路复用提升并发效率；在部分代理不兼容时按策略回退 HTTP/1.1。
+type GatewayOpenAIHTTP2Config struct {
+	// Enabled: 是否启用 OpenAI HTTP/2 优先策略
+	Enabled bool `mapstructure:"enabled"`
+	// AllowProxyFallbackToHTTP1: 代理不兼容 HTTP/2 时是否允许回退 HTTP/1.1
+	AllowProxyFallbackToHTTP1 bool `mapstructure:"allow_proxy_fallback_to_http1"`
+	// FallbackErrorThreshold: 在窗口期内触发回退所需的连续错误次数
+	FallbackErrorThreshold int `mapstructure:"fallback_error_threshold"`
+	// FallbackWindowSeconds: 连续错误计数窗口（秒）
+	FallbackWindowSeconds int `mapstructure:"fallback_window_seconds"`
+	// FallbackTTLSeconds: 进入 HTTP/1.1 回退态后的持续时间（秒）
+	FallbackTTLSeconds int `mapstructure:"fallback_ttl_seconds"`
+}
+
 // GatewayOpenAIWSConfig OpenAI Responses WebSocket 配置。
 // 注意：默认全局开启；如需回滚可使用 force_http 或关闭 enabled。
 type GatewayOpenAIWSConfig struct {
@@ -497,8 +514,9 @@ type GatewayOpenAIWSConfig struct {
 	// APIKeyMaxConnsFactor: API Key 账号连接池系数（effective=ceil(concurrency*factor)）
 	APIKeyMaxConnsFactor  float64 `mapstructure:"apikey_max_conns_factor"`
 	DialTimeoutSeconds    int     `mapstructure:"dial_timeout_seconds"`
-	ReadTimeoutSeconds    int     `mapstructure:"read_timeout_seconds"`
-	WriteTimeoutSeconds   int     `mapstructure:"write_timeout_seconds"`
+	ReadTimeoutSeconds              int     `mapstructure:"read_timeout_seconds"`
+	ClientReadIdleTimeoutSeconds    int     `mapstructure:"client_read_idle_timeout_seconds"`
+	WriteTimeoutSeconds             int     `mapstructure:"write_timeout_seconds"`
 	PoolTargetUtilization float64 `mapstructure:"pool_target_utilization"`
 	QueueLimitPerConn     int     `mapstructure:"queue_limit_per_conn"`
 	// EventFlushBatchSize: WS 流式写出批量 flush 阈值（事件条数）
@@ -1332,6 +1350,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.queue", 0.7)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.error_rate", 0.8)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
+	// OpenAI HTTP upstream protocol strategy
+	viper.SetDefault("gateway.openai_http2.enabled", true)
+	viper.SetDefault("gateway.openai_http2.allow_proxy_fallback_to_http1", true)
+	viper.SetDefault("gateway.openai_http2.fallback_error_threshold", 2)
+	viper.SetDefault("gateway.openai_http2.fallback_window_seconds", 60)
+	viper.SetDefault("gateway.openai_http2.fallback_ttl_seconds", 600)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -1376,7 +1400,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.worker_count", 128)
 	viper.SetDefault("gateway.usage_record.queue_size", 16384)
 	viper.SetDefault("gateway.usage_record.task_timeout_seconds", 5)
-	viper.SetDefault("gateway.usage_record.overflow_policy", UsageRecordOverflowPolicySample)
+	viper.SetDefault("gateway.usage_record.overflow_policy", UsageRecordOverflowPolicySync)
 	viper.SetDefault("gateway.usage_record.overflow_sample_percent", 10)
 	viper.SetDefault("gateway.usage_record.auto_scale_enabled", true)
 	viper.SetDefault("gateway.usage_record.auto_scale_min_workers", 128)
@@ -1921,6 +1945,15 @@ func (c *Config) Validate() error {
 	if c.Gateway.StreamKeepaliveInterval != 0 &&
 		(c.Gateway.StreamKeepaliveInterval < 5 || c.Gateway.StreamKeepaliveInterval > 30) {
 		return fmt.Errorf("gateway.stream_keepalive_interval must be 0 or between 5-30 seconds")
+	}
+	if c.Gateway.OpenAIHTTP2.FallbackErrorThreshold < 0 {
+		return fmt.Errorf("gateway.openai_http2.fallback_error_threshold must be non-negative")
+	}
+	if c.Gateway.OpenAIHTTP2.FallbackWindowSeconds < 0 {
+		return fmt.Errorf("gateway.openai_http2.fallback_window_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIHTTP2.FallbackTTLSeconds < 0 {
+		return fmt.Errorf("gateway.openai_http2.fallback_ttl_seconds must be non-negative")
 	}
 	// 兼容旧键 sticky_previous_response_ttl_seconds
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {

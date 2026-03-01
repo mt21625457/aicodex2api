@@ -43,19 +43,22 @@ func TestOpenAIWSStateStore_ResponseConnTTL(t *testing.T) {
 
 func TestOpenAIWSStateStore_ResponsePendingToolCallsTTL(t *testing.T) {
 	store := NewOpenAIWSStateStore(nil)
-	store.BindResponsePendingToolCalls("resp_pending_tool_1", []string{"call_1", "call_2", "call_1", " "}, 30*time.Millisecond)
+	groupID := int64(9)
+	store.BindResponsePendingToolCalls(groupID, "resp_pending_tool_1", []string{"call_1", "call_2", "call_1", " "}, 30*time.Millisecond)
 
-	callIDs, ok := store.GetResponsePendingToolCalls("resp_pending_tool_1")
+	callIDs, ok := store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_1")
 	require.True(t, ok)
 	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
+	_, ok = store.GetResponsePendingToolCalls(groupID+1, "resp_pending_tool_1")
+	require.False(t, ok, "pending tool calls should be group-isolated")
 
-	store.DeleteResponsePendingToolCalls("resp_pending_tool_1")
-	_, ok = store.GetResponsePendingToolCalls("resp_pending_tool_1")
+	store.DeleteResponsePendingToolCalls(groupID, "resp_pending_tool_1")
+	_, ok = store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_1")
 	require.False(t, ok)
 
-	store.BindResponsePendingToolCalls("resp_pending_tool_2", []string{"call_3"}, 30*time.Millisecond)
+	store.BindResponsePendingToolCalls(groupID, "resp_pending_tool_2", []string{"call_3"}, 30*time.Millisecond)
 	time.Sleep(60 * time.Millisecond)
-	_, ok = store.GetResponsePendingToolCalls("resp_pending_tool_2")
+	_, ok = store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_2")
 	require.False(t, ok)
 }
 
@@ -204,29 +207,30 @@ func (c *openAIWSResponsePendingToolCallsProbeCache) DeleteSessionAccountID(cont
 	return nil
 }
 
-func (c *openAIWSResponsePendingToolCallsProbeCache) SetOpenAIWSResponsePendingToolCalls(_ context.Context, responseID string, callIDs []string, _ time.Duration) error {
+func (c *openAIWSResponsePendingToolCallsProbeCache) SetOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string, callIDs []string, _ time.Duration) error {
 	if c.pendingData == nil {
 		c.pendingData = make(map[string][]string)
 	}
+	key := fmt.Sprintf("%d:%s", groupID, responseID)
 	normalized := normalizeOpenAIWSPendingToolCallIDs(callIDs)
 	if len(normalized) == 0 {
-		delete(c.pendingData, responseID)
+		delete(c.pendingData, key)
 	} else {
-		c.pendingData[responseID] = append([]string(nil), normalized...)
+		c.pendingData[key] = append([]string(nil), normalized...)
 	}
 	c.setCalls++
 	return nil
 }
 
-func (c *openAIWSResponsePendingToolCallsProbeCache) GetOpenAIWSResponsePendingToolCalls(_ context.Context, responseID string) ([]string, error) {
+func (c *openAIWSResponsePendingToolCallsProbeCache) GetOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string) ([]string, error) {
 	c.getCalls++
-	callIDs := c.pendingData[responseID]
+	callIDs := c.pendingData[fmt.Sprintf("%d:%s", groupID, responseID)]
 	return append([]string(nil), callIDs...), nil
 }
 
-func (c *openAIWSResponsePendingToolCallsProbeCache) DeleteOpenAIWSResponsePendingToolCalls(_ context.Context, responseID string) error {
+func (c *openAIWSResponsePendingToolCallsProbeCache) DeleteOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string) error {
 	c.delCalls++
-	delete(c.pendingData, responseID)
+	delete(c.pendingData, fmt.Sprintf("%d:%s", groupID, responseID))
 	return nil
 }
 
@@ -236,28 +240,31 @@ func TestOpenAIWSStateStore_ResponsePendingToolCalls_UsesOptionalCacheFallback(t
 	store, ok := raw.(*defaultOpenAIWSStateStore)
 	require.True(t, ok)
 
+	groupID := int64(11)
 	responseID := "resp_pending_tool_cache_1"
-	store.BindResponsePendingToolCalls(responseID, []string{"call_1", "call_2", "call_1"}, time.Minute)
+	store.BindResponsePendingToolCalls(groupID, responseID, []string{"call_1", "call_2", "call_1"}, time.Minute)
 	require.Equal(t, 1, probe.setCalls, "绑定 pending_tool_calls 时应写入可选缓存")
 
 	store.responsePendingToolMu.Lock()
-	delete(store.responsePendingTool, normalizeOpenAIWSResponseID(responseID))
+	delete(store.responsePendingTool, openAIWSResponsePendingToolCallsBindingKey(groupID, responseID))
 	store.responsePendingToolMu.Unlock()
 
-	callIDs, found := store.GetResponsePendingToolCalls(responseID)
+	callIDs, found := store.GetResponsePendingToolCalls(groupID, responseID)
 	require.True(t, found, "本地缓存缺失时应降级读取可选缓存")
 	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
 	require.Equal(t, 1, probe.getCalls)
 
 	// 回填后再次读取应命中本地缓存，不再触发 Redis 回源。
-	callIDs, found = store.GetResponsePendingToolCalls(responseID)
+	callIDs, found = store.GetResponsePendingToolCalls(groupID, responseID)
 	require.True(t, found)
 	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
 	require.Equal(t, 1, probe.getCalls)
+	_, found = store.GetResponsePendingToolCalls(groupID+1, responseID)
+	require.False(t, found, "optional cache fallback should remain group-isolated")
 
-	store.DeleteResponsePendingToolCalls(responseID)
+	store.DeleteResponsePendingToolCalls(groupID, responseID)
 	require.Equal(t, 1, probe.delCalls, "删除 pending_tool_calls 时应同步删除可选缓存")
-	_, found = store.GetResponsePendingToolCalls(responseID)
+	_, found = store.GetResponsePendingToolCalls(groupID, responseID)
 	require.False(t, found)
 }
 
@@ -362,6 +369,32 @@ func TestOpenAIWSStateStore_MaybeCleanupRemovesExpiredIncrementally(t *testing.T
 	require.Zero(t, remaining, "多轮 cleanup 后应逐步清空全部过期键")
 }
 
+func TestOpenAIWSStateStore_BackgroundCleanupRemovesExpiredWithoutNewWrites(t *testing.T) {
+	store := newOpenAIWSStateStore(nil, 20*time.Millisecond)
+	defer store.Close()
+
+	expiredAt := time.Now().Add(-time.Minute)
+	store.responseToAccountMu.Lock()
+	for i := 0; i < 64; i++ {
+		key := fmt.Sprintf("bg_cleanup_resp_%d", i)
+		store.responseToAccount[key] = openAIWSAccountBinding{
+			accountID: int64(i + 1),
+			expiresAt: expiredAt,
+		}
+	}
+	store.responseToAccountMu.Unlock()
+
+	// Backdate cleanup watermark so the worker can run immediately on next tick.
+	store.lastCleanupUnixNano.Store(time.Now().Add(-time.Minute).UnixNano())
+
+	require.Eventually(t, func() bool {
+		store.responseToAccountMu.RLock()
+		remaining := len(store.responseToAccount)
+		store.responseToAccountMu.RUnlock()
+		return remaining == 0
+	}, 600*time.Millisecond, 10*time.Millisecond, "后台 cleanup 应在无新写入时清理过期项")
+}
+
 func TestEnsureBindingCapacity_EvictsOneWhenMapIsFull(t *testing.T) {
 	bindings := map[string]openAIWSAccountBinding{
 		"a": {accountID: 1, expiresAt: time.Now().Add(time.Hour)},
@@ -402,6 +435,23 @@ func TestEnsureBindingCapacity_PrefersExpiredEntry(t *testing.T) {
 	require.False(t, hasExpired, "expired entry should have been evicted")
 	require.Equal(t, int64(2), bindings["active"].accountID)
 	require.Equal(t, int64(3), bindings["c"].accountID)
+}
+
+func TestEnsureBindingCapacity_EvictsEarliestExpiryWhenNoExpired(t *testing.T) {
+	now := time.Now()
+	bindings := map[string]openAIWSAccountBinding{
+		"soon":  {accountID: 1, expiresAt: now.Add(30 * time.Second)},
+		"later": {accountID: 2, expiresAt: now.Add(5 * time.Minute)},
+	}
+
+	ensureBindingCapacity(bindings, "new", 2)
+	bindings["new"] = openAIWSAccountBinding{accountID: 3, expiresAt: now.Add(10 * time.Minute)}
+
+	require.Len(t, bindings, 2)
+	_, hasSoon := bindings["soon"]
+	require.False(t, hasSoon, "entry with earliest expiresAt should be evicted")
+	require.Equal(t, int64(2), bindings["later"].accountID)
+	require.Equal(t, int64(3), bindings["new"].accountID)
 }
 
 type openAIWSStateStoreTimeoutProbeCache struct {
@@ -452,13 +502,13 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 
 	accountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_timeout_probe")
 	require.NoError(t, getErr)
-	require.Equal(t, int64(11), accountID, "本地缓存命中应优先返回已绑定账号")
+	require.Equal(t, int64(123), accountID, "Set 失败后应回滚本地写入，避免本地/Redis 双写不一致")
 
 	require.NoError(t, store.DeleteResponseAccount(ctx, groupID, "resp_timeout_probe"))
 
 	require.True(t, probe.setHasDeadline, "SetSessionAccountID 应携带独立超时上下文")
 	require.True(t, probe.deleteHasDeadline, "DeleteSessionAccountID 应携带独立超时上下文")
-	require.False(t, probe.getHasDeadline, "GetSessionAccountID 本用例应由本地缓存命中，不触发 Redis 读取")
+	require.True(t, probe.getHasDeadline, "Set 失败回滚后应走 Redis 读取且携带独立超时上下文")
 	require.Greater(t, probe.setDeadlineDelta, 2*time.Second)
 	require.LessOrEqual(t, probe.setDeadlineDelta, 3*time.Second)
 	require.Greater(t, probe.delDeadlineDelta, 2*time.Second)
@@ -472,6 +522,26 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 	require.True(t, probe2.getHasDeadline, "GetSessionAccountID 在缓存未命中时应携带独立超时上下文")
 	require.Greater(t, probe2.getDeadlineDelta, 2*time.Second)
 	require.LessOrEqual(t, probe2.getDeadlineDelta, 3*time.Second)
+}
+
+func TestOpenAIWSStateStore_BindResponseAccount_UsesShortLocalHotTTL(t *testing.T) {
+	cache := &stubGatewayCache{}
+	raw := NewOpenAIWSStateStore(cache)
+	store, ok := raw.(*defaultOpenAIWSStateStore)
+	require.True(t, ok)
+
+	groupID := int64(23)
+	responseID := "resp_local_hot_ttl"
+	require.NoError(t, store.BindResponseAccount(context.Background(), groupID, responseID, 902, 24*time.Hour))
+
+	id := normalizeOpenAIWSResponseID(responseID)
+	require.NotEmpty(t, id)
+	store.responseToAccountMu.RLock()
+	binding, exists := store.responseToAccount[id]
+	store.responseToAccountMu.RUnlock()
+	require.True(t, exists)
+	require.Equal(t, int64(902), binding.accountID)
+	require.WithinDuration(t, time.Now().Add(openAIWSStateStoreHotCacheTTL), binding.expiresAt, 1500*time.Millisecond)
 }
 
 func TestWithOpenAIWSStateStoreRedisTimeout_WithParentContext(t *testing.T) {

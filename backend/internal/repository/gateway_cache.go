@@ -35,12 +35,14 @@ func buildOpenAIWSSessionLastResponseKey(groupID int64, sessionHash string) stri
 	return fmt.Sprintf("%s%d:%s", openAIWSSessionLastResponsePrefix, groupID, sessionHash)
 }
 
-func buildOpenAIWSResponsePendingToolCallsKey(responseID string) string {
+func buildOpenAIWSResponsePendingToolCallsKey(groupID int64, responseID string) string {
 	id := strings.TrimSpace(responseID)
 	if id == "" {
 		return ""
 	}
-	return openAIWSResponsePendingToolCallsPrefix + strconv.FormatUint(xxhash.Sum64String(id), 16)
+	return openAIWSResponsePendingToolCallsPrefix +
+		strconv.FormatInt(groupID, 10) + ":" +
+		strconv.FormatUint(xxhash.Sum64String(id), 16)
 }
 
 func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -85,8 +87,8 @@ func (c *gatewayCache) DeleteOpenAIWSSessionLastResponseID(ctx context.Context, 
 	return c.rdb.Del(ctx, key).Err()
 }
 
-func (c *gatewayCache) SetOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string, callIDs []string, ttl time.Duration) error {
-	key := buildOpenAIWSResponsePendingToolCallsKey(responseID)
+func (c *gatewayCache) SetOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string, callIDs []string, ttl time.Duration) error {
+	key := buildOpenAIWSResponsePendingToolCallsKey(groupID, responseID)
 	if key == "" {
 		return nil
 	}
@@ -101,8 +103,8 @@ func (c *gatewayCache) SetOpenAIWSResponsePendingToolCalls(ctx context.Context, 
 	return c.rdb.Set(ctx, key, raw, ttl).Err()
 }
 
-func (c *gatewayCache) GetOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string) ([]string, error) {
-	key := buildOpenAIWSResponsePendingToolCallsKey(responseID)
+func (c *gatewayCache) GetOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string) ([]string, error) {
+	key := buildOpenAIWSResponsePendingToolCallsKey(groupID, responseID)
 	if key == "" {
 		return nil, nil
 	}
@@ -117,8 +119,8 @@ func (c *gatewayCache) GetOpenAIWSResponsePendingToolCalls(ctx context.Context, 
 	return normalizeOpenAIWSResponsePendingToolCallIDs(callIDs), nil
 }
 
-func (c *gatewayCache) DeleteOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string) error {
-	key := buildOpenAIWSResponsePendingToolCallsKey(responseID)
+func (c *gatewayCache) DeleteOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string) error {
+	key := buildOpenAIWSResponsePendingToolCallsKey(groupID, responseID)
 	if key == "" {
 		return nil
 	}

@@ -59,9 +59,9 @@ type openAIWSStateStoreSessionLastResponseCache interface {
 }
 
 type openAIWSStateStoreResponsePendingToolCallsCache interface {
-	SetOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string, callIDs []string, ttl time.Duration) error
-	GetOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string) ([]string, error)
-	DeleteOpenAIWSResponsePendingToolCalls(ctx context.Context, responseID string) error
+	SetOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string, callIDs []string, ttl time.Duration) error
+	GetOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string) ([]string, error)
+	DeleteOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string) error
 }
 
 // OpenAIWSStateStore 管理 WSv2 的粘连状态。
@@ -78,9 +78,9 @@ type OpenAIWSStateStore interface {
 	BindResponseConn(responseID, connID string, ttl time.Duration)
 	GetResponseConn(responseID string) (string, bool)
 	DeleteResponseConn(responseID string)
-	BindResponsePendingToolCalls(responseID string, callIDs []string, ttl time.Duration)
-	GetResponsePendingToolCalls(responseID string) ([]string, bool)
-	DeleteResponsePendingToolCalls(responseID string)
+	BindResponsePendingToolCalls(groupID int64, responseID string, callIDs []string, ttl time.Duration)
+	GetResponsePendingToolCalls(groupID int64, responseID string) ([]string, bool)
+	DeleteResponsePendingToolCalls(groupID int64, responseID string)
 
 	BindSessionTurnState(groupID int64, sessionHash, turnState string, ttl time.Duration)
 	GetSessionTurnState(groupID int64, sessionHash string) (string, bool)
@@ -118,6 +118,9 @@ type defaultOpenAIWSStateStore struct {
 	sessionToConn         map[string]openAIWSSessionConnBinding
 
 	lastCleanupUnixNano atomic.Int64
+	stopCh              chan struct{}
+	stopOnce            sync.Once
+	workerWg            sync.WaitGroup
 }
 
 func (s *defaultOpenAIWSStateStore) connShard(key string) *openAIWSConnBindingShard {
@@ -127,6 +130,10 @@ func (s *defaultOpenAIWSStateStore) connShard(key string) *openAIWSConnBindingSh
 
 // NewOpenAIWSStateStore 创建默认 WS 状态存储。
 func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
+	return newOpenAIWSStateStore(cache, openAIWSStateStoreCleanupInterval)
+}
+
+func newOpenAIWSStateStore(cache GatewayCache, cleanupInterval time.Duration) *defaultOpenAIWSStateStore {
 	store := &defaultOpenAIWSStateStore{
 		cache:               cache,
 		responseToAccount:   make(map[string]openAIWSAccountBinding, 256),
@@ -134,12 +141,46 @@ func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
 		sessionToTurnState:  make(map[string]openAIWSTurnStateBinding, 256),
 		sessionToLastResp:   make(map[string]openAIWSSessionLastResponseBinding, 256),
 		sessionToConn:       make(map[string]openAIWSSessionConnBinding, 256),
+		stopCh:              make(chan struct{}),
 	}
 	for i := range store.responseToConnShards {
 		store.responseToConnShards[i].m = make(map[string]openAIWSConnBinding, 16)
 	}
 	store.lastCleanupUnixNano.Store(time.Now().UnixNano())
+	store.startCleanupWorker(cleanupInterval)
 	return store
+}
+
+func (s *defaultOpenAIWSStateStore) startCleanupWorker(interval time.Duration) {
+	if s == nil || interval <= 0 {
+		return
+	}
+	s.workerWg.Add(1)
+	go func() {
+		defer s.workerWg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case <-ticker.C:
+				s.maybeCleanup()
+			}
+		}
+	}()
+}
+
+func (s *defaultOpenAIWSStateStore) Close() {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() {
+		if s.stopCh != nil {
+			close(s.stopCh)
+		}
+	})
+	s.workerWg.Wait()
 }
 
 func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, groupID int64, responseID string, accountID int64, ttl time.Duration) error {
@@ -150,19 +191,25 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 	ttl = normalizeOpenAIWSTTL(ttl)
 	s.maybeCleanup()
 
-	expiresAt := time.Now().Add(ttl)
+	var redisErr error
+	if s.cache != nil {
+		cacheKey := openAIWSResponseAccountCacheKey(id)
+		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+		redisErr = s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
+		cancel()
+	}
+
+	// 无论 Redis 是否写成功，都写入本地缓存作为降级保障。
+	localTTL := openAIWSStateStoreLocalHotTTL(ttl)
 	s.responseToAccountMu.Lock()
 	ensureBindingCapacity(s.responseToAccount, id, openAIWSStateStoreMaxEntriesPerMap)
-	s.responseToAccount[id] = openAIWSAccountBinding{accountID: accountID, expiresAt: expiresAt}
+	s.responseToAccount[id] = openAIWSAccountBinding{
+		accountID: accountID,
+		expiresAt: time.Now().Add(localTTL),
+	}
 	s.responseToAccountMu.Unlock()
 
-	if s.cache == nil {
-		return nil
-	}
-	cacheKey := openAIWSResponseAccountCacheKey(id)
-	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
-	defer cancel()
-	return s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
+	return redisErr
 }
 
 func (s *defaultOpenAIWSStateStore) GetResponseAccount(ctx context.Context, groupID int64, responseID string) (int64, error) {
@@ -284,18 +331,22 @@ func (s *defaultOpenAIWSStateStore) DeleteResponseConn(responseID string) {
 	shard.mu.Unlock()
 }
 
-func (s *defaultOpenAIWSStateStore) BindResponsePendingToolCalls(responseID string, callIDs []string, ttl time.Duration) {
+func (s *defaultOpenAIWSStateStore) BindResponsePendingToolCalls(groupID int64, responseID string, callIDs []string, ttl time.Duration) {
 	id := normalizeOpenAIWSResponseID(responseID)
 	normalizedCallIDs := normalizeOpenAIWSPendingToolCallIDs(callIDs)
 	if id == "" || len(normalizedCallIDs) == 0 {
+		return
+	}
+	key := openAIWSResponsePendingToolCallsBindingKey(groupID, id)
+	if key == "" {
 		return
 	}
 	ttl = normalizeOpenAIWSTTL(ttl)
 	s.maybeCleanup()
 
 	s.responsePendingToolMu.Lock()
-	ensureBindingCapacity(s.responsePendingTool, id, openAIWSStateStoreMaxEntriesPerMap)
-	s.responsePendingTool[id] = openAIWSResponsePendingToolCallsBinding{
+	ensureBindingCapacity(s.responsePendingTool, key, openAIWSStateStoreMaxEntriesPerMap)
+	s.responsePendingTool[key] = openAIWSResponsePendingToolCallsBinding{
 		callIDs:   append([]string(nil), normalizedCallIDs...),
 		expiresAt: time.Now().Add(ttl),
 	}
@@ -304,19 +355,23 @@ func (s *defaultOpenAIWSStateStore) BindResponsePendingToolCalls(responseID stri
 	if cache := s.responsePendingToolCallsCache(); cache != nil {
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
 		defer cancel()
-		_ = cache.SetOpenAIWSResponsePendingToolCalls(cacheCtx, id, normalizedCallIDs, ttl)
+		_ = cache.SetOpenAIWSResponsePendingToolCalls(cacheCtx, groupID, id, normalizedCallIDs, ttl)
 	}
 }
 
-func (s *defaultOpenAIWSStateStore) GetResponsePendingToolCalls(responseID string) ([]string, bool) {
+func (s *defaultOpenAIWSStateStore) GetResponsePendingToolCalls(groupID int64, responseID string) ([]string, bool) {
 	id := normalizeOpenAIWSResponseID(responseID)
 	if id == "" {
+		return nil, false
+	}
+	key := openAIWSResponsePendingToolCallsBindingKey(groupID, id)
+	if key == "" {
 		return nil, false
 	}
 
 	now := time.Now()
 	s.responsePendingToolMu.RLock()
-	binding, ok := s.responsePendingTool[id]
+	binding, ok := s.responsePendingTool[key]
 	s.responsePendingToolMu.RUnlock()
 	if !ok || now.After(binding.expiresAt) || len(binding.callIDs) == 0 {
 		cache := s.responsePendingToolCallsCache()
@@ -325,7 +380,7 @@ func (s *defaultOpenAIWSStateStore) GetResponsePendingToolCalls(responseID strin
 		}
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
 		defer cancel()
-		callIDs, err := cache.GetOpenAIWSResponsePendingToolCalls(cacheCtx, id)
+		callIDs, err := cache.GetOpenAIWSResponsePendingToolCalls(cacheCtx, groupID, id)
 		normalizedCallIDs := normalizeOpenAIWSPendingToolCallIDs(callIDs)
 		if err != nil || len(normalizedCallIDs) == 0 {
 			return nil, false
@@ -333,8 +388,8 @@ func (s *defaultOpenAIWSStateStore) GetResponsePendingToolCalls(responseID strin
 
 		// Redis 命中后回填本地热缓存，降低后续访问开销。
 		s.responsePendingToolMu.Lock()
-		ensureBindingCapacity(s.responsePendingTool, id, openAIWSStateStoreMaxEntriesPerMap)
-		s.responsePendingTool[id] = openAIWSResponsePendingToolCallsBinding{
+		ensureBindingCapacity(s.responsePendingTool, key, openAIWSStateStoreMaxEntriesPerMap)
+		s.responsePendingTool[key] = openAIWSResponsePendingToolCallsBinding{
 			callIDs:   append([]string(nil), normalizedCallIDs...),
 			expiresAt: time.Now().Add(openAIWSStateStoreHotCacheTTL),
 		}
@@ -345,19 +400,23 @@ func (s *defaultOpenAIWSStateStore) GetResponsePendingToolCalls(responseID strin
 	return binding.callIDs, true
 }
 
-func (s *defaultOpenAIWSStateStore) DeleteResponsePendingToolCalls(responseID string) {
+func (s *defaultOpenAIWSStateStore) DeleteResponsePendingToolCalls(groupID int64, responseID string) {
 	id := normalizeOpenAIWSResponseID(responseID)
 	if id == "" {
 		return
 	}
+	key := openAIWSResponsePendingToolCallsBindingKey(groupID, id)
+	if key == "" {
+		return
+	}
 	s.responsePendingToolMu.Lock()
-	delete(s.responsePendingTool, id)
+	delete(s.responsePendingTool, key)
 	s.responsePendingToolMu.Unlock()
 
 	if cache := s.responsePendingToolCallsCache(); cache != nil {
 		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(context.Background())
 		defer cancel()
-		_ = cache.DeleteOpenAIWSResponsePendingToolCalls(cacheCtx, id)
+		_ = cache.DeleteOpenAIWSResponsePendingToolCalls(cacheCtx, groupID, id)
 	}
 }
 
@@ -672,12 +731,12 @@ type expiringBinding interface {
 	getExpiresAt() time.Time
 }
 
-func (b openAIWSAccountBinding) getExpiresAt() time.Time                    { return b.expiresAt }
-func (b openAIWSConnBinding) getExpiresAt() time.Time                       { return b.expiresAt }
-func (b openAIWSResponsePendingToolCallsBinding) getExpiresAt() time.Time   { return b.expiresAt }
-func (b openAIWSTurnStateBinding) getExpiresAt() time.Time                  { return b.expiresAt }
-func (b openAIWSSessionConnBinding) getExpiresAt() time.Time                { return b.expiresAt }
-func (b openAIWSSessionLastResponseBinding) getExpiresAt() time.Time        { return b.expiresAt }
+func (b openAIWSAccountBinding) getExpiresAt() time.Time                  { return b.expiresAt }
+func (b openAIWSConnBinding) getExpiresAt() time.Time                     { return b.expiresAt }
+func (b openAIWSResponsePendingToolCallsBinding) getExpiresAt() time.Time { return b.expiresAt }
+func (b openAIWSTurnStateBinding) getExpiresAt() time.Time                { return b.expiresAt }
+func (b openAIWSSessionConnBinding) getExpiresAt() time.Time              { return b.expiresAt }
+func (b openAIWSSessionLastResponseBinding) getExpiresAt() time.Time      { return b.expiresAt }
 
 func ensureBindingCapacity[T expiringBinding](bindings map[string]T, incomingKey string, maxEntries int) {
 	if len(bindings) < maxEntries || maxEntries <= 0 {
@@ -686,7 +745,7 @@ func ensureBindingCapacity[T expiringBinding](bindings map[string]T, incomingKey
 	if _, exists := bindings[incomingKey]; exists {
 		return
 	}
-	// 优先驱逐已过期的条目；如果找不到则淘汰任意一项保证内存有界。
+	// 优先驱逐已过期条目；若不存在过期项，则按 expiresAt 最早驱逐，避免随机删除活跃绑定。
 	now := time.Now()
 	for key, val := range bindings {
 		if !val.getExpiresAt().IsZero() && now.After(val.getExpiresAt()) {
@@ -694,9 +753,30 @@ func ensureBindingCapacity[T expiringBinding](bindings map[string]T, incomingKey
 			return
 		}
 	}
-	for key := range bindings {
-		delete(bindings, key)
-		return
+	var (
+		evictKey      string
+		evictExpireAt time.Time
+		hasCandidate  bool
+	)
+	for key, val := range bindings {
+		expiresAt := val.getExpiresAt()
+		if !hasCandidate {
+			evictKey = key
+			evictExpireAt = expiresAt
+			hasCandidate = true
+			continue
+		}
+		switch {
+		case expiresAt.IsZero() && !evictExpireAt.IsZero():
+			evictKey = key
+			evictExpireAt = expiresAt
+		case !expiresAt.IsZero() && !evictExpireAt.IsZero() && expiresAt.Before(evictExpireAt):
+			evictKey = key
+			evictExpireAt = expiresAt
+		}
+	}
+	if hasCandidate {
+		delete(bindings, evictKey)
 	}
 }
 
@@ -724,6 +804,14 @@ func normalizeOpenAIWSPendingToolCallIDs(callIDs []string) []string {
 	return normalized
 }
 
+func openAIWSResponsePendingToolCallsBindingKey(groupID int64, responseID string) string {
+	id := normalizeOpenAIWSResponseID(responseID)
+	if id == "" {
+		return ""
+	}
+	return strconv.FormatInt(groupID, 10) + ":" + id
+}
+
 func openAIWSResponseAccountCacheKey(responseID string) string {
 	h := xxhash.Sum64String(responseID)
 	// Pad to 16 hex chars for consistent key length.
@@ -743,6 +831,14 @@ func openAIWSResponseAccountLegacyCacheKey(responseID string) string {
 func normalizeOpenAIWSTTL(ttl time.Duration) time.Duration {
 	if ttl <= 0 {
 		return time.Hour
+	}
+	return ttl
+}
+
+func openAIWSStateStoreLocalHotTTL(ttl time.Duration) time.Duration {
+	ttl = normalizeOpenAIWSTTL(ttl)
+	if ttl > openAIWSStateStoreHotCacheTTL {
+		return openAIWSStateStoreHotCacheTTL
 	}
 	return ttl
 }

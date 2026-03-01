@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -67,6 +69,64 @@ func TestOpenAIWSIngressContextPool_Acquire_HardCapacityEqualsConcurrency(t *tes
 	lease2.Release()
 
 	require.Equal(t, 2, dialer.DialCount(), "会话回收复用 context 后应重建上游连接，避免跨会话污染")
+}
+
+func TestOpenAIWSIngressContextPool_Acquire_RespectsGlobalHardCap(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{
+			&openAIWSCaptureConn{},
+			&openAIWSCaptureConn{},
+			&openAIWSCaptureConn{},
+		},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 802, Concurrency: 10}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:               account,
+		GroupID:               3,
+		SessionHash:           "session_a",
+		OwnerID:               "owner_a",
+		WSURL:                 "ws://test-upstream",
+		HasPreviousResponseID: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease1)
+
+	lease2, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:               account,
+		GroupID:               3,
+		SessionHash:           "session_b",
+		OwnerID:               "owner_b",
+		WSURL:                 "ws://test-upstream",
+		HasPreviousResponseID: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease2)
+
+	_, err = pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:               account,
+		GroupID:               3,
+		SessionHash:           "session_c",
+		OwnerID:               "owner_c",
+		WSURL:                 "ws://test-upstream",
+		HasPreviousResponseID: true,
+	})
+	require.ErrorIs(t, err, errOpenAIWSConnQueueFull, "账号并发高于全局硬上限时，context pool 仍应被硬上限约束")
+
+	lease1.Release()
+	lease2.Release()
+	require.Equal(t, 2, dialer.DialCount())
 }
 
 func TestOpenAIWSIngressContextPool_Acquire_DoesNotCrossAccount(t *testing.T) {
@@ -613,12 +673,169 @@ func TestOpenAIWSIngressContextPool_EnsureContextUpstreamBranches(t *testing.T) 
 		WSURL: "ws://test",
 	})
 	require.Error(t, err)
+	var dialErr *openAIWSDialError
+	require.ErrorAs(t, err, &dialErr, "dial 失败应包装为 openAIWSDialError")
+	require.Equal(t, 503, dialErr.StatusCode)
 	ctxItem.mu.Lock()
 	broken := ctxItem.broken
 	failureStreak := ctxItem.failureStreak
 	ctxItem.mu.Unlock()
 	require.True(t, broken)
 	require.GreaterOrEqual(t, failureStreak, 1, "dial 失败后应累计 failure_streak")
+}
+
+func TestOpenAIWSIngressContextPool_MarkBrokenDoesNotSignalWaiterBeforeRelease(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	upstream := &openAIWSCaptureConn{}
+	ctxItem := &openAIWSIngressContext{
+		id:          "ctx_mark_broken",
+		ownerID:     "owner_broken",
+		releaseDone: make(chan struct{}, 1),
+		upstream:    upstream,
+	}
+
+	pool.markContextBroken(ctxItem)
+
+	select {
+	case <-ctxItem.releaseDone:
+		t.Fatal("markContextBroken should not wake waiters before owner is released")
+	default:
+	}
+
+	ctxItem.mu.Lock()
+	require.True(t, ctxItem.broken)
+	require.Equal(t, "owner_broken", ctxItem.ownerID)
+	require.Nil(t, ctxItem.upstream)
+	ctxItem.mu.Unlock()
+
+	upstream.mu.Lock()
+	require.True(t, upstream.closed, "mark broken should close current upstream connection")
+	upstream.mu.Unlock()
+
+	pool.releaseContext(ctxItem, "owner_broken")
+
+	select {
+	case <-ctxItem.releaseDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("releaseContext should signal one waiting acquire after owner is released")
+	}
+
+	ctxItem.mu.Lock()
+	require.Equal(t, "", ctxItem.ownerID)
+	require.False(t, ctxItem.broken)
+	ctxItem.mu.Unlock()
+}
+
+type openAIWSWriteDisconnectConn struct{}
+
+func (c *openAIWSWriteDisconnectConn) WriteJSON(context.Context, any) error {
+	return net.ErrClosed
+}
+
+func (c *openAIWSWriteDisconnectConn) ReadMessage(context.Context) ([]byte, error) {
+	return nil, net.ErrClosed
+}
+
+func (c *openAIWSWriteDisconnectConn) Ping(context.Context) error {
+	return net.ErrClosed
+}
+
+func (c *openAIWSWriteDisconnectConn) Close() error {
+	return nil
+}
+
+type openAIWSWriteGenericFailConn struct{}
+
+func (c *openAIWSWriteGenericFailConn) WriteJSON(context.Context, any) error {
+	return errors.New("writer failed")
+}
+
+func (c *openAIWSWriteGenericFailConn) ReadMessage(context.Context) ([]byte, error) {
+	return nil, errors.New("reader failed")
+}
+
+func (c *openAIWSWriteGenericFailConn) Ping(context.Context) error {
+	return errors.New("ping failed")
+}
+
+func (c *openAIWSWriteGenericFailConn) Close() error {
+	return nil
+}
+
+func TestOpenAIWSIngressContextLease_IOErrorInvalidatesCachedConn(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	upstream := &openAIWSWriteDisconnectConn{}
+	ctxItem := &openAIWSIngressContext{
+		id:        "ctx_io_err",
+		accountID: 7,
+		ownerID:   "owner_io",
+		upstream:  upstream,
+	}
+	lease := &openAIWSIngressContextLease{
+		pool:    pool,
+		context: ctxItem,
+		ownerID: "owner_io",
+	}
+	lease.cachedConn = upstream
+
+	err := lease.WriteJSONWithContextTimeout(context.Background(), map[string]any{"type": "response.create"}, time.Second)
+	require.Error(t, err)
+	require.ErrorIs(t, err, net.ErrClosed)
+
+	lease.cachedConnMu.RLock()
+	cached := lease.cachedConn
+	lease.cachedConnMu.RUnlock()
+	require.Nil(t, cached, "write failure should invalidate cachedConn")
+
+	ctxItem.mu.Lock()
+	require.True(t, ctxItem.broken, "disconnect-style IO failure should mark context broken")
+	require.Nil(t, ctxItem.upstream, "broken context should drop upstream reference")
+	ctxItem.mu.Unlock()
+}
+
+func TestOpenAIWSIngressContextLease_GenericIOErrorKeepsContextButInvalidatesCache(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	upstream := &openAIWSWriteGenericFailConn{}
+	ctxItem := &openAIWSIngressContext{
+		id:        "ctx_generic_err",
+		accountID: 8,
+		ownerID:   "owner_generic",
+		upstream:  upstream,
+	}
+	lease := &openAIWSIngressContextLease{
+		pool:    pool,
+		context: ctxItem,
+		ownerID: "owner_generic",
+	}
+	lease.cachedConn = upstream
+
+	err := lease.PingWithTimeout(time.Second)
+	require.Error(t, err)
+
+	lease.cachedConnMu.RLock()
+	cached := lease.cachedConn
+	lease.cachedConnMu.RUnlock()
+	require.Nil(t, cached, "generic IO failure should still invalidate cachedConn")
+
+	ctxItem.mu.Lock()
+	require.False(t, ctxItem.broken, "non-disconnect IO failure should not force-broken context")
+	require.Equal(t, upstream, ctxItem.upstream, "upstream should remain for non-disconnect errors")
+	ctxItem.mu.Unlock()
 }
 
 func TestOpenAIWSIngressContextPool_EnsureContextUpstream_SerializesConcurrentDial(t *testing.T) {
@@ -748,6 +965,65 @@ func TestOpenAIWSIngressContextPool_EnsureContextUpstream_WaiterTimeoutDoesNotRe
 	}
 
 	require.Equal(t, 1, blockingDialer.DialCount())
+}
+
+func TestOpenAIWSIngressContextPool_Acquire_QueueWaitDurationRecorded(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{
+			&openAIWSCaptureConn{},
+			&openAIWSCaptureConn{},
+		},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 1303, Concurrency: 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     25,
+		SessionHash: "session_queue_wait",
+		OwnerID:     "owner_a",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease1)
+
+	type acquireResult struct {
+		lease *openAIWSIngressContextLease
+		err   error
+	}
+	waiterCh := make(chan acquireResult, 1)
+	go func() {
+		lease, acquireErr := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+			Account:     account,
+			GroupID:     25,
+			SessionHash: "session_queue_wait",
+			OwnerID:     "owner_b",
+			WSURL:       "ws://test-upstream",
+		})
+		waiterCh <- acquireResult{lease: lease, err: acquireErr}
+	}()
+
+	time.Sleep(120 * time.Millisecond)
+	lease1.Release()
+
+	select {
+	case waiter := <-waiterCh:
+		require.NoError(t, waiter.err)
+		require.NotNil(t, waiter.lease)
+		require.GreaterOrEqual(t, waiter.lease.QueueWaitDuration(), 100*time.Millisecond)
+		waiter.lease.Release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待第二个 acquire 结果超时")
+	}
 }
 
 type openAIWSBlockingDialer struct {
