@@ -384,6 +384,60 @@ func TestOpenAIWSIngressContextPool_Release_ClosesUpstreamAndForcesRedial(t *tes
 	require.Equal(t, 2, dialer.DialCount())
 }
 
+func TestOpenAIWSIngressContextPool_Yield_ReleasesOwnerKeepsUpstream(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	upstreamConn := &openAIWSCaptureConn{}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{upstreamConn},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 1103, Concurrency: 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     14,
+		SessionHash: "session_yield",
+		OwnerID:     "owner_a",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease1)
+	connID1 := lease1.ConnID()
+	require.NotEmpty(t, connID1)
+
+	lease1.Yield()
+	upstreamConn.mu.Lock()
+	closedAfterYield := upstreamConn.closed
+	upstreamConn.mu.Unlock()
+	require.False(t, closedAfterYield, "yield 只应释放 owner，不应关闭上游连接")
+
+	lease2, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     14,
+		SessionHash: "session_yield",
+		OwnerID:     "owner_b",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease2)
+	require.Equal(t, connID1, lease2.ConnID(), "yield 后应复用同一上游连接")
+	require.Equal(t, 1, dialer.DialCount(), "yield 后重新获取不应触发重拨号")
+
+	lease2.Release()
+	upstreamConn.mu.Lock()
+	closedAfterRelease := upstreamConn.closed
+	upstreamConn.mu.Unlock()
+	require.True(t, closedAfterRelease, "release 仍需关闭上游连接")
+}
+
 func TestOpenAIWSIngressContextPool_CleanupAccountExpiredLocked_ClosesUpstream(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60

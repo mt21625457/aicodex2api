@@ -849,20 +849,33 @@ func (p *openAIWSIngressContextPool) ensureContextUpstream(
 	}
 }
 
+func (p *openAIWSIngressContextPool) yieldContext(c *openAIWSIngressContext, ownerID string) {
+	p.releaseContextWithPolicy(c, ownerID, false)
+}
+
 func (p *openAIWSIngressContextPool) releaseContext(c *openAIWSIngressContext, ownerID string) {
+	p.releaseContextWithPolicy(c, ownerID, true)
+}
+
+func (p *openAIWSIngressContextPool) releaseContextWithPolicy(
+	c *openAIWSIngressContext,
+	ownerID string,
+	closeUpstream bool,
+) {
 	if p == nil || c == nil {
 		return
 	}
 	var upstream openAIWSClientConn
 	c.mu.Lock()
 	if c.ownerID == ownerID {
-		// ctx_pool 模式下每次客户端会话结束都关闭上游连接，
-		// 下一次同会话重新获取时必须新建上游 ws。
-		upstream = c.upstream
-		c.upstream = nil
-		c.handshakeHeaders = nil
-		c.upstreamConnID = ""
-		c.prewarmed.Store(false)
+		if closeUpstream {
+			// 会话结束或链路损坏时销毁上游连接，避免污染后续请求。
+			upstream = c.upstream
+			c.upstream = nil
+			c.handshakeHeaders = nil
+			c.upstreamConnID = ""
+			c.prewarmed.Store(false)
+		}
 		c.ownerID = ""
 		// 通知一个等待中的 Acquire 请求，避免 close 广播导致惊群。
 		if c.releaseDone != nil {
@@ -1278,4 +1291,17 @@ func (l *openAIWSIngressContextLease) Release() {
 	l.cachedConn = nil
 	l.cachedConnMu.Unlock()
 	l.pool.releaseContext(l.context, l.ownerID)
+}
+
+func (l *openAIWSIngressContextLease) Yield() {
+	if l == nil || l.context == nil || l.pool == nil {
+		return
+	}
+	if !l.released.CompareAndSwap(false, true) {
+		return
+	}
+	l.cachedConnMu.Lock()
+	l.cachedConn = nil
+	l.cachedConnMu.Unlock()
+	l.pool.yieldContext(l.context, l.ownerID)
 }

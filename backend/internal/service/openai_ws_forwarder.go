@@ -157,6 +157,7 @@ type openAIWSIngressUpstreamLease interface {
 	ReadMessageWithContextTimeout(ctx context.Context, timeout time.Duration) ([]byte, error)
 	PingWithTimeout(timeout time.Duration) error
 	MarkBroken()
+	Yield()
 	Release()
 }
 
@@ -3771,6 +3772,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 	}
+	yieldSessionLease := func() {
+		if sessionLease == nil {
+			return
+		}
+		unpinSessionConn(sessionConnID)
+		sessionLease.Yield()
+		if debugEnabled {
+			logOpenAIWSModeDebug(
+				"ingress_ws_upstream_yielded account_id=%d conn_id=%s",
+				account.ID,
+				truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+			)
+		}
+		sessionLease = nil
+		sessionConnID = ""
+	}
 	defer releaseSessionLease()
 
 	turn := 1
@@ -4662,6 +4679,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if connID != "" {
 			preferredConnID = connID
 		}
+		yieldSessionLease()
 
 		exit, advanceErr := advanceToNextClientTurn(turn, connID)
 		if advanceErr != nil {
