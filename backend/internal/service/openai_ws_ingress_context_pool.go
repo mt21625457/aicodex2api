@@ -445,6 +445,7 @@ func (p *openAIWSIngressContextPool) Acquire(
 					scheduleLayer = openAIWSIngressScheduleLayerExact
 				default:
 					// 当前 context 被其他 owner 占用，等待其释放后重试（循环重试替代递归）。
+					blockedByOwner := existing.ownerID
 					if existing.releaseDone == nil {
 						existing.releaseDone = make(chan struct{}, 1)
 					}
@@ -453,6 +454,12 @@ func (p *openAIWSIngressContextPool) Acquire(
 					ap.mu.Unlock()
 					closeOpenAIWSClientConns(deferredClose)
 
+					logOpenAIWSModeInfo(
+						"ctx_pool_owner_wait_begin account_id=%d ctx_id=%s owner_id=%s blocked_by=%s retry=%d",
+						accountID, existing.id, ownerID,
+						truncateOpenAIWSLogValue(blockedByOwner, openAIWSIDValueMaxLen),
+						waitRetries,
+					)
 					waitStart := time.Now()
 					select {
 					case <-releaseDone:

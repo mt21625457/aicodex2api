@@ -1769,6 +1769,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			turnPreviousResponseID,
 			turnHasToolOutputContext,
 		) {
+			logOpenAIWSModeInfo(
+				"ingress_ws_proactive_tool_output_reject account_id=%d turn=%d conn_id=%s has_tool_output_context=%v previous_response_id=%s",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+				turnHasToolOutputContext,
+				truncateOpenAIWSLogValue(turnPreviousResponseID, openAIWSIDValueMaxLen),
+			)
 			return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
 				openAIWSIngressStageToolOutputNotFound,
 				errors.New("proactive tool_output_not_found: function_call_output without previous_response_id in store_disabled mode"),
