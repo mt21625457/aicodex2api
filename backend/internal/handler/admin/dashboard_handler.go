@@ -333,6 +333,20 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 	})
 }
 
+// GetGroupStats handles getting group usage statistics.
+// GET /api/v1/admin/dashboard/groups
+//
+// NOTE: Group-level aggregation pipeline is not available in this branch baseline.
+// Keep this endpoint for API compatibility and return an empty dataset.
+func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
+	startTime, endTime := parseTimeRange(c)
+	response.Success(c, gin.H{
+		"groups":     []any{},
+		"start_date": startTime.Format("2006-01-02"),
+		"end_date":   endTime.Add(-24 * time.Hour).Format("2006-01-02"),
+	})
+}
+
 // GetAPIKeyUsageTrend handles getting API key usage trend data
 // GET /api/v1/admin/dashboard/api-keys-trend
 // Query params: start_date, end_date (YYYY-MM-DD), granularity (day/hour), limit (default 5)
