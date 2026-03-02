@@ -10,22 +10,23 @@ import (
 )
 
 type stubAdminService struct {
-	users            []service.User
-	apiKeys          []service.APIKey
-	groups           []service.Group
-	accounts         []service.Account
-	proxies          []service.Proxy
-	proxyCounts      []service.ProxyWithAccountCount
-	redeems          []service.RedeemCode
-	createdAccounts  []*service.CreateAccountInput
-	createdProxies   []*service.CreateProxyInput
-	updatedProxyIDs  []int64
-	updatedProxies   []*service.UpdateProxyInput
-	testedProxyIDs   []int64
-	createAccountErr error
-	updateAccountErr error
-	checkMixedErr    error
-	lastMixedCheck   struct {
+	users                []service.User
+	apiKeys              []service.APIKey
+	groups               []service.Group
+	accounts             []service.Account
+	proxies              []service.Proxy
+	proxyCounts          []service.ProxyWithAccountCount
+	redeems              []service.RedeemCode
+	createdAccounts      []*service.CreateAccountInput
+	createdProxies       []*service.CreateProxyInput
+	updatedProxyIDs      []int64
+	updatedProxies       []*service.UpdateProxyInput
+	testedProxyIDs       []int64
+	createAccountErr     error
+	updateAccountErr     error
+	bulkUpdateAccountErr error
+	checkMixedErr        error
+	lastMixedCheck       struct {
 		accountID int64
 		platform  string
 		groupIDs  []int64
@@ -236,10 +237,13 @@ func (s *stubAdminService) SetAccountSchedulable(ctx context.Context, id int64, 
 }
 
 func (s *stubAdminService) BulkUpdateAccounts(ctx context.Context, input *service.BulkUpdateAccountsInput) (*service.BulkUpdateAccountsResult, error) {
+	if s.bulkUpdateAccountErr != nil {
+		return nil, s.bulkUpdateAccountErr
+	}
 	s.mu.Lock()
 	s.lastBulkUpdateInput = input
 	s.mu.Unlock()
-	return &service.BulkUpdateAccountsResult{Success: 1, Failed: 0, SuccessIDs: []int64{1}}, nil
+	return &service.BulkUpdateAccountsResult{Success: len(input.AccountIDs), Failed: 0, SuccessIDs: input.AccountIDs}, nil
 }
 
 func (s *stubAdminService) CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error {
@@ -405,6 +409,24 @@ func (s *stubAdminService) GetUserBalanceHistory(ctx context.Context, userID int
 
 func (s *stubAdminService) UpdateGroupSortOrders(ctx context.Context, updates []service.GroupSortOrderUpdate) error {
 	return nil
+}
+
+func (s *stubAdminService) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
+	for i := range s.apiKeys {
+		if s.apiKeys[i].ID == keyID {
+			k := s.apiKeys[i]
+			if groupID != nil {
+				if *groupID == 0 {
+					k.GroupID = nil
+				} else {
+					gid := *groupID
+					k.GroupID = &gid
+				}
+			}
+			return &service.AdminUpdateAPIKeyGroupIDResult{APIKey: &k}, nil
+		}
+	}
+	return nil, service.ErrAPIKeyNotFound
 }
 
 // Ensure stub implements interface.

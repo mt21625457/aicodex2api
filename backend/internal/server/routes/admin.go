@@ -26,6 +26,9 @@ func RegisterAdminRoutes(
 		// 分组管理
 		registerGroupRoutes(admin, h)
 
+		// API Key 管理
+		registerAdminAPIKeyRoutes(admin, h)
+
 		// 账号管理
 		registerAccountRoutes(admin, h)
 
@@ -54,6 +57,9 @@ func RegisterAdminRoutes(
 
 		// 系统设置
 		registerSettingsRoutes(admin, h)
+
+		// 数据管理
+		registerDataManagementRoutes(admin, h)
 
 		// 运维监控（Ops）
 		registerOpsRoutes(admin, h)
@@ -171,6 +177,7 @@ func registerDashboardRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		dashboard.GET("/realtime", h.Admin.Dashboard.GetRealtimeMetrics)
 		dashboard.GET("/trend", h.Admin.Dashboard.GetUsageTrend)
 		dashboard.GET("/models", h.Admin.Dashboard.GetModelStats)
+		dashboard.GET("/groups", h.Admin.Dashboard.GetGroupStats)
 		dashboard.GET("/api-keys-trend", h.Admin.Dashboard.GetAPIKeyUsageTrend)
 		dashboard.GET("/users-trend", h.Admin.Dashboard.GetUserUsageTrend)
 		dashboard.POST("/users-usage", h.Admin.Dashboard.GetBatchUsersUsage)
@@ -210,6 +217,13 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.DELETE("/:id", h.Admin.Group.Delete)
 		groups.GET("/:id/stats", h.Admin.Group.GetStats)
 		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
+	}
+}
+
+func registerAdminAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	apiKeys := admin.Group("/api-keys")
+	{
+		apiKeys.PUT("/:id", h.Admin.APIKey.UpdateGroup)
 	}
 }
 
@@ -338,6 +352,7 @@ func registerRedeemCodeRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		codes.GET("/stats", h.Admin.Redeem.GetStats)
 		codes.GET("/export", h.Admin.Redeem.Export)
 		codes.GET("/:id", h.Admin.Redeem.GetByID)
+		codes.POST("/create-and-redeem", h.Admin.Redeem.CreateAndRedeem)
 		codes.POST("/generate", h.Admin.Redeem.Generate)
 		codes.DELETE("/:id", h.Admin.Redeem.Delete)
 		codes.POST("/batch-delete", h.Admin.Redeem.BatchDelete)
@@ -392,6 +407,29 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.PUT("/sora-s3/profiles/:profile_id", h.Admin.Setting.UpdateSoraS3Profile)
 		adminSettings.DELETE("/sora-s3/profiles/:profile_id", h.Admin.Setting.DeleteSoraS3Profile)
 		adminSettings.POST("/sora-s3/profiles/:profile_id/activate", h.Admin.Setting.SetActiveSoraS3Profile)
+	}
+}
+
+func registerDataManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	dataManagement := admin.Group("/data-management")
+	{
+		dataManagement.GET("/agent/health", h.Admin.DataManagement.GetAgentHealth)
+		dataManagement.GET("/config", h.Admin.DataManagement.GetConfig)
+		dataManagement.PUT("/config", h.Admin.DataManagement.UpdateConfig)
+		dataManagement.GET("/sources/:source_type/profiles", h.Admin.DataManagement.ListSourceProfiles)
+		dataManagement.POST("/sources/:source_type/profiles", h.Admin.DataManagement.CreateSourceProfile)
+		dataManagement.PUT("/sources/:source_type/profiles/:profile_id", h.Admin.DataManagement.UpdateSourceProfile)
+		dataManagement.DELETE("/sources/:source_type/profiles/:profile_id", h.Admin.DataManagement.DeleteSourceProfile)
+		dataManagement.POST("/sources/:source_type/profiles/:profile_id/activate", h.Admin.DataManagement.SetActiveSourceProfile)
+		dataManagement.POST("/s3/test", h.Admin.DataManagement.TestS3)
+		dataManagement.GET("/s3/profiles", h.Admin.DataManagement.ListS3Profiles)
+		dataManagement.POST("/s3/profiles", h.Admin.DataManagement.CreateS3Profile)
+		dataManagement.PUT("/s3/profiles/:profile_id", h.Admin.DataManagement.UpdateS3Profile)
+		dataManagement.DELETE("/s3/profiles/:profile_id", h.Admin.DataManagement.DeleteS3Profile)
+		dataManagement.POST("/s3/profiles/:profile_id/activate", h.Admin.DataManagement.SetActiveS3Profile)
+		dataManagement.POST("/backups", h.Admin.DataManagement.CreateBackupJob)
+		dataManagement.GET("/backups", h.Admin.DataManagement.ListBackupJobs)
+		dataManagement.GET("/backups/:job_id", h.Admin.DataManagement.GetBackupJob)
 	}
 }
 
