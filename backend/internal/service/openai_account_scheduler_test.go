@@ -13,6 +13,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func mustDefaultOpenAIAccountScheduler(t *testing.T, svc *OpenAIGatewayService, stats *openAIAccountRuntimeStats) *defaultOpenAIAccountScheduler {
+	t.Helper()
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
+	return scheduler
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseSticky(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(9)
@@ -3033,7 +3041,9 @@ func TestLoadTrend_ScoringIntegration(t *testing.T) {
 	}
 
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 
 	base := time.Now().UnixNano() - int64(10*time.Second)
 	stat1 := stats.loadOrCreate(1)
@@ -3090,7 +3100,9 @@ func TestLoadTrend_DisabledByDefault(t *testing.T) {
 	}
 
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 
 	base := time.Now().UnixNano()
 	stat1 := stats.loadOrCreate(1)
@@ -3227,7 +3239,9 @@ func TestLoadTrend_RecordUpdatesRuntimeStat(t *testing.T) {
 	}
 
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
@@ -3276,7 +3290,9 @@ func TestLoadTrend_FallingTrendBoostsScore(t *testing.T) {
 	}
 
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 
 	base := time.Now().UnixNano()
 	stat1 := stats.loadOrCreate(1)
@@ -3731,7 +3747,9 @@ func TestGetOrCreateModelTTFT_ConcurrentSameModel(t *testing.T) {
 func TestSchedulerCircuitBreakerConfig_Defaults(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 	enabled, threshold, cooldown, halfOpenMax := scheduler.schedulerCircuitBreakerConfig()
 	require.False(t, enabled)
 	require.Equal(t, defaultCircuitBreakerFailThreshold, threshold)
@@ -3747,7 +3765,9 @@ func TestSchedulerCircuitBreakerConfig_Custom(t *testing.T) {
 	cfg.Gateway.OpenAIWS.SchedulerCircuitBreakerHalfOpenMax = 5
 	svc := &OpenAIGatewayService{cfg: cfg}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 	enabled, threshold, cooldown, halfOpenMax := scheduler.schedulerCircuitBreakerConfig()
 	require.True(t, enabled)
 	require.Equal(t, 10, threshold)
@@ -3758,7 +3778,9 @@ func TestSchedulerCircuitBreakerConfig_Custom(t *testing.T) {
 func TestSchedulerPerModelTTFTConfig_Defaults(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 	enabled, maxModels := scheduler.schedulerPerModelTTFTConfig()
 	require.False(t, enabled)
 	require.Equal(t, defaultPerModelTTFTMaxModels, maxModels)
@@ -3770,7 +3792,9 @@ func TestSchedulerPerModelTTFTConfig_Custom(t *testing.T) {
 	cfg.Gateway.OpenAIWS.SchedulerPerModelTTFTMaxModels = 64
 	svc := &OpenAIGatewayService{cfg: cfg}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 	enabled, maxModels := scheduler.schedulerPerModelTTFTConfig()
 	require.True(t, enabled)
 	require.Equal(t, 64, maxModels)
@@ -3781,7 +3805,9 @@ func TestReportResult_PerModelTTFTDisabled_NoPerModelTrackerCreated(t *testing.T
 	cfg.Gateway.OpenAIWS.SchedulerPerModelTTFTEnabled = false
 	svc := &OpenAIGatewayService{cfg: cfg}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	schedulerAny := newDefaultOpenAIAccountScheduler(svc, stats)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
 	ttft := 120
 
 	scheduler.ReportResult(7001, true, &ttft, "gpt-5.1", 120)
@@ -3805,7 +3831,7 @@ func TestReportResult_PerModelTTFTMaxModels_UsesConfigLimit(t *testing.T) {
 	cfg.Gateway.OpenAIWS.SchedulerPerModelTTFTMaxModels = 2
 	svc := &OpenAIGatewayService{cfg: cfg}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	ttft := 100
 
 	models := []string{"gpt-5.1", "gpt-4o", "o3", "o4-mini"}
@@ -3931,7 +3957,7 @@ func TestShouldReleaseStickySession_Disabled(t *testing.T) {
 	cfg.Gateway.OpenAIWS.StickyReleaseEnabled = false
 	svc := &OpenAIGatewayService{cfg: cfg}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	require.False(t, scheduler.shouldReleaseStickySession(1))
 }
 
@@ -3946,7 +3972,7 @@ func TestShouldReleaseStickySession_CircuitOpen(t *testing.T) {
 	for i := 0; i < defaultCircuitBreakerFailThreshold; i++ {
 		cb.recordFailure(defaultCircuitBreakerFailThreshold)
 	}
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	require.True(t, scheduler.shouldReleaseStickySession(1), "should release when circuit is open")
 }
 
@@ -3959,7 +3985,7 @@ func TestShouldReleaseStickySession_HighErrorRate(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		stats.report(1, false, nil, "", 0)
 	}
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	require.True(t, scheduler.shouldReleaseStickySession(1), "should release when error rate is high")
 }
 
@@ -3972,7 +3998,7 @@ func TestShouldReleaseStickySession_Healthy(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		stats.report(1, true, nil, "", 0)
 	}
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	require.False(t, scheduler.shouldReleaseStickySession(1), "should not release when healthy")
 }
 
@@ -3983,7 +4009,7 @@ func TestShouldReleaseStickySession_Healthy(t *testing.T) {
 func TestStickyReleaseConfigRead_NilConfig(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	cfg := scheduler.stickyReleaseConfigRead()
 	require.False(t, cfg.enabled)
 	require.Equal(t, 0.0, cfg.errorThreshold, "nil config returns zero-value struct")
@@ -3994,7 +4020,7 @@ func TestStickyReleaseConfigRead_Defaults(t *testing.T) {
 	// StickyReleaseErrorThreshold defaults to 0 → code uses defaultStickyReleaseErrorThreshold
 	svc := &OpenAIGatewayService{cfg: c}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	cfg := scheduler.stickyReleaseConfigRead()
 	require.False(t, cfg.enabled)
 	require.Equal(t, defaultStickyReleaseErrorThreshold, cfg.errorThreshold)
@@ -4006,7 +4032,7 @@ func TestStickyReleaseConfigRead_Custom(t *testing.T) {
 	c.Gateway.OpenAIWS.StickyReleaseErrorThreshold = 0.5
 	svc := &OpenAIGatewayService{cfg: c}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	cfg := scheduler.stickyReleaseConfigRead()
 	require.True(t, cfg.enabled)
 	require.Equal(t, 0.5, cfg.errorThreshold)
@@ -4145,7 +4171,7 @@ func TestSnapshotMetrics_NilScheduler(t *testing.T) {
 func TestSnapshotMetrics_Normal(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	stats := newOpenAIAccountRuntimeStats()
-	scheduler := newDefaultOpenAIAccountScheduler(svc, stats).(*defaultOpenAIAccountScheduler)
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, stats)
 	metrics := scheduler.SnapshotMetrics()
 	require.Equal(t, int64(0), metrics.SelectTotal)
 }
@@ -4162,7 +4188,8 @@ func TestCandidateHeap_Pop(t *testing.T) {
 	require.Equal(t, 3, h.Len())
 
 	// Pop returns the minimum (worst candidate in min-heap)
-	popped := heap.Pop(h).(openAIAccountCandidateScore)
+	popped, ok := heap.Pop(h).(openAIAccountCandidateScore)
+	require.True(t, ok)
 	require.Equal(t, int64(3), popped.account.ID, "should pop the lowest-scored")
 	require.Equal(t, 2, h.Len())
 }

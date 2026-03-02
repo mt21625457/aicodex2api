@@ -552,9 +552,10 @@ func (p *openAIWSIngressContextPool) Acquire(
 						return nil, ensureErr
 					}
 					logOpenAIWSModeInfo(
-						"ctx_pool_migration account_id=%d ctx_id=%s old_session=%s new_session=%s migration_count=%d",
+						"ctx_pool_migration account_id=%d ctx_id=%s old_session=%s new_session=%s group_id=%d session_hash=%s migration_count=%d",
 						accountID, selected.id, truncateOpenAIWSLogValue(oldSessionKey, openAIWSIDValueMaxLen),
-						truncateOpenAIWSLogValue(sessionKey, openAIWSIDValueMaxLen), selected.migrationCount,
+						truncateOpenAIWSLogValue(sessionKey, openAIWSIDValueMaxLen), selected.groupID,
+						truncateOpenAIWSLogValue(selected.sessionHash, openAIWSIDValueMaxLen), selected.migrationCount,
 					)
 					return &openAIWSIngressContextLease{
 						pool:          p,

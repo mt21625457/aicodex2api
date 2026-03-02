@@ -661,11 +661,6 @@ export interface Account {
   max_sessions?: number | null
   session_idle_timeout_minutes?: number | null
 
-  // RPM 限制（仅 Anthropic OAuth/SetupToken 账号有效）
-  base_rpm?: number | null
-  rpm_strategy?: string | null
-  rpm_sticky_buffer?: number | null
-
   // TLS指纹伪装（仅 Anthropic OAuth/SetupToken 账号有效）
   enable_tls_fingerprint?: boolean | null
 
@@ -680,7 +675,6 @@ export interface Account {
   // 运行时状态（仅当启用对应限制时返回）
   current_window_cost?: number | null // 当前窗口费用
   active_sessions?: number | null // 当前活跃会话数
-  current_rpm?: number | null // 当前分钟 RPM 计数
 }
 
 // Account Usage types
@@ -1081,15 +1075,6 @@ export interface ModelStat {
   requests: number
   input_tokens: number
   output_tokens: number
-  total_tokens: number
-  cost: number // 标准计费
-  actual_cost: number // 实际扣除
-}
-
-export interface GroupStat {
-  group_id: number
-  group_name: string
-  requests: number
   total_tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除

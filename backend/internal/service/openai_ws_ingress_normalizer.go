@@ -25,6 +25,9 @@ type openAIWSIngressPreSendNormalizeOutput struct {
 // normalizeOpenAIWSIngressPayloadBeforeSend 纯透传 + callID 提取。
 // proxy 只负责转发、认证替换、计费，所有边缘场景由 recoverIngressPrevResponseNotFound 兜底。
 func normalizeOpenAIWSIngressPayloadBeforeSend(input openAIWSIngressPreSendNormalizeInput) openAIWSIngressPreSendNormalizeOutput {
+	_ = input.accountID
+	_ = input.turn
+	_ = input.connID
 	callIDs := openAIWSExtractFunctionCallOutputCallIDsFromPayload(input.currentPayload)
 
 	return openAIWSIngressPreSendNormalizeOutput{

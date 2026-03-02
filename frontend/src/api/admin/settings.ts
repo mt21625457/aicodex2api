@@ -5,11 +5,6 @@
 
 import { apiClient } from '../client'
 
-export interface DefaultSubscriptionSetting {
-  group_id: number
-  validity_days: number
-}
-
 /**
  * System settings interface
  */
@@ -25,7 +20,6 @@ export interface SystemSettings {
   // Default settings
   default_balance: number
   default_concurrency: number
-  default_subscriptions: DefaultSubscriptionSetting[]
   // OEM settings
   site_name: string
   site_logo: string
@@ -73,9 +67,6 @@ export interface SystemSettings {
   ops_realtime_monitoring_enabled: boolean
   ops_query_mode_default: 'auto' | 'raw' | 'preagg' | string
   ops_metrics_interval_seconds: number
-
-  // Claude Code version check
-  min_claude_code_version: string
 }
 
 export interface UpdateSettingsRequest {
@@ -87,7 +78,6 @@ export interface UpdateSettingsRequest {
   totp_enabled?: boolean // TOTP 双因素认证
   default_balance?: number
   default_concurrency?: number
-  default_subscriptions?: DefaultSubscriptionSetting[]
   site_name?: string
   site_logo?: string
   site_subtitle?: string
@@ -124,7 +114,6 @@ export interface UpdateSettingsRequest {
   ops_realtime_monitoring_enabled?: boolean
   ops_query_mode_default?: 'auto' | 'raw' | 'preagg' | string
   ops_metrics_interval_seconds?: number
-  min_claude_code_version?: string
 }
 
 /**

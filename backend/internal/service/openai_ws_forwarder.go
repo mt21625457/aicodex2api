@@ -3047,7 +3047,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			switch openAIWSIngressTurnAbortDispositionForReason(abortReason) {
 			case openAIWSIngressTurnAbortDispositionContinueTurn:
-				if abortReason == openAIWSIngressTurnAbortReasonClientPreempted {
+				switch abortReason {
+				case openAIWSIngressTurnAbortReasonClientPreempted:
 					// 客户端抢占：不通知 error（客户端已发出新请求，不需要旧 turn 的错误事件），
 					// 保留上一轮 response_id（被抢占的 turn 未完成，上一轮 response_id 仍有效供新 turn 续链）。
 					preemptRecoverStart := time.Now()
@@ -3059,7 +3060,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
 						time.Since(preemptRecoverStart).Milliseconds(),
 					)
-				} else if abortReason == openAIWSIngressTurnAbortReasonUpstreamRestart {
+				case openAIWSIngressTurnAbortReasonUpstreamRestart:
 					// 上游重启（1012/1013）：连接级关闭，客户端未收到任何终端事件，
 					// 始终补发 error 事件（无论 wroteDownstream 状态），避免客户端永远等待响应。
 					abortMessage := "upstream service restarting, please retry"
@@ -3085,7 +3086,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 					resetSessionLease(true)
 					clearSessionLastResponseID()
-				} else {
+				default:
 					// turn 级终止：当前 turn 失败，但客户端 WS 会话继续。
 					// 这样可与 Codex 客户端语义对齐：后续 turn 允许在新上游连接上继续进行。
 					//
@@ -3164,6 +3165,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			len(result.PendingFunctionCallIDs),
 		)
 		if persistLastResponseID {
+			lastTurnResponseID = responseID
+		} else if responseID != "" && len(result.PendingFunctionCallIDs) > 0 {
+			// response 未 completed/done（如 incomplete/failed/cancelled），但包含未完成的 function_call。
+			// 保留 response_id 以便下一个 turn 的 function_call_output 能够关联。
 			lastTurnResponseID = responseID
 		} else {
 			clearSessionLastResponseID()

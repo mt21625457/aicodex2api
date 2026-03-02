@@ -58,4 +58,3 @@ func usageRecordSyncFallbackTimeout(cfg *config.Config) time.Duration {
 	}
 	return timeout
 }
-

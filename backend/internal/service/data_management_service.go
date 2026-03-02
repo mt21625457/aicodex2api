@@ -55,8 +55,7 @@ type DataManagementAgentInfo struct {
 }
 
 type DataManagementService struct {
-	socketPath  string
-	dialTimeout time.Duration
+	socketPath string
 }
 
 func NewDataManagementService() *DataManagementService {
@@ -68,12 +67,9 @@ func NewDataManagementServiceWithOptions(socketPath string, dialTimeout time.Dur
 	if path == "" {
 		path = DefaultDataManagementAgentSocketPath
 	}
-	if dialTimeout <= 0 {
-		dialTimeout = 500 * time.Millisecond
-	}
+	_ = dialTimeout
 	return &DataManagementService{
-		socketPath:  path,
-		dialTimeout: dialTimeout,
+		socketPath: path,
 	}
 }
 

@@ -11,15 +11,13 @@ import (
 // SettingHandler 公开设置处理器（无需认证）
 type SettingHandler struct {
 	settingService *service.SettingService
-	accountRepo    service.AccountRepository
 	version        string
 }
 
 // NewSettingHandler 创建公开设置处理器
-func NewSettingHandler(settingService *service.SettingService, accountRepo service.AccountRepository, version string) *SettingHandler {
+func NewSettingHandler(settingService *service.SettingService, version string) *SettingHandler {
 	return &SettingHandler{
 		settingService: settingService,
-		accountRepo:    accountRepo,
 		version:        version,
 	}
 }

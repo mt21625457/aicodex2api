@@ -29,7 +29,6 @@ func ProvideAdminHandlers(
 	usageHandler *admin.UsageHandler,
 	userAttributeHandler *admin.UserAttributeHandler,
 	errorPassthroughHandler *admin.ErrorPassthroughHandler,
-	apiKeyHandler *admin.AdminAPIKeyHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:        dashboardHandler,
@@ -52,7 +51,6 @@ func ProvideAdminHandlers(
 		Usage:            usageHandler,
 		UserAttribute:    userAttributeHandler,
 		ErrorPassthrough: errorPassthroughHandler,
-		APIKey:           apiKeyHandler,
 	}
 }
 
@@ -62,8 +60,8 @@ func ProvideSystemHandler(updateService *service.UpdateService, lockService *ser
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
-func ProvideSettingHandler(settingService *service.SettingService, accountRepo service.AccountRepository, buildInfo BuildInfo) *SettingHandler {
-	return NewSettingHandler(settingService, accountRepo, buildInfo.Version)
+func ProvideSettingHandler(settingService *service.SettingService, buildInfo BuildInfo) *SettingHandler {
+	return NewSettingHandler(settingService, buildInfo.Version)
 }
 
 // ProvideHandlers creates the Handlers struct
@@ -140,7 +138,6 @@ var ProviderSet = wire.NewSet(
 	admin.NewUsageHandler,
 	admin.NewUserAttributeHandler,
 	admin.NewErrorPassthroughHandler,
-	admin.NewAdminAPIKeyHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

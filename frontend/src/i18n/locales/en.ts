@@ -408,12 +408,9 @@ export default {
     day: 'Day',
     hour: 'Hour',
     modelDistribution: 'Model Distribution',
-    groupDistribution: 'Group Usage Distribution',
     tokenUsageTrend: 'Token Usage Trend',
     noDataAvailable: 'No data available',
     model: 'Model',
-    group: 'Group',
-    noGroup: 'No Group',
     requests: 'Requests',
     tokens: 'Tokens',
     actual: 'Actual',
@@ -504,7 +501,6 @@ export default {
         claudeCode: 'Claude Code',
         geminiCli: 'Gemini CLI',
         codexCli: 'Codex CLI',
-        codexCliWs: 'Codex CLI (WebSocket)',
         opencode: 'OpenCode',
       },
       antigravity: {
@@ -835,12 +831,9 @@ export default {
       day: 'Day',
       hour: 'Hour',
       modelDistribution: 'Model Distribution',
-      groupDistribution: 'Group Usage Distribution',
       tokenUsageTrend: 'Token Usage Trend',
       userUsageTrend: 'User Usage Trend (Top 12)',
       model: 'Model',
-      group: 'Group',
-      noGroup: 'No Group',
       requests: 'Requests',
       tokens: 'Tokens',
       actual: 'Actual',
@@ -1083,9 +1076,6 @@ export default {
       noApiKeys: 'This user has no API keys',
       group: 'Group',
       none: 'None',
-      groupChangedSuccess: 'Group updated successfully',
-      groupChangedWithGrant: 'Group updated. User auto-granted access to "{group}"',
-      groupChangeFailed: 'Failed to update group',
       noUsersYet: 'No users yet',
       createFirstUser: 'Create your first user to get started.',
       userCreated: 'User created successfully',
@@ -1623,19 +1613,7 @@ export default {
         sessions: {
           full: 'Active sessions full, new sessions must wait (idle timeout: {idle} min)',
           normal: 'Active sessions normal (idle timeout: {idle} min)'
-        },
-        rpm: {
-          full: 'RPM limit reached',
-          warning: 'RPM approaching limit',
-          normal: 'RPM normal',
-          tieredNormal: 'RPM limit (Tiered) - Normal',
-          tieredWarning: 'RPM limit (Tiered) - Approaching limit',
-          tieredStickyOnly: 'RPM limit (Tiered) - Sticky only | Buffer: {buffer}',
-          tieredBlocked: 'RPM limit (Tiered) - Blocked | Buffer: {buffer}',
-          stickyExemptNormal: 'RPM limit (Sticky Exempt) - Normal',
-          stickyExemptWarning: 'RPM limit (Sticky Exempt) - Approaching limit',
-          stickyExemptOver: 'RPM limit (Sticky Exempt) - Over limit, sticky only'
-        },
+        }
       },
       tempUnschedulable: {
         title: 'Temp Unschedulable',
@@ -1901,22 +1879,6 @@ export default {
           idleTimeout: 'Idle Timeout',
           idleTimeoutPlaceholder: '5',
           idleTimeoutHint: 'Sessions will be released after idle timeout'
-        },
-        rpmLimit: {
-          label: 'RPM Limit',
-          hint: 'Limit requests per minute to protect upstream accounts',
-          baseRpm: 'Base RPM',
-          baseRpmPlaceholder: '15',
-          baseRpmHint: 'Max requests per minute, 0 or empty means no limit',
-          strategy: 'RPM Strategy',
-          strategyTiered: 'Tiered Model',
-          strategyStickyExempt: 'Sticky Exempt',
-          strategyTieredHint: 'Green → Yellow → Sticky only → Blocked, progressive throttling',
-          strategyStickyExemptHint: 'Only sticky sessions allowed when over limit',
-          strategyHint: 'Tiered: gradually restrict when exceeded; Sticky Exempt: existing sessions unrestricted',
-          stickyBuffer: 'Sticky Buffer',
-          stickyBufferPlaceholder: 'Default: 20% of base RPM',
-          stickyBufferHint: 'Extra requests allowed for sticky sessions after exceeding base RPM. Leave empty to use default (20% of base RPM, min 1)'
         },
         tlsFingerprint: {
           label: 'TLS Fingerprint Simulation',
@@ -2397,8 +2359,6 @@ export default {
       dataExportConfirm: 'Confirm Export',
       dataExported: 'Data exported successfully',
       dataExportFailed: 'Failed to export data',
-      copyProxyUrl: 'Copy Proxy URL',
-      urlCopied: 'Proxy URL copied',
       searchProxies: 'Search proxies...',
       allProtocols: 'All Protocols',
       allStatus: 'All Status',
@@ -2412,7 +2372,6 @@ export default {
         name: 'Name',
         protocol: 'Protocol',
         address: 'Address',
-        auth: 'Auth',
         location: 'Location',
         status: 'Status',
         accounts: 'Accounts',
@@ -3607,23 +3566,7 @@ export default {
         defaultBalance: 'Default Balance',
         defaultBalanceHint: 'Initial balance for new users',
         defaultConcurrency: 'Default Concurrency',
-        defaultConcurrencyHint: 'Maximum concurrent requests for new users',
-        defaultSubscriptions: 'Default Subscriptions',
-        defaultSubscriptionsHint: 'Auto-assign these subscriptions when a new user is created or registered',
-        addDefaultSubscription: 'Add Default Subscription',
-        defaultSubscriptionsEmpty: 'No default subscriptions configured.',
-        defaultSubscriptionsDuplicate:
-          'Duplicate subscription group: {groupId}. Each group can only appear once.',
-        subscriptionGroup: 'Subscription Group',
-        subscriptionValidityDays: 'Validity (days)'
-      },
-      claudeCode: {
-        title: 'Claude Code Settings',
-        description: 'Control Claude Code client access requirements',
-        minVersion: 'Minimum Version',
-        minVersionPlaceholder: 'e.g. 2.1.63',
-        minVersionHint:
-          'Reject Claude Code clients below this version (semver format). Leave empty to disable version check.'
+        defaultConcurrencyHint: 'Maximum concurrent requests for new users'
       },
       site: {
         title: 'Site Settings',
@@ -3659,23 +3602,15 @@ export default {
         hideCcsImportButtonHint: 'When enabled, the "Import to CCS" button will be hidden on the API Keys page'
       },
       purchase: {
-        title: 'Recharge / Subscription Page',
-        description: 'Show a "Recharge / Subscription" entry in the sidebar and open the configured URL in an iframe',
-        enabled: 'Show Recharge / Subscription Entry',
+        title: 'Purchase Page',
+        description: 'Show a "Purchase Subscription" entry in the sidebar and open the configured URL in an iframe',
+        enabled: 'Show Purchase Entry',
         enabledHint: 'Only shown in standard mode (not simple mode)',
-        url: 'Recharge / Subscription URL',
+        url: 'Purchase URL',
         urlPlaceholder: 'https://example.com/purchase',
         urlHint: 'Must be an absolute http(s) URL',
         iframeWarning:
-          '⚠️ iframe note: Some websites block embedding via X-Frame-Options or CSP (frame-ancestors). If the page is blank, provide an "Open in new tab" alternative.',
-        integrationDoc: 'Payment Integration Docs',
-        integrationDocHint: 'Covers endpoint specs, idempotency semantics, and code samples'
-      },
-      soraClient: {
-        title: 'Sora Client',
-        description: 'Control whether to show the Sora client entry in the sidebar',
-        enabled: 'Enable Sora Client',
-        enabledHint: 'When enabled, the Sora entry will be shown in the sidebar for users to access Sora features'
+          '⚠️ iframe note: Some websites block embedding via X-Frame-Options or CSP (frame-ancestors). If the page is blank, provide an "Open in new tab" alternative.'
       },
       soraClient: {
         title: 'Sora Client',
@@ -3959,16 +3894,16 @@ export default {
     retry: 'Retry'
   },
 
-  // Recharge / Subscription Page
+  // Purchase Subscription Page
   purchase: {
-    title: 'Recharge / Subscription',
-    description: 'Recharge balance or purchase subscription via the embedded page',
+    title: 'Purchase Subscription',
+    description: 'Purchase a subscription via the embedded page',
     openInNewTab: 'Open in new tab',
     notEnabledTitle: 'Feature not enabled',
-    notEnabledDesc: 'The administrator has not enabled the recharge/subscription entry. Please contact admin.',
-    notConfiguredTitle: 'Recharge / Subscription URL not configured',
+    notEnabledDesc: 'The administrator has not enabled the purchase page. Please contact admin.',
+    notConfiguredTitle: 'Purchase URL not configured',
     notConfiguredDesc:
-      'The administrator enabled the entry but has not configured a recharge/subscription URL. Please contact admin.'
+      'The administrator enabled the entry but has not configured a purchase URL. Please contact admin.'
   },
 
   // Announcements Page

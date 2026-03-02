@@ -22,7 +22,6 @@ type usageBillingCompRepoStub struct {
 	lastRetryAt        time.Time
 	lastRetryErr       string
 	lastMarkAppliedCtx context.Context
-	lastMarkRetryCtx   context.Context
 	lastTxCtx          context.Context
 }
 
@@ -45,7 +44,7 @@ func (s *usageBillingCompRepoStub) MarkUsageBillingEntryRetry(ctx context.Contex
 	s.lastRetryID = entryID
 	s.lastRetryAt = nextRetryAt
 	s.lastRetryErr = lastError
-	s.lastMarkRetryCtx = ctx
+	_ = ctx
 	return nil
 }
 

@@ -579,7 +579,7 @@
               {{ t('admin.settings.defaults.description') }}
             </p>
           </div>
-          <div class="space-y-6 p-6">
+          <div class="p-6">
             <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
               <div>
                 <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -612,127 +612,6 @@
                   {{ t('admin.settings.defaults.defaultConcurrencyHint') }}
                 </p>
               </div>
-            </div>
-
-            <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
-              <div class="mb-3 flex items-center justify-between">
-                <div>
-                  <label class="font-medium text-gray-900 dark:text-white">
-                    {{ t('admin.settings.defaults.defaultSubscriptions') }}
-                  </label>
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
-                    {{ t('admin.settings.defaults.defaultSubscriptionsHint') }}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  class="btn btn-secondary btn-sm"
-                  @click="addDefaultSubscription"
-                  :disabled="subscriptionGroups.length === 0"
-                >
-                  {{ t('admin.settings.defaults.addDefaultSubscription') }}
-                </button>
-              </div>
-
-              <div
-                v-if="form.default_subscriptions.length === 0"
-                class="rounded border border-dashed border-gray-300 px-4 py-3 text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400"
-              >
-                {{ t('admin.settings.defaults.defaultSubscriptionsEmpty') }}
-              </div>
-
-              <div v-else class="space-y-3">
-                <div
-                  v-for="(item, index) in form.default_subscriptions"
-                  :key="`default-sub-${index}`"
-                  class="grid grid-cols-1 gap-3 rounded border border-gray-200 p-3 md:grid-cols-[1fr_160px_auto] dark:border-dark-600"
-                >
-                  <div>
-                    <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                      {{ t('admin.settings.defaults.subscriptionGroup') }}
-                    </label>
-                    <Select
-                      v-model="item.group_id"
-                      class="default-sub-group-select"
-                      :options="defaultSubscriptionGroupOptions"
-                      :placeholder="t('admin.settings.defaults.subscriptionGroup')"
-                    >
-                      <template #selected="{ option }">
-                        <GroupBadge
-                          v-if="option"
-                          :name="(option as unknown as DefaultSubscriptionGroupOption).label"
-                          :platform="(option as unknown as DefaultSubscriptionGroupOption).platform"
-                          :subscription-type="(option as unknown as DefaultSubscriptionGroupOption).subscriptionType"
-                          :rate-multiplier="(option as unknown as DefaultSubscriptionGroupOption).rate"
-                        />
-                        <span v-else class="text-gray-400">
-                          {{ t('admin.settings.defaults.subscriptionGroup') }}
-                        </span>
-                      </template>
-                      <template #option="{ option, selected }">
-                        <GroupOptionItem
-                          :name="(option as unknown as DefaultSubscriptionGroupOption).label"
-                          :platform="(option as unknown as DefaultSubscriptionGroupOption).platform"
-                          :subscription-type="(option as unknown as DefaultSubscriptionGroupOption).subscriptionType"
-                          :rate-multiplier="(option as unknown as DefaultSubscriptionGroupOption).rate"
-                          :description="(option as unknown as DefaultSubscriptionGroupOption).description"
-                          :selected="selected"
-                        />
-                      </template>
-                    </Select>
-                  </div>
-                  <div>
-                    <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                      {{ t('admin.settings.defaults.subscriptionValidityDays') }}
-                    </label>
-                    <input
-                      v-model.number="item.validity_days"
-                      type="number"
-                      min="1"
-                      max="36500"
-                      class="input h-[42px]"
-                    />
-                  </div>
-                  <div class="flex items-end">
-                    <button
-                      type="button"
-                      class="btn btn-secondary default-sub-delete-btn w-full text-red-600 hover:text-red-700 dark:text-red-400"
-                      @click="removeDefaultSubscription(index)"
-                    >
-                      {{ t('common.delete') }}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Claude Code Settings -->
-        <div class="card">
-          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ t('admin.settings.claudeCode.title') }}
-            </h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {{ t('admin.settings.claudeCode.description') }}
-            </p>
-          </div>
-          <div class="p-6">
-            <div>
-              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                {{ t('admin.settings.claudeCode.minVersion') }}
-              </label>
-              <input
-                v-model="form.min_claude_code_version"
-                type="text"
-                class="input max-w-xs font-mono text-sm"
-                :placeholder="t('admin.settings.claudeCode.minVersionPlaceholder')"
-                pattern="\d+\.\d+\.\d+"
-              />
-              <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.settings.claudeCode.minVersionHint') }}
-              </p>
             </div>
           </div>
         </div>
@@ -1112,51 +991,6 @@
                 {{ t('admin.settings.purchase.iframeWarning') }}
               </p>
             </div>
-
-            <!-- Integration Docs -->
-            <div class="flex items-center gap-2 text-sm">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              <a
-                href="https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/docs/ADMIN_PAYMENT_INTEGRATION_API.md"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="text-blue-600 hover:underline dark:text-blue-400"
-                download="ADMIN_PAYMENT_INTEGRATION_API.md"
-              >
-                {{ t('admin.settings.purchase.integrationDoc') }}
-              </a>
-              <span class="text-gray-400 dark:text-gray-500">—</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.settings.purchase.integrationDocHint') }}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Sora Client Toggle -->
-        <div class="card">
-          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ t('admin.settings.soraClient.title') }}
-            </h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {{ t('admin.settings.soraClient.description') }}
-            </p>
-          </div>
-          <div class="space-y-6 p-6">
-            <div class="flex items-center justify-between">
-              <div>
-                <label class="font-medium text-gray-900 dark:text-white">{{
-                  t('admin.settings.soraClient.enabled')
-                }}</label>
-                <p class="text-sm text-gray-500 dark:text-gray-400">
-                  {{ t('admin.settings.soraClient.enabledHint') }}
-                </p>
-              </div>
-              <Toggle v-model="form.sora_client_enabled" />
-            </div>
           </div>
         </div>
 
@@ -1274,17 +1108,9 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api'
-import type {
-  SystemSettings,
-  UpdateSettingsRequest,
-  DefaultSubscriptionSetting
-} from '@/api/admin/settings'
-import type { AdminGroup } from '@/types'
+import type { SystemSettings, UpdateSettingsRequest } from '@/api/admin/settings'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
-import Select from '@/components/common/Select.vue'
-import GroupBadge from '@/components/common/GroupBadge.vue'
-import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { useAppStore } from '@/stores'
@@ -1306,7 +1132,6 @@ const adminApiKeyExists = ref(false)
 const adminApiKeyMasked = ref('')
 const adminApiKeyOperating = ref(false)
 const newAdminApiKey = ref('')
-const subscriptionGroups = ref<AdminGroup[]>([])
 
 // Stream Timeout 状态
 const streamTimeoutLoading = ref(true)
@@ -1318,16 +1143,6 @@ const streamTimeoutForm = reactive({
   threshold_count: 3,
   threshold_window_minutes: 10
 })
-
-interface DefaultSubscriptionGroupOption {
-  value: number
-  label: string
-  description: string | null
-  platform: AdminGroup['platform']
-  subscriptionType: AdminGroup['subscription_type']
-  rate: number
-  [key: string]: unknown
-}
 
 type SettingsForm = SystemSettings & {
   smtp_password: string
@@ -1345,7 +1160,6 @@ const form = reactive<SettingsForm>({
   totp_encryption_key_configured: false,
   default_balance: 0,
   default_concurrency: 1,
-  default_subscriptions: [],
   site_name: 'Sub2API',
   site_logo: '',
   site_subtitle: 'Subscription to API Conversion Platform',
@@ -1389,21 +1203,8 @@ const form = reactive<SettingsForm>({
   ops_monitoring_enabled: true,
   ops_realtime_monitoring_enabled: true,
   ops_query_mode_default: 'auto',
-  ops_metrics_interval_seconds: 60,
-  // Claude Code version check
-  min_claude_code_version: ''
+  ops_metrics_interval_seconds: 60
 })
-
-const defaultSubscriptionGroupOptions = computed<DefaultSubscriptionGroupOption[]>(() =>
-  subscriptionGroups.value.map((group) => ({
-    value: group.id,
-    label: group.name,
-    description: group.description,
-    platform: group.platform,
-    subscriptionType: group.subscription_type,
-    rate: group.rate_multiplier
-  }))
-)
 
 // LinuxDo OAuth redirect URL suggestion
 const linuxdoRedirectUrlSuggestion = computed(() => {
@@ -1464,14 +1265,6 @@ async function loadSettings() {
   try {
     const settings = await adminAPI.settings.getSettings()
     Object.assign(form, settings)
-    form.default_subscriptions = Array.isArray(settings.default_subscriptions)
-      ? settings.default_subscriptions
-          .filter((item) => item.group_id > 0 && item.validity_days > 0)
-          .map((item) => ({
-            group_id: item.group_id,
-            validity_days: item.validity_days
-          }))
-      : []
     form.smtp_password = ''
     form.turnstile_secret_key = ''
     form.linuxdo_connect_client_secret = ''
@@ -1484,60 +1277,9 @@ async function loadSettings() {
   }
 }
 
-async function loadSubscriptionGroups() {
-  try {
-    const groups = await adminAPI.groups.getAll()
-    subscriptionGroups.value = groups.filter(
-      (group) => group.subscription_type === 'subscription' && group.status === 'active'
-    )
-  } catch (error) {
-    console.error('Failed to load subscription groups:', error)
-    subscriptionGroups.value = []
-  }
-}
-
-function addDefaultSubscription() {
-  if (subscriptionGroups.value.length === 0) return
-  const existing = new Set(form.default_subscriptions.map((item) => item.group_id))
-  const candidate = subscriptionGroups.value.find((group) => !existing.has(group.id))
-  if (!candidate) return
-  form.default_subscriptions.push({
-    group_id: candidate.id,
-    validity_days: 30
-  })
-}
-
-function removeDefaultSubscription(index: number) {
-  form.default_subscriptions.splice(index, 1)
-}
-
 async function saveSettings() {
   saving.value = true
   try {
-    const normalizedDefaultSubscriptions = form.default_subscriptions
-      .filter((item) => item.group_id > 0 && item.validity_days > 0)
-      .map((item: DefaultSubscriptionSetting) => ({
-        group_id: item.group_id,
-        validity_days: Math.min(36500, Math.max(1, Math.floor(item.validity_days)))
-      }))
-
-    const seenGroupIDs = new Set<number>()
-    const duplicateDefaultSubscription = normalizedDefaultSubscriptions.find((item) => {
-      if (seenGroupIDs.has(item.group_id)) {
-        return true
-      }
-      seenGroupIDs.add(item.group_id)
-      return false
-    })
-    if (duplicateDefaultSubscription) {
-      appStore.showError(
-        t('admin.settings.defaults.defaultSubscriptionsDuplicate', {
-          groupId: duplicateDefaultSubscription.group_id
-        })
-      )
-      return
-    }
-
     const payload: UpdateSettingsRequest = {
       registration_enabled: form.registration_enabled,
       email_verify_enabled: form.email_verify_enabled,
@@ -1547,7 +1289,6 @@ async function saveSettings() {
       totp_enabled: form.totp_enabled,
       default_balance: form.default_balance,
       default_concurrency: form.default_concurrency,
-      default_subscriptions: normalizedDefaultSubscriptions,
       site_name: form.site_name,
       site_logo: form.site_logo,
       site_subtitle: form.site_subtitle,
@@ -1579,8 +1320,7 @@ async function saveSettings() {
       fallback_model_gemini: form.fallback_model_gemini,
       fallback_model_antigravity: form.fallback_model_antigravity,
       enable_identity_patch: form.enable_identity_patch,
-      identity_patch_prompt: form.identity_patch_prompt,
-      min_claude_code_version: form.min_claude_code_version
+      identity_patch_prompt: form.identity_patch_prompt
     }
     const updated = await adminAPI.settings.updateSettings(payload)
     Object.assign(form, updated)
@@ -1746,18 +1486,7 @@ async function saveStreamTimeoutSettings() {
 
 onMounted(() => {
   loadSettings()
-  loadSubscriptionGroups()
   loadAdminApiKey()
   loadStreamTimeoutSettings()
 })
 </script>
-
-<style scoped>
-.default-sub-group-select :deep(.select-trigger) {
-  @apply h-[42px];
-}
-
-.default-sub-delete-btn {
-  @apply h-[42px];
-}
-</style>
