@@ -1776,6 +1776,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		turnStoreDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(payload, account)
 		turnFunctionCallOutputCallIDs := openAIWSExtractFunctionCallOutputCallIDsFromPayload(payload)
 		turnHasFunctionCallOutput := len(turnFunctionCallOutputCallIDs) > 0
+
+		// 预防性检测：store_disabled 模式下 function_call_output 必须携带 previous_response_id，
+		// 否则上游会先发送部分事件（wroteDownstream=true）再报错 tool_output_not_found，导致无法恢复。
+		// 提前返回可恢复错误，由外层 recoverIngressPrevResponseNotFound 执行 context replay 重试。
+		if turnStoreDisabled && turnHasFunctionCallOutput && strings.TrimSpace(turnPreviousResponseID) == "" {
+			return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
+				openAIWSIngressStageToolOutputNotFound,
+				errors.New("proactive tool_output_not_found: function_call_output without previous_response_id in store_disabled mode"),
+				false,
+				nil,
+			)
+		}
+
 		turnPendingFunctionCallIDSet := make(map[string]struct{}, 4)
 		eventCount := 0
 		tokenEventCount := 0
@@ -2363,21 +2376,23 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				truncateOpenAIWSLogValue(currentPreviousResponseID, openAIWSIDValueMaxLen),
 			)
 			turnPrevRecoveryTried = true
-			updatedPayload, removed, dropErr := dropPreviousResponseIDFromRawPayload(currentPayload)
-			if dropErr != nil || !removed {
-				reason := "not_removed"
+			updatedPayload := currentPayload
+			if currentPreviousResponseID != "" {
+				dropped, removed, dropErr := dropPreviousResponseIDFromRawPayload(currentPayload)
 				if dropErr != nil {
-					reason = "drop_error"
+					logOpenAIWSModeInfo(
+						"ingress_ws_tool_output_not_found_recovery_skip account_id=%d turn=%d conn_id=%s reason=drop_error",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+					)
+					return false
 				}
-				logOpenAIWSModeInfo(
-					"ingress_ws_tool_output_not_found_recovery_skip account_id=%d turn=%d conn_id=%s reason=%s",
-					account.ID,
-					turn,
-					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
-					normalizeOpenAIWSLogValue(reason),
-				)
-				return false
+				if removed {
+					updatedPayload = dropped
+				}
 			}
+			// previous_response_id 已不存在或已移除，继续执行 setOpenAIWSPayloadInputSequence
 			updatedWithInput, setInputErr := setOpenAIWSPayloadInputSequence(
 				updatedPayload,
 				currentTurnReplayInput,
