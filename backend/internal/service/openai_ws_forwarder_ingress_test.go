@@ -724,6 +724,145 @@ func TestShouldInferIngressFunctionCallOutputPreviousResponseID(t *testing.T) {
 	}
 }
 
+func TestShouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		storeDisabled         bool
+		hasFunctionCallOutput bool
+		previousResponseID    string
+		hasToolOutputContext  bool
+		want                  bool
+	}{
+		{
+			name:                  "reject_when_store_disabled_and_missing_prev_without_context",
+			storeDisabled:         true,
+			hasFunctionCallOutput: true,
+			previousResponseID:    "",
+			hasToolOutputContext:  false,
+			want:                  true,
+		},
+		{
+			name:                  "skip_when_store_enabled",
+			storeDisabled:         false,
+			hasFunctionCallOutput: true,
+			previousResponseID:    "",
+			hasToolOutputContext:  false,
+			want:                  false,
+		},
+		{
+			name:                  "skip_when_previous_response_id_exists",
+			storeDisabled:         true,
+			hasFunctionCallOutput: true,
+			previousResponseID:    "resp_1",
+			hasToolOutputContext:  false,
+			want:                  false,
+		},
+		{
+			name:                  "skip_when_has_tool_output_context",
+			storeDisabled:         true,
+			hasFunctionCallOutput: true,
+			previousResponseID:    "",
+			hasToolOutputContext:  true,
+			want:                  false,
+		},
+		{
+			name:                  "skip_when_no_function_call_output",
+			storeDisabled:         true,
+			hasFunctionCallOutput: false,
+			previousResponseID:    "",
+			hasToolOutputContext:  false,
+			want:                  false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+				tt.storeDisabled,
+				tt.hasFunctionCallOutput,
+				tt.previousResponseID,
+				tt.hasToolOutputContext,
+			)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestOpenAIWSHasToolOutputContextInPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		payload              []byte
+		expectedCallIDs      []string
+		wantHasToolCall      bool
+		wantHasItemReference bool
+	}{
+		{
+			name:                 "empty_payload",
+			payload:              nil,
+			expectedCallIDs:      []string{"call_1"},
+			wantHasToolCall:      false,
+			wantHasItemReference: false,
+		},
+		{
+			name:                 "has_tool_call_context",
+			payload:              []byte(`{"input":[{"type":"tool_call","call_id":"call_1"},{"type":"function_call_output","call_id":"call_1"}]}`),
+			expectedCallIDs:      []string{"call_1"},
+			wantHasToolCall:      true,
+			wantHasItemReference: false,
+		},
+		{
+			name:                 "has_function_call_context",
+			payload:              []byte(`{"input":[{"type":"function_call","call_id":"call_1"},{"type":"function_call_output","call_id":"call_1"}]}`),
+			expectedCallIDs:      []string{"call_1"},
+			wantHasToolCall:      true,
+			wantHasItemReference: false,
+		},
+		{
+			name:                 "tool_call_without_call_id_is_not_context",
+			payload:              []byte(`{"input":[{"type":"tool_call"},{"type":"function_call_output","call_id":"call_1"}]}`),
+			expectedCallIDs:      []string{"call_1"},
+			wantHasToolCall:      false,
+			wantHasItemReference: false,
+		},
+		{
+			name:                 "has_item_reference_for_all_function_call_outputs",
+			payload:              []byte(`{"input":[{"type":"item_reference","id":"call_1"},{"type":"item_reference","id":"call_2"},{"type":"function_call_output","call_id":"call_1"},{"type":"function_call_output","call_id":"call_2"}]}`),
+			expectedCallIDs:      []string{"call_1", "call_2"},
+			wantHasToolCall:      false,
+			wantHasItemReference: true,
+		},
+		{
+			name:                 "missing_item_reference_for_some_call_ids",
+			payload:              []byte(`{"input":[{"type":"item_reference","id":"call_1"},{"type":"function_call_output","call_id":"call_1"},{"type":"function_call_output","call_id":"call_2"}]}`),
+			expectedCallIDs:      []string{"call_1", "call_2"},
+			wantHasToolCall:      false,
+			wantHasItemReference: false,
+		},
+		{
+			name:                 "ignores_non_array_input",
+			payload:              []byte(`{"input":"bad"}`),
+			expectedCallIDs:      []string{"call_1"},
+			wantHasToolCall:      false,
+			wantHasItemReference: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.wantHasToolCall, openAIWSHasToolCallContextInPayload(tt.payload))
+			require.Equal(t, tt.wantHasItemReference, openAIWSHasItemReferenceForAllFunctionCallOutputsInPayload(tt.payload, tt.expectedCallIDs))
+		})
+	}
+}
+
 func TestOpenAIWSInputIsPrefixExtended(t *testing.T) {
 	t.Parallel()
 

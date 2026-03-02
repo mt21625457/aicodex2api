@@ -1748,6 +1748,34 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		turnStart := time.Now()
 		wroteDownstream := false
+		reqStream := openAIWSPayloadBoolFromRaw(payload, "stream", true)
+		turnPreviousResponseID := openAIWSPayloadStringFromRaw(payload, "previous_response_id")
+		turnPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(turnPreviousResponseID)
+		turnExpectedPreviousResponseID := strings.TrimSpace(expectedPreviousResponseID)
+		turnPromptCacheKey := openAIWSPayloadStringFromRaw(payload, "prompt_cache_key")
+		turnStoreDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(payload, account)
+		turnFunctionCallOutputCallIDs := openAIWSExtractFunctionCallOutputCallIDsFromPayload(payload)
+		turnHasFunctionCallOutput := len(turnFunctionCallOutputCallIDs) > 0
+		turnHasToolOutputContext := openAIWSHasToolCallContextInPayload(payload) ||
+			openAIWSHasItemReferenceForAllFunctionCallOutputsInPayload(payload, turnFunctionCallOutputCallIDs)
+
+		// 预防性检测：必须在发往上游之前执行，避免“先写上游再本地失败”造成 turn 状态错位。
+		// 在 store_disabled 模式下，若 function_call_output 既没有 previous_response_id，
+		// 也没有可关联的 tool_call/item_reference 上下文，则必然会触发 tool_output_not_found。
+		// 提前返回可恢复错误，由外层 recoverIngressPrevResponseNotFound 执行 context replay 重试。
+		if shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+			turnStoreDisabled,
+			turnHasFunctionCallOutput,
+			turnPreviousResponseID,
+			turnHasToolOutputContext,
+		) {
+			return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
+				openAIWSIngressStageToolOutputNotFound,
+				errors.New("proactive tool_output_not_found: function_call_output without previous_response_id in store_disabled mode"),
+				false,
+				nil,
+			)
+		}
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
 				"write_upstream",
@@ -1768,26 +1796,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		responseID := ""
 		usage := OpenAIUsage{}
 		var firstTokenMs *int
-		reqStream := openAIWSPayloadBoolFromRaw(payload, "stream", true)
-		turnPreviousResponseID := openAIWSPayloadStringFromRaw(payload, "previous_response_id")
-		turnPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(turnPreviousResponseID)
-		turnExpectedPreviousResponseID := strings.TrimSpace(expectedPreviousResponseID)
-		turnPromptCacheKey := openAIWSPayloadStringFromRaw(payload, "prompt_cache_key")
-		turnStoreDisabled := s.isOpenAIWSStoreDisabledInRequestRaw(payload, account)
-		turnFunctionCallOutputCallIDs := openAIWSExtractFunctionCallOutputCallIDsFromPayload(payload)
-		turnHasFunctionCallOutput := len(turnFunctionCallOutputCallIDs) > 0
-
-		// 预防性检测：store_disabled 模式下 function_call_output 必须携带 previous_response_id，
-		// 否则上游会先发送部分事件（wroteDownstream=true）再报错 tool_output_not_found，导致无法恢复。
-		// 提前返回可恢复错误，由外层 recoverIngressPrevResponseNotFound 执行 context replay 重试。
-		if turnStoreDisabled && turnHasFunctionCallOutput && strings.TrimSpace(turnPreviousResponseID) == "" {
-			return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
-				openAIWSIngressStageToolOutputNotFound,
-				errors.New("proactive tool_output_not_found: function_call_output without previous_response_id in store_disabled mode"),
-				false,
-				nil,
-			)
-		}
 
 		turnPendingFunctionCallIDSet := make(map[string]struct{}, 4)
 		eventCount := 0

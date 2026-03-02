@@ -69,71 +69,88 @@ func TestProactiveToolOutputNotFound_NotPreviousResponseNotFound(t *testing.T) {
 }
 
 // TestProactiveDetection_ConditionMatrix 验证预防性检测的三个触发条件的所有组合。
-// 只有 (storeDisabled=true, hasFunctionCallOutput=true, previousResponseID="") 同时满足时才触发。
+// 只有 store_disabled + function_call_output + 无 previous_response_id + 无可关联上下文 才触发。
 func TestProactiveDetection_ConditionMatrix(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                string
-		storeDisabled       bool
+		name                  string
+		storeDisabled         bool
 		hasFunctionCallOutput bool
-		previousResponseID  string
-		shouldTrigger       bool
+		previousResponseID    string
+		hasToolOutputContext  bool
+		shouldTrigger         bool
 	}{
 		{
 			name:                  "all_conditions_met_should_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "",
+			previousResponseID:    "",
+			hasToolOutputContext:  false,
 			shouldTrigger:         true,
 		},
 		{
 			name:                  "whitespace_only_previous_response_id_should_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "   ",
+			previousResponseID:    "   ",
+			hasToolOutputContext:  false,
 			shouldTrigger:         true,
 		},
 		{
 			name:                  "store_enabled_should_not_trigger",
 			storeDisabled:         false,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "",
+			previousResponseID:    "",
+			hasToolOutputContext:  false,
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "no_function_call_output_should_not_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: false,
-			previousResponseID:   "",
+			previousResponseID:    "",
+			hasToolOutputContext:  false,
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "has_previous_response_id_should_not_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "resp_abc",
+			previousResponseID:    "resp_abc",
+			hasToolOutputContext:  false,
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "all_false_should_not_trigger",
 			storeDisabled:         false,
 			hasFunctionCallOutput: false,
-			previousResponseID:   "resp_abc",
+			previousResponseID:    "resp_abc",
+			hasToolOutputContext:  false,
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "store_disabled_no_fco_has_prev_should_not_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: false,
-			previousResponseID:   "resp_abc",
+			previousResponseID:    "resp_abc",
+			hasToolOutputContext:  false,
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "store_enabled_has_fco_has_prev_should_not_trigger",
 			storeDisabled:         false,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "resp_abc",
+			previousResponseID:    "resp_abc",
+			hasToolOutputContext:  false,
+			shouldTrigger:         false,
+		},
+		{
+			name:                  "has_tool_output_context_should_not_trigger",
+			storeDisabled:         true,
+			hasFunctionCallOutput: true,
+			previousResponseID:    "",
+			hasToolOutputContext:  true,
 			shouldTrigger:         false,
 		},
 	}
@@ -143,7 +160,12 @@ func TestProactiveDetection_ConditionMatrix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			// 模拟 sendAndRelay 中的检测逻辑
-			triggered := tt.storeDisabled && tt.hasFunctionCallOutput && strings.TrimSpace(tt.previousResponseID) == ""
+			triggered := shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+				tt.storeDisabled,
+				tt.hasFunctionCallOutput,
+				tt.previousResponseID,
+				tt.hasToolOutputContext,
+			)
 			require.Equal(t, tt.shouldTrigger, triggered)
 		})
 	}
@@ -155,53 +177,76 @@ func TestProactiveDetection_PayloadExtraction(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		payload       string
-		wantHasFCO    bool
-		wantPrevID    string
-		shouldTrigger bool // 假设 storeDisabled=true
+		name           string
+		payload        string
+		wantHasFCO     bool
+		wantPrevID     string
+		wantHasContext bool
+		shouldTrigger  bool // 假设 storeDisabled=true
 	}{
 		{
-			name:          "fco_without_previous_response_id",
-			payload:       `{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
-			wantHasFCO:    true,
-			wantPrevID:    "",
-			shouldTrigger: true,
+			name:           "fco_without_previous_response_id",
+			payload:        `{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			wantHasFCO:     true,
+			wantPrevID:     "",
+			wantHasContext: false,
+			shouldTrigger:  true,
 		},
 		{
-			name:          "fco_with_previous_response_id",
-			payload:       `{"type":"response.create","previous_response_id":"resp_1","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
-			wantHasFCO:    true,
-			wantPrevID:    "resp_1",
-			shouldTrigger: false,
+			name:           "fco_with_previous_response_id",
+			payload:        `{"type":"response.create","previous_response_id":"resp_1","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			wantHasFCO:     true,
+			wantPrevID:     "resp_1",
+			wantHasContext: false,
+			shouldTrigger:  false,
 		},
 		{
-			name:          "no_fco_without_previous_response_id",
-			payload:       `{"type":"response.create","input":[{"type":"input_text","text":"hello"}]}`,
-			wantHasFCO:    false,
-			wantPrevID:    "",
-			shouldTrigger: false,
+			name:           "no_fco_without_previous_response_id",
+			payload:        `{"type":"response.create","input":[{"type":"input_text","text":"hello"}]}`,
+			wantHasFCO:     false,
+			wantPrevID:     "",
+			wantHasContext: false,
+			shouldTrigger:  false,
 		},
 		{
-			name:          "multiple_fco_without_previous_response_id",
-			payload:       `{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"r1"},{"type":"function_call_output","call_id":"call_2","output":"r2"}]}`,
-			wantHasFCO:    true,
-			wantPrevID:    "",
-			shouldTrigger: true,
+			name:           "multiple_fco_without_previous_response_id",
+			payload:        `{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"r1"},{"type":"function_call_output","call_id":"call_2","output":"r2"}]}`,
+			wantHasFCO:     true,
+			wantPrevID:     "",
+			wantHasContext: false,
+			shouldTrigger:  true,
 		},
 		{
-			name:          "empty_input_without_previous_response_id",
-			payload:       `{"type":"response.create","input":[]}`,
-			wantHasFCO:    false,
-			wantPrevID:    "",
-			shouldTrigger: false,
+			name:           "fco_with_tool_call_context",
+			payload:        `{"type":"response.create","input":[{"type":"tool_call","call_id":"call_1"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			wantHasFCO:     true,
+			wantPrevID:     "",
+			wantHasContext: true,
+			shouldTrigger:  false,
 		},
 		{
-			name:          "no_input_field",
-			payload:       `{"type":"response.create","model":"gpt-5.1"}`,
-			wantHasFCO:    false,
-			wantPrevID:    "",
-			shouldTrigger: false,
+			name:           "fco_with_item_reference_context",
+			payload:        `{"type":"response.create","input":[{"type":"item_reference","id":"call_1"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			wantHasFCO:     true,
+			wantPrevID:     "",
+			wantHasContext: true,
+			shouldTrigger:  false,
+		},
+		{
+			name:           "empty_input_without_previous_response_id",
+			payload:        `{"type":"response.create","input":[]}`,
+			wantHasFCO:     false,
+			wantPrevID:     "",
+			wantHasContext: false,
+			shouldTrigger:  false,
+		},
+		{
+			name:           "no_input_field",
+			payload:        `{"type":"response.create","model":"gpt-5.1"}`,
+			wantHasFCO:     false,
+			wantPrevID:     "",
+			wantHasContext: false,
+			shouldTrigger:  false,
 		},
 	}
 
@@ -214,12 +259,20 @@ func TestProactiveDetection_PayloadExtraction(t *testing.T) {
 			callIDs := openAIWSExtractFunctionCallOutputCallIDsFromPayload(payload)
 			hasFCO := len(callIDs) > 0
 			prevID := openAIWSPayloadStringFromRaw(payload, "previous_response_id")
+			hasContext := openAIWSHasToolCallContextInPayload(payload) ||
+				openAIWSHasItemReferenceForAllFunctionCallOutputsInPayload(payload, callIDs)
 
 			require.Equal(t, tt.wantHasFCO, hasFCO, "hasFunctionCallOutput 不匹配")
 			require.Equal(t, tt.wantPrevID, prevID, "previousResponseID 不匹配")
+			require.Equal(t, tt.wantHasContext, hasContext, "tool output context 检测结果不匹配")
 
 			// 模拟 storeDisabled=true 时的检测
-			triggered := true && hasFCO && strings.TrimSpace(prevID) == ""
+			triggered := shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+				true,
+				hasFCO,
+				prevID,
+				hasContext,
+			)
 			require.Equal(t, tt.shouldTrigger, triggered, "检测触发结果不匹配")
 		})
 	}
@@ -456,7 +509,12 @@ func TestEndToEnd_ProactiveDetection_RecoveryWithEmptyPreviousResponseID(t *test
 	require.Equal(t, []string{"call_abc"}, turnFunctionCallOutputCallIDs)
 
 	// Step 3: 预防性检测触发
-	shouldTrigger := turnStoreDisabled && turnHasFunctionCallOutput && strings.TrimSpace(turnPreviousResponseID) == ""
+	shouldTrigger := shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+		turnStoreDisabled,
+		turnHasFunctionCallOutput,
+		turnPreviousResponseID,
+		false,
+	)
 	require.True(t, shouldTrigger, "预防性检测应触发")
 
 	// Step 4: 构造预防性检测错误
@@ -517,7 +575,12 @@ func TestEndToEnd_ProactiveDetection_StoreEnabledBypasses(t *testing.T) {
 	turnHasFunctionCallOutput := len(openAIWSExtractFunctionCallOutputCallIDsFromPayload(payload)) > 0
 	turnStoreDisabled := false // store 未禁用
 
-	shouldTrigger := turnStoreDisabled && turnHasFunctionCallOutput && strings.TrimSpace(turnPreviousResponseID) == ""
+	shouldTrigger := shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+		turnStoreDisabled,
+		turnHasFunctionCallOutput,
+		turnPreviousResponseID,
+		false,
+	)
 	require.False(t, shouldTrigger, "store 未禁用时不应触发预防性检测")
 }
 
@@ -536,7 +599,12 @@ func TestEndToEnd_ProactiveDetection_WithPreviousResponseIDBypasses(t *testing.T
 	turnHasFunctionCallOutput := len(openAIWSExtractFunctionCallOutputCallIDsFromPayload(payload)) > 0
 	turnStoreDisabled := true
 
-	shouldTrigger := turnStoreDisabled && turnHasFunctionCallOutput && strings.TrimSpace(turnPreviousResponseID) == ""
+	shouldTrigger := shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+		turnStoreDisabled,
+		turnHasFunctionCallOutput,
+		turnPreviousResponseID,
+		false,
+	)
 	require.False(t, shouldTrigger, "有 previous_response_id 时不应触发预防性检测")
 }
 
@@ -555,7 +623,12 @@ func TestEndToEnd_NormalTextInput_NeverTriggersProactive(t *testing.T) {
 	turnHasFunctionCallOutput := len(openAIWSExtractFunctionCallOutputCallIDsFromPayload(payload)) > 0
 	turnStoreDisabled := true
 
-	shouldTrigger := turnStoreDisabled && turnHasFunctionCallOutput && strings.TrimSpace(turnPreviousResponseID) == ""
+	shouldTrigger := shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+		turnStoreDisabled,
+		turnHasFunctionCallOutput,
+		turnPreviousResponseID,
+		false,
+	)
 	require.False(t, shouldTrigger, "普通文本输入不应触发预防性检测")
 }
 
@@ -684,7 +757,14 @@ func TestProactiveDetection_MalformedJSON(t *testing.T) {
 
 		// 模拟检测逻辑不应 panic
 		hasFCO := len(callIDs) > 0
-		triggered := true && hasFCO && strings.TrimSpace(prevID) == ""
+		hasContext := openAIWSHasToolCallContextInPayload(payload) ||
+			openAIWSHasItemReferenceForAllFunctionCallOutputsInPayload(payload, callIDs)
+		triggered := shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+			true,
+			hasFCO,
+			prevID,
+			hasContext,
+		)
 		_ = triggered
 		t.Logf("badPayload[%d]: hasFCO=%v, triggered=%v", i, hasFCO, triggered)
 	}
