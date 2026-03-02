@@ -2223,7 +2223,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	logger.LegacyPrintf("service.openai_gateway",
-		"[OpenAI 自动透传] 命中自动透传分支: account=%d name=%s type=%s model=%s stream=%v",
+		"[DEBUG] [OpenAI 自动透传] 命中自动透传分支: account=%d name=%s type=%s model=%s stream=%v",
 		account.ID,
 		account.Name,
 		account.Type,
