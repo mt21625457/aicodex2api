@@ -74,66 +74,66 @@ func TestProactiveDetection_ConditionMatrix(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                string
-		storeDisabled       bool
+		name                  string
+		storeDisabled         bool
 		hasFunctionCallOutput bool
-		previousResponseID  string
-		shouldTrigger       bool
+		previousResponseID    string
+		shouldTrigger         bool
 	}{
 		{
 			name:                  "all_conditions_met_should_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "",
+			previousResponseID:    "",
 			shouldTrigger:         true,
 		},
 		{
 			name:                  "whitespace_only_previous_response_id_should_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "   ",
+			previousResponseID:    "   ",
 			shouldTrigger:         true,
 		},
 		{
 			name:                  "store_enabled_should_not_trigger",
 			storeDisabled:         false,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "",
+			previousResponseID:    "",
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "no_function_call_output_should_not_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: false,
-			previousResponseID:   "",
+			previousResponseID:    "",
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "has_previous_response_id_should_not_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "resp_abc",
+			previousResponseID:    "resp_abc",
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "all_false_should_not_trigger",
 			storeDisabled:         false,
 			hasFunctionCallOutput: false,
-			previousResponseID:   "resp_abc",
+			previousResponseID:    "resp_abc",
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "store_disabled_no_fco_has_prev_should_not_trigger",
 			storeDisabled:         true,
 			hasFunctionCallOutput: false,
-			previousResponseID:   "resp_abc",
+			previousResponseID:    "resp_abc",
 			shouldTrigger:         false,
 		},
 		{
 			name:                  "store_enabled_has_fco_has_prev_should_not_trigger",
 			storeDisabled:         false,
 			hasFunctionCallOutput: true,
-			previousResponseID:   "resp_abc",
+			previousResponseID:    "resp_abc",
 			shouldTrigger:         false,
 		},
 	}
@@ -708,7 +708,7 @@ func TestToolOutputRecovery_OldCodeWouldFail_Regression(t *testing.T) {
 	require.False(t, removed, "payload 中无 previous_response_id 时 drop 返回 removed=false")
 
 	// 旧代码：!removed → return false（恢复失败）
-	oldCodeResult := !(dropErr != nil || !removed) // 旧条件：dropErr != nil || !removed
+	oldCodeResult := dropErr == nil && removed // 等价于：!(dropErr != nil || !removed)
 	require.False(t, oldCodeResult, "旧代码在此场景会失败（return false）")
 
 	// 新代码行为：先检查 currentPreviousResponseID，为空时跳过 drop
