@@ -3618,12 +3618,6 @@ export default {
         enabled: 'Enable Sora Client',
         enabledHint: 'When enabled, the Sora entry will be shown in the sidebar for users to access Sora features'
       },
-      soraClient: {
-        title: 'Sora Client',
-        description: 'Control whether to show the Sora client entry in the sidebar',
-        enabled: 'Enable Sora Client',
-        enabledHint: 'When enabled, the Sora entry will be shown in the sidebar for users to access Sora features'
-      },
       smtp: {
         title: 'SMTP Settings',
         description: 'Configure email sending for verification codes',
