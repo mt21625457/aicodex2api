@@ -1331,3 +1331,147 @@ func TestCloneOpenAIWSRawMessages(t *testing.T) {
 		require.Len(t, cloned, 0)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// TestInjectPreviousResponseIDForFunctionCallOutput
+// 端到端测试：当客户端发送 function_call_output 但未携带 previous_response_id 时，
+// Gateway 应主动注入 lastTurnResponseID，避免上游返回 tool_output_not_found 错误。
+// ---------------------------------------------------------------------------
+
+func TestInjectPreviousResponseIDForFunctionCallOutput(t *testing.T) {
+	t.Parallel()
+
+	// 辅助函数：模拟 forwarder 中的注入逻辑
+	// 返回 (注入后的 payload, 注入后的 previousResponseID, 是否执行了注入)
+	simulateInject := func(
+		storeDisabled bool,
+		turn int,
+		payload []byte,
+		expectedPrev string,
+	) ([]byte, string, bool) {
+		currentPreviousResponseID := ""
+		prev := gjson.GetBytes(payload, "previous_response_id")
+		if prev.Exists() {
+			currentPreviousResponseID = strings.TrimSpace(prev.String())
+		}
+		hasFunctionCallOutput := gjson.GetBytes(payload, `input.#(type=="function_call_output")`).Exists()
+
+		if shouldInferIngressFunctionCallOutputPreviousResponseID(
+			storeDisabled, turn, hasFunctionCallOutput, currentPreviousResponseID, expectedPrev,
+		) {
+			injected, err := setPreviousResponseIDToRawPayload(payload, expectedPrev)
+			if err != nil {
+				return payload, currentPreviousResponseID, false
+			}
+			return injected, expectedPrev, true
+		}
+		return payload, currentPreviousResponseID, false
+	}
+
+	t.Run("inject_when_function_call_output_without_prev_id", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","model":"gpt-5.1","input":[{"type":"function_call_output","call_id":"call_abc123","output":"result"}]}`)
+		updated, prevID, injected := simulateInject(true, 2, payload, "resp_last_turn")
+
+		require.True(t, injected, "应该执行注入")
+		require.Equal(t, "resp_last_turn", prevID)
+		require.Equal(t, "resp_last_turn", gjson.GetBytes(updated, "previous_response_id").String())
+		// 验证原始 input 保持不变
+		require.Equal(t, "call_abc123", gjson.GetBytes(updated, `input.0.call_id`).String())
+		require.Equal(t, "function_call_output", gjson.GetBytes(updated, `input.0.type`).String())
+		require.Equal(t, "gpt-5.1", gjson.GetBytes(updated, "model").String())
+	})
+
+	t.Run("skip_when_prev_id_already_present", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","previous_response_id":"resp_client","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+		_, prevID, injected := simulateInject(true, 2, payload, "resp_last_turn")
+
+		require.False(t, injected, "客户端已携带 previous_response_id，不应注入")
+		require.Equal(t, "resp_client", prevID)
+	})
+
+	t.Run("skip_when_store_enabled", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+		_, _, injected := simulateInject(false, 2, payload, "resp_last_turn")
+
+		require.False(t, injected, "store 未禁用时不应注入")
+	})
+
+	t.Run("skip_when_no_function_call_output", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","input":[{"type":"input_text","text":"hello"}]}`)
+		_, _, injected := simulateInject(true, 2, payload, "resp_last_turn")
+
+		require.False(t, injected, "没有 function_call_output 时不应注入")
+	})
+
+	t.Run("skip_when_expected_prev_empty", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+		_, _, injected := simulateInject(true, 2, payload, "")
+
+		require.False(t, injected, "没有 expectedPrev 时不应注入")
+	})
+
+	t.Run("inject_preserves_multiple_function_call_outputs", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"a"},{"type":"function_call_output","call_id":"call_2","output":"b"}]}`)
+		updated, prevID, injected := simulateInject(true, 5, payload, "resp_multi")
+
+		require.True(t, injected)
+		require.Equal(t, "resp_multi", prevID)
+		require.Equal(t, "resp_multi", gjson.GetBytes(updated, "previous_response_id").String())
+		outputs := gjson.GetBytes(updated, `input.#(type=="function_call_output")#.call_id`).Array()
+		require.Len(t, outputs, 2)
+		require.Equal(t, "call_1", outputs[0].String())
+		require.Equal(t, "call_2", outputs[1].String())
+	})
+
+	t.Run("inject_on_first_turn_with_expected_prev", func(t *testing.T) {
+		t.Parallel()
+		// turn=1 但有 expectedPrev（可能来自 session state store 恢复），应注入
+		payload := []byte(`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+		_, _, injected := simulateInject(true, 1, payload, "resp_restored")
+
+		require.True(t, injected, "turn=1 且有 expectedPrev 时应注入")
+	})
+
+	t.Run("inject_updates_payload_bytes_correctly", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+		updated, _, injected := simulateInject(true, 3, payload, "resp_check_size")
+
+		require.True(t, injected)
+		// 注入后 payload 长度应增加（包含了新的 previous_response_id 字段）
+		require.Greater(t, len(updated), len(payload))
+		// 验证 JSON 合法性
+		require.True(t, json.Valid(updated), "注入后的 payload 应为合法 JSON")
+	})
+
+	t.Run("skip_when_turn_zero", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+		_, _, injected := simulateInject(true, 0, payload, "resp_1")
+
+		require.False(t, injected, "turn=0 时不应注入")
+	})
+
+	t.Run("inject_with_whitespace_expected_prev", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+		// shouldInfer 内部会 trim，所以带空格的 expectedPrev 仍然有效
+		_, _, injected := simulateInject(true, 2, payload, "  resp_trimmed  ")
+
+		require.True(t, injected, "trim 后非空的 expectedPrev 应触发注入")
+	})
+
+	t.Run("skip_when_prev_id_is_whitespace_only", func(t *testing.T) {
+		t.Parallel()
+		payload := []byte(`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+		_, _, injected := simulateInject(true, 2, payload, "   ")
+
+		require.False(t, injected, "纯空白的 expectedPrev 不应触发注入")
+	})
+}

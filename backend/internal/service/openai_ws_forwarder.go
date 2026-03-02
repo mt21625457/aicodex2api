@@ -2804,6 +2804,37 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		pendingExpectedCallIDs = normalized.pendingExpectedCallIDs
 		currentFunctionCallOutputCallIDs := normalized.functionCallOutputCallIDs
 		hasFunctionCallOutput := normalized.hasFunctionCallOutputCallID
+
+		// 当客户端发送 function_call_output 但未携带 previous_response_id 时，
+		// 主动注入 Gateway 跟踪的 lastTurnResponseID。
+		// 在 store_disabled 模式下，上游需要 previous_response_id 来关联 function_call_output 与 response，
+		// 否则会返回 "No tool call found for function call output" 错误。
+		if shouldInferIngressFunctionCallOutputPreviousResponseID(storeDisabled, turn, hasFunctionCallOutput, currentPreviousResponseID, expectedPrev) {
+			injectedPayload, injectErr := setPreviousResponseIDToRawPayload(currentPayload, expectedPrev)
+			if injectErr != nil {
+				logOpenAIWSModeInfo(
+					"ingress_ws_inject_prev_response_id_fail account_id=%d turn=%d conn_id=%s cause=%s expected_previous_response_id=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(injectErr.Error(), openAIWSLogValueMaxLen),
+					truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+				)
+			} else {
+				logOpenAIWSModeInfo(
+					"ingress_ws_inject_prev_response_id account_id=%d turn=%d conn_id=%s injected_previous_response_id=%s has_function_call_output=%v",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(expectedPrev, openAIWSIDValueMaxLen),
+					hasFunctionCallOutput,
+				)
+				currentPayload = injectedPayload
+				currentPayloadBytes = len(injectedPayload)
+				currentPreviousResponseID = expectedPrev
+			}
+		}
+
 		nextReplayInput, nextReplayInputExists, replayInputErr := buildOpenAIWSReplayInputSequence(
 			lastTurnReplayInput,
 			lastTurnReplayInputExists,
