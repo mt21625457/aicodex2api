@@ -1170,6 +1170,11 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		args = append(args, *updates.Schedulable)
 		idx++
 	}
+	if updates.AutoPauseOnExpired != nil {
+		setClauses = append(setClauses, "auto_pause_on_expired = $"+itoa(idx))
+		args = append(args, *updates.AutoPauseOnExpired)
+		idx++
+	}
 	// JSONB 需要合并而非覆盖，使用 raw SQL 保持旧行为。
 	if len(updates.Credentials) > 0 {
 		payload, err := json.Marshal(updates.Credentials)

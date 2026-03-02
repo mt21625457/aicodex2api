@@ -64,8 +64,25 @@ func resolveOpenAIWSDecisionByClientTransport(
 	decision OpenAIWSProtocolDecision,
 	clientTransport OpenAIClientTransport,
 ) OpenAIWSProtocolDecision {
-	if clientTransport == OpenAIClientTransportHTTP {
+	// WSv2 upstream is only allowed for explicit WebSocket ingress.
+	// Unknown/missing transport is treated as HTTP to avoid accidental WS pool usage.
+	if clientTransport != OpenAIClientTransportWS {
 		return openAIWSHTTPDecision("client_protocol_http")
 	}
 	return decision
+}
+
+func shouldWarnOpenAIWSUnknownTransportFallback(
+	decision OpenAIWSProtocolDecision,
+	clientTransport OpenAIClientTransport,
+) bool {
+	if clientTransport != OpenAIClientTransportUnknown {
+		return false
+	}
+	switch decision.Transport {
+	case OpenAIUpstreamTransportResponsesWebsocketV2, OpenAIUpstreamTransportResponsesWebsocket:
+		return true
+	default:
+		return false
+	}
 }

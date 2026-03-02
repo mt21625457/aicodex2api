@@ -12,6 +12,7 @@ import redeemAPI from './redeem'
 import promoAPI from './promo'
 import announcementsAPI from './announcements'
 import settingsAPI from './settings'
+import bulkEditTemplatesAPI from './bulkEditTemplates'
 import systemAPI from './system'
 import subscriptionsAPI from './subscriptions'
 import usageAPI from './usage'
@@ -21,7 +22,6 @@ import userAttributesAPI from './userAttributes'
 import opsAPI from './ops'
 import errorPassthroughAPI from './errorPassthrough'
 import dataManagementAPI from './dataManagement'
-import apiKeysAPI from './apiKeys'
 
 /**
  * Unified admin API object for convenient access
@@ -36,6 +36,7 @@ export const adminAPI = {
   promo: promoAPI,
   announcements: announcementsAPI,
   settings: settingsAPI,
+  bulkEditTemplates: bulkEditTemplatesAPI,
   system: systemAPI,
   subscriptions: subscriptionsAPI,
   usage: usageAPI,
@@ -44,8 +45,7 @@ export const adminAPI = {
   userAttributes: userAttributesAPI,
   ops: opsAPI,
   errorPassthrough: errorPassthroughAPI,
-  dataManagement: dataManagementAPI,
-  apiKeys: apiKeysAPI
+  dataManagement: dataManagementAPI
 }
 
 export {
@@ -58,6 +58,7 @@ export {
   promoAPI,
   announcementsAPI,
   settingsAPI,
+  bulkEditTemplatesAPI,
   systemAPI,
   subscriptionsAPI,
   usageAPI,
@@ -66,8 +67,7 @@ export {
   userAttributesAPI,
   opsAPI,
   errorPassthroughAPI,
-  dataManagementAPI,
-  apiKeysAPI
+  dataManagementAPI
 }
 
 export default adminAPI

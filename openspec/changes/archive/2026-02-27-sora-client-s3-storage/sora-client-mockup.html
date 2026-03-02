@@ -1,0 +1,3088 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sora 客户端 — 嵌入全局侧边栏布局</title>
+<style>
+/* ============================================================
+   CSS 变量 — 主题色管理
+   ============================================================ */
+:root {
+  --bg-primary: #0D0D0D;
+  --bg-secondary: #1A1A1A;
+  --bg-tertiary: #242424;
+  --bg-elevated: #2A2A2A;
+  --bg-hover: #333333;
+  --bg-input: #1E1E1E;
+
+  --text-primary: #FFFFFF;
+  --text-secondary: #A0A0A0;
+  --text-tertiary: #666666;
+  --text-muted: #4A4A4A;
+
+  --accent-primary: #7C3AED;
+  --accent-secondary: #6D28D9;
+  --accent-gradient: linear-gradient(135deg, #7C3AED 0%, #2563EB 100%);
+  --accent-gradient-hover: linear-gradient(135deg, #8B5CF6 0%, #3B82F6 100%);
+
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+  --info: #3B82F6;
+
+  --border-color: #2A2A2A;
+  --border-subtle: #1F1F1F;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-full: 9999px;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
+  --shadow-glow: 0 0 20px rgba(124,58,237,0.3);
+
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+  --transition-slow: 400ms ease;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+
+  --header-height: 56px;
+  --creator-bar-height: 180px;
+  --sidebar-width: 220px;
+}
+
+/* ============================================================
+   Reset & Base
+   ============================================================ */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+  line-height: 1.5;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  outline: none;
+  background: none;
+  color: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+  outline: none;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ============================================================
+   滚动条
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-hover);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* ============================================================
+   全局侧边栏（模拟系统侧边栏，展示 Sora 在全局布局中的位置）
+   ============================================================ */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: var(--sidebar-width);
+  height: 100vh;
+  background: #111111;
+  border-right: 1px solid var(--border-subtle);
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 0;
+  overflow-y: auto;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 16px 16px;
+}
+
+.sidebar-brand-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--accent-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sidebar-brand-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.sidebar-section-title {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 16px 16px 6px;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  margin: 1px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.sidebar-item:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.sidebar-item.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.sidebar-item svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.sidebar-item.active svg {
+  color: var(--accent-primary);
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 8px 16px;
+}
+
+.sidebar-bottom {
+  margin-top: auto;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ============================================================
+   页面内导航栏（偏移侧边栏宽度）
+   ============================================================ */
+.header {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-width);
+  right: 0;
+  height: var(--header-height);
+  background: rgba(13, 13, 13, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  z-index: 1000;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+
+/* Logo/头像已移除 — 由全局侧边栏提供 */
+
+.nav-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-full);
+  padding: 3px;
+}
+
+.nav-tab {
+  padding: 6px 20px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.nav-tab:hover {
+  color: var(--text-primary);
+}
+
+.nav-tab.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* 配额信息 */
+.quota-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.quota-bar-wrapper {
+  width: 80px;
+  height: 4px;
+  background: var(--bg-hover);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.quota-bar-fill {
+  height: 100%;
+  background: var(--accent-gradient);
+  border-radius: 2px;
+  transition: width var(--transition-slow);
+}
+
+.quota-text {
+  white-space: nowrap;
+}
+
+/* 生成队列状态指示器 */
+.queue-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.queue-indicator:hover {
+  background: var(--bg-tertiary);
+}
+
+.queue-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.queue-dot.busy {
+  background: var(--warning);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ============================================================
+   主内容区
+   ============================================================ */
+.main-content {
+  margin-top: var(--header-height);
+  margin-left: var(--sidebar-width);
+  min-height: calc(100vh - var(--header-height));
+}
+
+/* ============================================================
+   页面：生成页
+   ============================================================ */
+.page {
+  display: none;
+  min-height: calc(100vh - var(--header-height));
+}
+
+.page.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.generate-page {
+  padding-bottom: 200px;
+}
+
+/* 中间任务区域 */
+.task-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  gap: 24px;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* 欢迎区域 */
+.welcome-section {
+  text-align: center;
+  padding: 60px 0 40px;
+}
+
+.welcome-title {
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin-bottom: 12px;
+  background: linear-gradient(135deg, #FFFFFF 0%, #A0A0A0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.welcome-subtitle {
+  font-size: 16px;
+  color: var(--text-secondary);
+  max-width: 480px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* 示例提示词 */
+.example-prompts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  width: 100%;
+  max-width: 640px;
+}
+
+.example-prompt {
+  padding: 16px 20px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: left;
+  line-height: 1.5;
+}
+
+.example-prompt:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--bg-hover);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
+/* ============================================================
+   生成进度卡片
+   ============================================================ */
+.task-cards {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.task-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  transition: all var(--transition-normal);
+}
+
+.task-card:hover {
+  border-color: var(--bg-hover);
+}
+
+.task-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.task-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.task-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.task-status-dot.queued {
+  background: var(--text-tertiary);
+}
+
+.task-status-dot.generating {
+  background: var(--warning);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.task-status-dot.completed {
+  background: var(--success);
+}
+
+.task-status-dot.failed {
+  background: var(--error);
+}
+
+.task-status-label.queued { color: var(--text-secondary); }
+.task-status-label.generating { color: var(--warning); }
+.task-status-label.completed { color: var(--success); }
+.task-status-label.failed { color: var(--error); }
+
+.task-model-tag {
+  font-size: 11px;
+  padding: 3px 10px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.task-prompt {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 进度条 */
+.task-progress-wrapper {
+  margin-bottom: 16px;
+}
+
+.task-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--bg-hover);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.task-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width var(--transition-slow);
+}
+
+.task-progress-fill.generating {
+  background: var(--accent-gradient);
+  animation: progress-shimmer 2s ease-in-out infinite;
+}
+
+.task-progress-fill.completed {
+  background: var(--success);
+}
+
+.task-progress-fill.failed {
+  background: var(--error);
+}
+
+@keyframes progress-shimmer {
+  0% { opacity: 1; }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+.task-progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* 完成状态预览 */
+.task-preview {
+  margin-top: 16px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  position: relative;
+  background: var(--bg-tertiary);
+}
+
+.task-preview-image {
+  width: 100%;
+  height: 280px;
+  object-fit: cover;
+  display: block;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+}
+
+.task-preview-placeholder {
+  width: 100%;
+  height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  font-size: 48px;
+  opacity: 0.6;
+}
+
+.task-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.task-action-btn {
+  padding: 8px 20px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+}
+
+.task-action-btn.primary {
+  background: var(--accent-gradient);
+  color: white;
+}
+
+.task-action-btn.primary:hover {
+  background: var(--accent-gradient-hover);
+  box-shadow: var(--shadow-glow);
+}
+
+.task-action-btn.secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.task-action-btn.secondary:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 无存储提示 */
+.no-storage-toast {
+  display: none;
+  position: fixed;
+  top: 80px;
+  right: 24px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  padding: 14px 20px;
+  font-size: 13px;
+  color: var(--warning);
+  z-index: 999;
+  box-shadow: var(--shadow-lg);
+  animation: slide-in-right 0.3s ease;
+  max-width: 340px;
+}
+
+.no-storage-toast.show {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* ============================================================
+   底部创作栏（核心）
+   ============================================================ */
+.creator-bar-wrapper {
+  position: fixed;
+  bottom: 0;
+  left: var(--sidebar-width);
+  right: 0;
+  z-index: 900;
+  background: linear-gradient(to top, var(--bg-primary) 60%, transparent 100%);
+  padding: 20px 24px 24px;
+  pointer-events: none;
+}
+
+.creator-bar {
+  max-width: 780px;
+  margin: 0 auto;
+  pointer-events: all;
+}
+
+.creator-bar-inner {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: 12px 16px 12px;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.creator-bar-inner:focus-within {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 1px var(--accent-primary), var(--shadow-glow);
+}
+
+/* 模型选择行 */
+.creator-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.model-select-wrapper {
+  position: relative;
+}
+
+.model-select {
+  appearance: none;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  padding: 5px 28px 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--transition-fast);
+}
+
+.model-select:hover {
+  border-color: var(--bg-hover);
+}
+
+.model-select:focus {
+  border-color: var(--accent-primary);
+}
+
+.model-select-arrow {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.no-storage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  color: var(--warning);
+}
+
+/* 输入框 */
+.creator-input-wrapper {
+  position: relative;
+}
+
+.creator-textarea {
+  width: 100%;
+  min-height: 44px;
+  max-height: 120px;
+  padding: 10px 4px;
+  font-size: 14px;
+  color: var(--text-primary);
+  background: transparent;
+  resize: none;
+  line-height: 1.5;
+  overflow-y: auto;
+}
+
+.creator-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* 底部工具行 */
+.creator-tools-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 4px;
+  padding-top: 10px;
+}
+
+.creator-tools-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.tool-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tool-btn.active {
+  background: rgba(124, 58, 237, 0.15);
+  color: var(--accent-primary);
+  border: 1px solid rgba(124, 58, 237, 0.3);
+}
+
+.tool-btn-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tool-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-color);
+  margin: 0 4px;
+}
+
+/* 上传按钮 */
+.upload-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 16px;
+  transition: all var(--transition-fast);
+}
+
+.upload-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 生成按钮 */
+.generate-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 24px;
+  background: var(--accent-gradient);
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 600;
+  color: white;
+  transition: all var(--transition-fast);
+}
+
+.generate-btn:hover {
+  background: var(--accent-gradient-hover);
+  box-shadow: var(--shadow-glow);
+  transform: translateY(-1px);
+}
+
+.generate-btn:active {
+  transform: translateY(0);
+}
+
+.generate-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.generate-btn-icon {
+  font-size: 16px;
+}
+
+/* ============================================================
+   页面：作品库
+   ============================================================ */
+.gallery-page {
+  padding: 24px;
+  padding-bottom: 40px;
+}
+
+/* 筛选栏 */
+.gallery-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.gallery-filters {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-full);
+  padding: 3px;
+}
+
+.gallery-filter {
+  padding: 6px 18px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.gallery-filter:hover {
+  color: var(--text-primary);
+}
+
+.gallery-filter.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.gallery-count {
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+/* 网格布局 */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+/* 作品卡片 */
+.gallery-card {
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  group: card;
+}
+
+.gallery-card:hover {
+  border-color: var(--bg-hover);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.gallery-card-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/9;
+  overflow: hidden;
+}
+
+.gallery-card-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform var(--transition-slow);
+}
+
+.gallery-card:hover .gallery-card-image {
+  transform: scale(1.05);
+}
+
+/* 类型角标 */
+.gallery-card-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  backdrop-filter: blur(8px);
+}
+
+.gallery-card-badge.video {
+  background: rgba(124, 58, 237, 0.8);
+  color: white;
+}
+
+.gallery-card-badge.image {
+  background: rgba(16, 185, 129, 0.8);
+  color: white;
+}
+
+/* hover 操作按钮 */
+.gallery-card-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.gallery-card:hover .gallery-card-overlay {
+  opacity: 1;
+}
+
+.gallery-card-action {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: white;
+  transition: all var(--transition-fast);
+}
+
+.gallery-card-action:hover {
+  background: rgba(255, 255, 255, 0.25);
+  transform: scale(1.1);
+}
+
+/* 视频播放指示 */
+.gallery-card-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: white;
+  opacity: 0;
+  transition: all var(--transition-fast);
+}
+
+.gallery-card:hover .gallery-card-play {
+  opacity: 1;
+}
+
+/* 视频时长 */
+.gallery-card-duration {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: white;
+}
+
+/* 卡片底部信息 */
+.gallery-card-info {
+  padding: 12px;
+}
+
+.gallery-card-model {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+
+.gallery-card-time {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 空状态 */
+.gallery-empty {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 120px 40px;
+  text-align: center;
+}
+
+.gallery-empty.show {
+  display: flex;
+}
+
+.gallery-empty-icon {
+  font-size: 64px;
+  margin-bottom: 24px;
+  opacity: 0.3;
+}
+
+.gallery-empty-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+}
+
+.gallery-empty-desc {
+  font-size: 14px;
+  color: var(--text-tertiary);
+  max-width: 360px;
+  line-height: 1.6;
+}
+
+.gallery-empty-btn {
+  margin-top: 24px;
+  padding: 10px 28px;
+  background: var(--accent-gradient);
+  border-radius: var(--radius-full);
+  font-size: 14px;
+  font-weight: 500;
+  color: white;
+  transition: all var(--transition-fast);
+}
+
+.gallery-empty-btn:hover {
+  box-shadow: var(--shadow-glow);
+}
+
+/* ============================================================
+   保存到存储按钮（条件可用）
+   ============================================================ */
+.task-action-btn.save-storage {
+  background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  color: white;
+}
+
+.task-action-btn.save-storage:hover {
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.3);
+}
+
+.task-action-btn.save-storage.disabled {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.task-action-btn.save-storage.disabled:hover {
+  box-shadow: none;
+}
+
+.gallery-card-action.save-storage {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+}
+
+.gallery-card-action.save-storage:hover {
+  background: rgba(16, 185, 129, 0.3);
+}
+
+.gallery-card-action.save-storage.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.storage-tooltip {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  text-align: center;
+}
+
+/* ============================================================
+   下载弹窗
+   ============================================================ */
+.download-modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  z-index: 2000;
+  align-items: center;
+  justify-content: center;
+}
+
+.download-modal-overlay.show {
+  display: flex;
+}
+
+.download-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: 32px;
+  max-width: 420px;
+  width: 90%;
+  text-align: center;
+  animation: modal-in 0.3s ease;
+}
+
+@keyframes modal-in {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.download-modal-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.download-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.download-modal-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+  line-height: 1.6;
+}
+
+.download-modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+.download-modal-btn {
+  padding: 10px 24px;
+  border-radius: var(--radius-full);
+  font-size: 14px;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+}
+
+.download-modal-btn.primary {
+  background: var(--accent-gradient);
+  color: white;
+}
+
+.download-modal-btn.primary:hover {
+  box-shadow: var(--shadow-glow);
+}
+
+.download-modal-btn.ghost {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.download-modal-btn.ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   响应式
+   ============================================================ */
+@media (max-width: 1200px) {
+  .gallery-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  :root { --sidebar-width: 0px; }
+  .sidebar { display: none; }
+
+  .gallery-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .example-prompts {
+    grid-template-columns: 1fr;
+  }
+
+  .header-left {
+    gap: 16px;
+  }
+
+  .quota-info {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .gallery-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .header {
+    padding: 0 16px;
+  }
+
+  .creator-bar-wrapper {
+    padding: 12px 12px 16px;
+  }
+
+  .creator-tools-left {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .tool-btn {
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+
+  .welcome-title {
+    font-size: 28px;
+  }
+
+  .nav-tab {
+    padding: 5px 14px;
+    font-size: 12px;
+  }
+
+  .gallery-page {
+    padding: 16px;
+  }
+}
+
+/* ============================================================
+   渐变色卡片占位背景
+   ============================================================ */
+.gradient-bg-1 { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+.gradient-bg-2 { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+.gradient-bg-3 { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+.gradient-bg-4 { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
+.gradient-bg-5 { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
+.gradient-bg-6 { background: linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%); }
+.gradient-bg-7 { background: linear-gradient(135deg, #fccb90 0%, #d57eeb 100%); }
+.gradient-bg-8 { background: linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%); }
+
+/* ============================================================
+   工具提示
+   ============================================================ */
+.tooltip {
+  position: relative;
+}
+
+.tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+  margin-bottom: 6px;
+}
+
+.tooltip:hover::after {
+  opacity: 1;
+}
+
+/* ============================================================
+   辅助动画
+   ============================================================ */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fade-in 0.4s ease;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ============================================================
+   取消状态卡片
+   ============================================================ */
+.task-status-dot.cancelled {
+  background: var(--text-tertiary);
+}
+
+.task-status-label.cancelled {
+  color: var(--text-tertiary);
+}
+
+.task-card.cancelled {
+  opacity: 0.6;
+  border-color: var(--border-subtle);
+}
+
+.task-card.cancelled .task-prompt {
+  text-decoration: line-through;
+  color: var(--text-tertiary);
+}
+
+/* 取消按钮（生成中/排队中卡片上） */
+.task-cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  transition: all var(--transition-fast);
+  cursor: pointer;
+}
+
+.task-cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--error);
+}
+
+/* ============================================================
+   已保存到云端标签
+   ============================================================ */
+.saved-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--success);
+}
+
+/* ============================================================
+   倒计时进度条和警告
+   ============================================================ */
+.countdown-bar-wrapper {
+  margin-top: 12px;
+}
+
+.countdown-bar {
+  width: 100%;
+  height: 3px;
+  background: var(--bg-hover);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.countdown-bar-fill {
+  height: 100%;
+  background: var(--warning);
+  border-radius: 2px;
+  transition: width 1s linear;
+}
+
+.countdown-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--warning);
+}
+
+/* 倒计时 < 2 分钟时卡片边框变红 */
+.task-card.countdown-warning {
+  border-color: var(--error) !important;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.15);
+}
+
+.task-card.countdown-warning .countdown-bar-fill {
+  background: var(--error);
+}
+
+.task-card.countdown-warning .countdown-text {
+  color: var(--error);
+}
+
+/* ============================================================
+   配额进度条预警色
+   ============================================================ */
+.quota-bar-fill.warning {
+  background: var(--warning) !important;
+}
+
+.quota-bar-fill.danger {
+  background: var(--error) !important;
+}
+
+.quota-text.warning {
+  color: var(--warning);
+}
+
+.quota-text.danger {
+  color: var(--error);
+}
+
+/* ============================================================
+   活跃任务计数标签
+   ============================================================ */
+.active-tasks-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: rgba(124, 58, 237, 0.12);
+  border: 1px solid rgba(124, 58, 237, 0.25);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-primary);
+  white-space: nowrap;
+  animation: fade-in 0.3s ease;
+}
+
+.active-tasks-label .pulse-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* ============================================================
+   生成按钮 disabled + tooltip 样式
+   ============================================================ */
+.generate-btn.max-reached {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.generate-btn.max-reached:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* ============================================================
+   失败卡片错误分类样式
+   ============================================================ */
+.task-error-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--error);
+  margin-bottom: 8px;
+}
+
+.task-error-message {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- ============================================================
+     全局侧边栏（模拟系统侧边栏，展示 Sora 嵌入全局布局）
+     ============================================================ -->
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <div class="sidebar-brand-logo">A</div>
+    <span class="sidebar-brand-name">Sub2API</span>
+  </div>
+
+  <!-- 管理菜单 -->
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
+    <span>仪表盘</span>
+  </div>
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
+    <span>账号管理</span>
+  </div>
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
+    <span>公告</span>
+  </div>
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+    <span>系统设置</span>
+  </div>
+
+  <div class="sidebar-divider"></div>
+
+  <!-- 我的账户 -->
+  <div class="sidebar-section-title">我的账户</div>
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg>
+    <span>API 密钥</span>
+  </div>
+
+  <!-- Sora 菜单项（条件显示，当前高亮） -->
+  <div class="sidebar-item active" title="sora_client_enabled = true 时显示">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z"/></svg>
+    <span>Sora</span>
+  </div>
+
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
+    <span>使用记录</span>
+  </div>
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z"/></svg>
+    <span>我的订阅</span>
+  </div>
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 11.25v8.25a1.5 1.5 0 01-1.5 1.5H5.25a1.5 1.5 0 01-1.5-1.5v-8.25M12 4.875A2.625 2.625 0 109.375 7.5H12m0-2.625V7.5m0-2.625A2.625 2.625 0 1114.625 7.5H12m0 0V21m-8.625-9.75h18c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125h-18c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg>
+    <span>兑换</span>
+  </div>
+  <div class="sidebar-item">
+    <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg>
+    <span>个人资料</span>
+  </div>
+
+  <!-- 底部操作 -->
+  <div class="sidebar-bottom">
+    <div class="sidebar-item">
+      <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/></svg>
+      <span>深色模式</span>
+    </div>
+  </div>
+</aside>
+
+<!-- ============================================================
+     页面内导航栏（Sora Tab 切换 + 配额）
+     ============================================================ -->
+<header class="header">
+  <div class="header-left">
+    <!-- 无独立 Logo/头像，由全局侧边栏提供 -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-page="generate" onclick="switchPage('generate')">生成</button>
+      <button class="nav-tab" data-page="gallery" onclick="switchPage('gallery')">作品库</button>
+    </nav>
+  </div>
+  <div class="header-right">
+    <div class="quota-info" id="quotaInfo">
+      <div class="quota-bar-wrapper">
+        <div class="quota-bar-fill warning" id="quotaBarFill" style="width: 92%"></div>
+      </div>
+      <span class="quota-text warning" id="quotaText">4.6 GB / 5 GB</span>
+    </div>
+    <div class="queue-indicator" onclick="toggleQueuePanel()">
+      <span class="queue-dot busy"></span>
+      <span>2 个任务</span>
+    </div>
+  </div>
+</header>
+
+<!-- ============================================================
+     无存储提示
+     ============================================================ -->
+<div class="no-storage-toast" id="noStorageToast">
+  <span>⚠️</span>
+  <span>管理员未开通云存储，生成完成后请使用"本地下载"保存文件，否则将会丢失。</span>
+</div>
+
+<!-- ============================================================
+     主内容
+     ============================================================ -->
+<main class="main-content">
+
+  <!-- ========== 生成页 ========== -->
+  <div class="page generate-page active" id="page-generate">
+    <div class="task-area">
+
+      <!-- 欢迎区域 -->
+      <div class="welcome-section" id="welcomeSection">
+        <h1 class="welcome-title">将你的想象力变成视频</h1>
+        <p class="welcome-subtitle">输入一段描述，Sora 将为你创作逼真的视频或图片。尝试以下示例开始创作。</p>
+      </div>
+
+      <!-- 示例提示词 -->
+      <div class="example-prompts" id="examplePrompts">
+        <button class="example-prompt" onclick="fillPrompt(this)">
+          一只金色的柴犬在东京涩谷街头散步，镜头跟随，电影感画面，4K 高清
+        </button>
+        <button class="example-prompt" onclick="fillPrompt(this)">
+          无人机航拍视角，冰岛极光下的冰川湖面反射绿色光芒，慢速推进
+        </button>
+        <button class="example-prompt" onclick="fillPrompt(this)">
+          赛博朋克风格的未来城市，霓虹灯倒映在雨后积水中，夜景，电影级色彩
+        </button>
+        <button class="example-prompt" onclick="fillPrompt(this)">
+          水墨画风格，一叶扁舟在山水间漂泊，薄雾缭绕，中国古典意境
+        </button>
+      </div>
+
+      <!-- 生成中的任务卡片 -->
+      <div class="task-cards" id="taskCards">
+
+        <!-- 任务卡片 1：生成中 -->
+        <div class="task-card fade-in" id="task-1" data-prompt="一只金色的柴犬在东京涩谷街头散步，镜头跟随，电影感画面，4K 高清" data-model="sora2-landscape-10s">
+          <div class="task-card-header">
+            <div class="task-status">
+              <span class="task-status-dot generating"></span>
+              <span class="task-status-label generating">生成中</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="task-model-tag">sora2-landscape-10s</span>
+              <button class="task-cancel-btn" onclick="cancelTask('task-1')">✕ 取消</button>
+            </div>
+          </div>
+          <div class="task-prompt">一只金色的柴犬在东京涩谷街头散步，镜头跟随，电影感画面，4K 高清</div>
+          <div class="task-progress-wrapper">
+            <div class="task-progress-bar">
+              <div class="task-progress-fill generating" style="width: 65%"></div>
+            </div>
+            <div class="task-progress-info">
+              <span>已等待 3:42 · 预计剩余 8 分钟</span>
+              <span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 任务卡片 2：排队中 -->
+        <div class="task-card fade-in" id="task-2" data-prompt="赛博朋克风格的未来城市，霓虹灯倒映在雨后积水中，夜景，电影级色彩" data-model="sora2-portrait-15s">
+          <div class="task-card-header">
+            <div class="task-status">
+              <span class="task-status-dot queued"></span>
+              <span class="task-status-label queued">排队中</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="task-model-tag">sora2-portrait-15s</span>
+              <button class="task-cancel-btn" onclick="cancelTask('task-2')">✕ 取消</button>
+            </div>
+          </div>
+          <div class="task-prompt">赛博朋克风格的未来城市，霓虹灯倒映在雨后积水中，夜景，电影级色彩</div>
+          <div class="task-progress-wrapper">
+            <div class="task-progress-bar">
+              <div class="task-progress-fill" style="width: 0%"></div>
+            </div>
+            <div class="task-progress-info">
+              <span>队列中第 2 位</span>
+              <span>等待中</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 任务卡片 3：已完成（有存储 — S3 自动保存成功） -->
+        <div class="task-card fade-in" id="task-3">
+          <div class="task-card-header">
+            <div class="task-status">
+              <span class="task-status-dot completed"></span>
+              <span class="task-status-label completed">已完成</span>
+            </div>
+            <span class="task-model-tag">gpt-image-1</span>
+          </div>
+          <div class="task-prompt">水墨画风格，一叶扁舟在山水间漂泊，薄雾缭绕，中国古典意境</div>
+          <div class="task-preview">
+            <div class="task-preview-placeholder gradient-bg-1">🎨</div>
+          </div>
+          <div class="task-actions" id="task3Actions">
+            <!-- 自动保存成功时：绿色已保存标签 + 本地下载按钮 -->
+            <span class="saved-badge" id="task3SavedBadge" style="display:none;">✓ 已保存到云端</span>
+            <button class="task-action-btn primary" onclick="triggerLocalDownload()">📥 本地下载</button>
+            <!-- upstream 记录：保存到存储按钮（S3 可用时可点击，不可用时禁用） -->
+            <button class="task-action-btn save-storage" onclick="saveToStorage()" id="task3SaveBtn">☁️ 保存到存储</button>
+            <!-- 无存储时：显示倒计时 -->
+            <span class="countdown-text" id="task3Countdown">⏱ 剩余 11:28 可下载</span>
+          </div>
+          <!-- 无存储倒计时进度条 -->
+          <div class="countdown-bar-wrapper" id="task3CountdownBar">
+            <div class="countdown-bar">
+              <div class="countdown-bar-fill" style="width: 76%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 任务卡片 3b：已完成（有存储版本演示） -->
+        <div class="task-card fade-in" id="task-3b">
+          <div class="task-card-header">
+            <div class="task-status">
+              <span class="task-status-dot completed"></span>
+              <span class="task-status-label completed">已完成</span>
+            </div>
+            <span class="task-model-tag">sora2-landscape-10s</span>
+          </div>
+          <div class="task-prompt">无人机航拍视角，冰岛极光下的冰川湖面反射绿色光芒，慢速推进</div>
+          <div class="task-preview">
+            <div class="task-preview-placeholder gradient-bg-3">🎬</div>
+          </div>
+          <div class="task-actions">
+            <span class="saved-badge">✓ 已保存到云端</span>
+            <button class="task-action-btn primary" onclick="triggerLocalDownload()">📥 本地下载</button>
+          </div>
+        </div>
+
+        <!-- 任务卡片 4：失败（错误分类显示） -->
+        <div class="task-card fade-in" id="task-4" data-prompt="赛博朋克风格的机械战士在城市废墟中战斗，火焰和爆炸特效" data-model="sora2-landscape-10s">
+          <div class="task-card-header">
+            <div class="task-status">
+              <span class="task-status-dot failed"></span>
+              <span class="task-status-label failed">生成失败</span>
+            </div>
+            <span class="task-model-tag">sora2-landscape-10s</span>
+          </div>
+          <div class="task-prompt">赛博朋克风格的机械战士在城市废墟中战斗，火焰和爆炸特效</div>
+          <div class="task-error-category">⛔ 内容策略限制</div>
+          <div class="task-error-message">提示词包含暴力相关内容，触发了安全策略。请修改提示词中的相关描述后重试。</div>
+          <div class="task-progress-wrapper">
+            <div class="task-progress-bar">
+              <div class="task-progress-fill failed" style="width: 100%"></div>
+            </div>
+          </div>
+          <div class="task-actions">
+            <button class="task-action-btn primary" onclick="retryTask('task-4')">🔄 重试</button>
+            <button class="task-action-btn secondary" onclick="editAndRetry('task-4')">✏️ 编辑后重试</button>
+            <button class="task-action-btn secondary" onclick="deleteTask('task-4')">🗑 删除</button>
+          </div>
+        </div>
+
+        <!-- 任务卡片 5：已取消 -->
+        <div class="task-card fade-in cancelled" id="task-5" data-prompt="日式庭园，秋天的红叶铺满石板路，细雨飘落，禅意氛围" data-model="sora2-portrait-15s">
+          <div class="task-card-header">
+            <div class="task-status">
+              <span class="task-status-dot cancelled"></span>
+              <span class="task-status-label cancelled">已取消</span>
+            </div>
+            <span class="task-model-tag">sora2-portrait-15s</span>
+          </div>
+          <div class="task-prompt">日式庭园，秋天的红叶铺满石板路，细雨飘落，禅意氛围</div>
+          <div class="task-actions">
+            <button class="task-action-btn primary" onclick="retryTask('task-5')">🔄 重新生成</button>
+            <button class="task-action-btn secondary" onclick="deleteTask('task-5')">🗑 删除</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 作品库页 ========== -->
+  <div class="page gallery-page" id="page-gallery">
+
+    <!-- 筛选栏 -->
+    <div class="gallery-filter-bar">
+      <div class="gallery-filters">
+        <button class="gallery-filter active" data-filter="all" onclick="filterGallery('all', this)">全部</button>
+        <button class="gallery-filter" data-filter="video" onclick="filterGallery('video', this)">视频</button>
+        <button class="gallery-filter" data-filter="image" onclick="filterGallery('image', this)">图片</button>
+      </div>
+      <span class="gallery-count" id="galleryCount">共 8 个作品</span>
+    </div>
+
+    <!-- 网格作品 -->
+    <div class="gallery-grid" id="galleryGrid">
+
+      <!-- 卡片 1 - 视频 -->
+      <div class="gallery-card" data-type="video">
+        <div class="gallery-card-thumb">
+          <div class="gallery-card-image gradient-bg-1"></div>
+          <span class="gallery-card-badge video">VIDEO</span>
+          <div class="gallery-card-overlay">
+            <button class="gallery-card-action" title="下载" onclick="event.stopPropagation(); triggerLocalDownload()">📥</button>
+            <button class="gallery-card-action" title="删除" onclick="event.stopPropagation()">🗑</button>
+          </div>
+          <div class="gallery-card-play">▶</div>
+          <span class="gallery-card-duration">0:10</span>
+        </div>
+        <div class="gallery-card-info">
+          <div class="gallery-card-model">sora2-landscape-10s</div>
+          <div class="gallery-card-time">2 分钟前</div>
+        </div>
+      </div>
+
+      <!-- 卡片 2 - 图片 -->
+      <div class="gallery-card" data-type="image">
+        <div class="gallery-card-thumb">
+          <div class="gallery-card-image gradient-bg-2"></div>
+          <span class="gallery-card-badge image">IMAGE</span>
+          <div class="gallery-card-overlay">
+            <button class="gallery-card-action" title="下载" onclick="event.stopPropagation(); triggerLocalDownload()">📥</button>
+            <button class="gallery-card-action" title="删除" onclick="event.stopPropagation()">🗑</button>
+          </div>
+        </div>
+        <div class="gallery-card-info">
+          <div class="gallery-card-model">gpt-image-1</div>
+          <div class="gallery-card-time">15 分钟前</div>
+        </div>
+      </div>
+
+      <!-- 卡片 3 - 视频 -->
+      <div class="gallery-card" data-type="video">
+        <div class="gallery-card-thumb">
+          <div class="gallery-card-image gradient-bg-3"></div>
+          <span class="gallery-card-badge video">VIDEO</span>
+          <div class="gallery-card-overlay">
+            <button class="gallery-card-action" title="下载" onclick="event.stopPropagation(); triggerLocalDownload()">📥</button>
+            <button class="gallery-card-action" title="删除" onclick="event.stopPropagation()">🗑</button>
+          </div>
+          <div class="gallery-card-play">▶</div>
+          <span class="gallery-card-duration">0:15</span>
+        </div>
+        <div class="gallery-card-info">
+          <div class="gallery-card-model">sora2-portrait-15s</div>
+          <div class="gallery-card-time">1 小时前</div>
+        </div>
+      </div>
+
+      <!-- 卡片 4 - 视频 -->
+      <div class="gallery-card" data-type="video">
+        <div class="gallery-card-thumb">
+          <div class="gallery-card-image gradient-bg-4"></div>
+          <span class="gallery-card-badge video">VIDEO</span>
+          <div class="gallery-card-overlay">
+            <button class="gallery-card-action" title="下载" onclick="event.stopPropagation(); triggerLocalDownload()">📥</button>
+            <button class="gallery-card-action" title="删除" onclick="event.stopPropagation()">🗑</button>
+          </div>
+          <div class="gallery-card-play">▶</div>
+          <span class="gallery-card-duration">0:25</span>
+        </div>
+        <div class="gallery-card-info">
+          <div class="gallery-card-model">sora2-landscape-25s</div>
+          <div class="gallery-card-time">2 小时前</div>
+        </div>
+      </div>
+
+      <!-- 卡片 5 - 图片 -->
+      <div class="gallery-card" data-type="image">
+        <div class="gallery-card-thumb">
+          <div class="gallery-card-image gradient-bg-5"></div>
+          <span class="gallery-card-badge image">IMAGE</span>
+          <div class="gallery-card-overlay">
+            <button class="gallery-card-action" title="下载" onclick="event.stopPropagation(); triggerLocalDownload()">📥</button>
+            <button class="gallery-card-action" title="删除" onclick="event.stopPropagation()">🗑</button>
+          </div>
+        </div>
+        <div class="gallery-card-info">
+          <div class="gallery-card-model">gpt-image-1</div>
+          <div class="gallery-card-time">3 小时前</div>
+        </div>
+      </div>
+
+      <!-- 卡片 6 - 视频 -->
+      <div class="gallery-card" data-type="video">
+        <div class="gallery-card-thumb">
+          <div class="gallery-card-image gradient-bg-6"></div>
+          <span class="gallery-card-badge video">VIDEO</span>
+          <div class="gallery-card-overlay">
+            <button class="gallery-card-action" title="下载" onclick="event.stopPropagation(); triggerLocalDownload()">📥</button>
+            <button class="gallery-card-action" title="删除" onclick="event.stopPropagation()">🗑</button>
+          </div>
+          <div class="gallery-card-play">▶</div>
+          <span class="gallery-card-duration">0:10</span>
+        </div>
+        <div class="gallery-card-info">
+          <div class="gallery-card-model">sora2-landscape-10s</div>
+          <div class="gallery-card-time">昨天</div>
+        </div>
+      </div>
+
+      <!-- 卡片 7 - 图片 -->
+      <div class="gallery-card" data-type="image">
+        <div class="gallery-card-thumb">
+          <div class="gallery-card-image gradient-bg-7"></div>
+          <span class="gallery-card-badge image">IMAGE</span>
+          <div class="gallery-card-overlay">
+            <button class="gallery-card-action" title="下载" onclick="event.stopPropagation(); triggerLocalDownload()">📥</button>
+            <button class="gallery-card-action" title="删除" onclick="event.stopPropagation()">🗑</button>
+          </div>
+        </div>
+        <div class="gallery-card-info">
+          <div class="gallery-card-model">gpt-image-1</div>
+          <div class="gallery-card-time">昨天</div>
+        </div>
+      </div>
+
+      <!-- 卡片 8 - 视频 -->
+      <div class="gallery-card" data-type="video">
+        <div class="gallery-card-thumb">
+          <div class="gallery-card-image gradient-bg-8"></div>
+          <span class="gallery-card-badge video">VIDEO</span>
+          <div class="gallery-card-overlay">
+            <button class="gallery-card-action" title="下载" onclick="event.stopPropagation(); triggerLocalDownload()">📥</button>
+            <button class="gallery-card-action" title="删除" onclick="event.stopPropagation()">🗑</button>
+          </div>
+          <div class="gallery-card-play">▶</div>
+          <span class="gallery-card-duration">0:15</span>
+        </div>
+        <div class="gallery-card-info">
+          <div class="gallery-card-model">sora2-portrait-15s</div>
+          <div class="gallery-card-time">2 天前</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 空状态 -->
+    <div class="gallery-empty" id="galleryEmpty">
+      <div class="gallery-empty-icon">🎬</div>
+      <h2 class="gallery-empty-title">还没有任何作品</h2>
+      <p class="gallery-empty-desc">你的创作成果将会展示在这里。前往生成页，开始你的第一次创作吧。</p>
+      <button class="gallery-empty-btn" onclick="switchPage('generate')">开始创作</button>
+    </div>
+
+  </div>
+
+</main>
+
+<!-- ============================================================
+     底部创作栏
+     ============================================================ -->
+<div class="creator-bar-wrapper" id="creatorBarWrapper">
+  <div class="creator-bar">
+    <div class="creator-bar-inner">
+
+      <!-- 模型选择行 -->
+      <div class="creator-model-row">
+        <div class="model-select-wrapper">
+          <select class="model-select" id="modelSelect" onchange="onModelChange()">
+            <optgroup label="视频模型">
+              <option value="sora2-landscape-10s">sora2-landscape-10s</option>
+              <option value="sora2-landscape-15s">sora2-landscape-15s</option>
+              <option value="sora2-landscape-25s">sora2-landscape-25s</option>
+              <option value="sora2-portrait-10s">sora2-portrait-10s</option>
+              <option value="sora2-portrait-15s">sora2-portrait-15s</option>
+            </optgroup>
+            <optgroup label="图片模型">
+              <option value="gpt-image-1">gpt-image-1</option>
+              <option value="gpt-image-1-hd">gpt-image-1-hd</option>
+            </optgroup>
+          </select>
+          <span class="model-select-arrow">▼</span>
+        </div>
+        <span class="no-storage-badge" id="noStorageBadge">⚠ 存储未配置</span>
+      </div>
+
+      <!-- 输入框 -->
+      <div class="creator-input-wrapper">
+        <textarea
+          class="creator-textarea"
+          id="promptInput"
+          placeholder="描述你想要生成的视频或图片..."
+          rows="1"
+          oninput="autoResize(this); updateGenerateBtn()"
+        ></textarea>
+      </div>
+
+      <!-- 底部工具行 -->
+      <div class="creator-tools-row">
+        <div class="creator-tools-left">
+          <!-- 方向选择 -->
+          <button class="tool-btn active" data-aspect="landscape" onclick="selectAspect(this, 'landscape')">
+            <span class="tool-btn-icon">▬</span> 横屏
+          </button>
+          <button class="tool-btn" data-aspect="portrait" onclick="selectAspect(this, 'portrait')">
+            <span class="tool-btn-icon">▮</span> 竖屏
+          </button>
+          <button class="tool-btn" data-aspect="square" onclick="selectAspect(this, 'square')">
+            <span class="tool-btn-icon">◻</span> 方形
+          </button>
+
+          <span class="tool-divider"></span>
+
+          <!-- 时长选择 -->
+          <button class="tool-btn active" data-duration="10" onclick="selectDuration(this, 10)">10s</button>
+          <button class="tool-btn" data-duration="15" onclick="selectDuration(this, 15)">15s</button>
+          <button class="tool-btn" data-duration="25" onclick="selectDuration(this, 25)">25s</button>
+
+          <span class="tool-divider"></span>
+
+          <!-- 图片上传 -->
+          <button class="upload-btn tooltip" data-tooltip="上传参考图片" onclick="triggerUpload()">
+            <span>📎</span>
+          </button>
+          <input type="file" id="fileUpload" accept="image/*" style="display:none" onchange="handleFileUpload(this)">
+        </div>
+
+        <!-- 活跃任务计数 -->
+        <span class="active-tasks-label" id="activeTasksLabel" style="display:none;">
+          <span class="pulse-indicator"></span>
+          <span id="activeTasksText">正在生成 1/3</span>
+        </span>
+
+        <!-- 生成按钮 -->
+        <button class="generate-btn" id="generateBtn" onclick="startGenerate()" disabled>
+          <span class="generate-btn-icon">✨</span>
+          <span>生成</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     下载弹窗
+     ============================================================ -->
+<div class="download-modal-overlay" id="downloadModal" onclick="closeDownloadModal(event)">
+  <div class="download-modal" onclick="event.stopPropagation()">
+    <div class="download-modal-icon" id="modalIcon">📥</div>
+    <h3 class="download-modal-title" id="modalTitle">立即下载</h3>
+    <p class="download-modal-desc" id="modalDesc">当前未配置远程存储，文件仅临时保存。请立即下载以免丢失。</p>
+    <div class="download-modal-actions" id="modalActions">
+      <button class="download-modal-btn primary" onclick="closeDownloadModal()">下载文件</button>
+      <button class="download-modal-btn ghost" onclick="closeDownloadModal()">稍后再说</button>
+    </div>
+  </div>
+</div>
+
+<!-- 保存到存储成功/失败弹窗 -->
+<div class="download-modal-overlay" id="storageModal" onclick="closeStorageModal(event)">
+  <div class="download-modal" onclick="event.stopPropagation()">
+    <div class="download-modal-icon" id="storageModalIcon">☁️</div>
+    <h3 class="download-modal-title" id="storageModalTitle">保存到存储</h3>
+    <p class="download-modal-desc" id="storageModalDesc"></p>
+    <div class="download-modal-actions" id="storageModalActions">
+      <button class="download-modal-btn primary" onclick="closeStorageModal()">确定</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================================================
+     JavaScript
+     ============================================================ -->
+<script>
+(function() {
+  'use strict';
+
+  /* ----------------------------------------------------------
+     状态
+     ---------------------------------------------------------- */
+  const state = {
+    currentPage: 'generate',
+    currentAspect: 'landscape',
+    currentDuration: 10,
+    currentModel: 'sora2-landscape-10s',
+    hasStorage: false,          // 模拟：无存储配置
+    currentFilter: 'all',
+    maxConcurrentTasks: 3,      // 最大并发任务数
+    activeTasks: [],            // 当前活跃任务列表（pending/generating）
+    taskIdCounter: 10,          // 任务 ID 计数器（避免和静态卡片冲突）
+    taskTimers: {},             // 存储各任务的计时器
+    countdownTimers: {},        // 存储倒计时计时器
+  };
+
+  /* ----------------------------------------------------------
+     页面切换
+     ---------------------------------------------------------- */
+  window.switchPage = function(page) {
+    state.currentPage = page;
+
+    // 更新 Tab 高亮
+    document.querySelectorAll('.nav-tab').forEach(function(tab) {
+      tab.classList.toggle('active', tab.dataset.page === page);
+    });
+
+    // 切换页面
+    document.querySelectorAll('.page').forEach(function(p) {
+      p.classList.remove('active');
+    });
+    document.getElementById('page-' + page).classList.add('active');
+
+    // 生成页才显示创作栏
+    var creatorBar = document.getElementById('creatorBarWrapper');
+    creatorBar.style.display = page === 'generate' ? '' : 'none';
+  };
+
+  /* ----------------------------------------------------------
+     模型选择变化
+     ---------------------------------------------------------- */
+  window.onModelChange = function() {
+    var sel = document.getElementById('modelSelect');
+    state.currentModel = sel.value;
+
+    // 图片模型隐藏时长和方向选择
+    var isImage = state.currentModel.startsWith('gpt-image');
+    var durationBtns = document.querySelectorAll('.tool-btn[data-duration]');
+    var aspectBtns = document.querySelectorAll('.tool-btn[data-aspect]');
+
+    durationBtns.forEach(function(btn) {
+      btn.style.display = isImage ? 'none' : '';
+    });
+
+    // 方向选择在图片模式下依然可用但改label
+    aspectBtns.forEach(function(btn) {
+      btn.style.display = isImage ? 'none' : '';
+    });
+
+    // 隐藏对应的分隔线
+    var dividers = document.querySelectorAll('.tool-divider');
+    if (isImage) {
+      dividers.forEach(function(d) { d.style.display = 'none'; });
+      // 只显示最后一个（上传按钮前的）
+      if (dividers.length > 0) {
+        dividers[dividers.length - 1].style.display = '';
+      }
+    } else {
+      dividers.forEach(function(d) { d.style.display = ''; });
+    }
+  };
+
+  /* ----------------------------------------------------------
+     方向选择
+     ---------------------------------------------------------- */
+  window.selectAspect = function(btn, aspect) {
+    state.currentAspect = aspect;
+    document.querySelectorAll('.tool-btn[data-aspect]').forEach(function(b) {
+      b.classList.remove('active');
+    });
+    btn.classList.add('active');
+  };
+
+  /* ----------------------------------------------------------
+     时长选择
+     ---------------------------------------------------------- */
+  window.selectDuration = function(btn, duration) {
+    state.currentDuration = duration;
+    document.querySelectorAll('.tool-btn[data-duration]').forEach(function(b) {
+      b.classList.remove('active');
+    });
+    btn.classList.add('active');
+  };
+
+  /* ----------------------------------------------------------
+     填充示例提示词
+     ---------------------------------------------------------- */
+  window.fillPrompt = function(el) {
+    var input = document.getElementById('promptInput');
+    input.value = el.textContent.trim();
+    autoResize(input);
+    updateGenerateBtn();
+    input.focus();
+  };
+
+  /* ----------------------------------------------------------
+     自动调整输入框高度
+     ---------------------------------------------------------- */
+  window.autoResize = function(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  };
+
+  /* ----------------------------------------------------------
+     更新生成按钮状态
+     ---------------------------------------------------------- */
+  window.updateGenerateBtn = function() {
+    var btn = document.getElementById('generateBtn');
+    var input = document.getElementById('promptInput');
+    var maxReached = state.activeTasks.length >= state.maxConcurrentTasks;
+
+    if (maxReached) {
+      btn.disabled = true;
+      btn.classList.add('max-reached');
+      btn.setAttribute('data-tooltip', '请等待当前任务完成');
+      btn.classList.add('tooltip');
+    } else {
+      btn.disabled = !input.value.trim();
+      btn.classList.remove('max-reached');
+      btn.removeAttribute('data-tooltip');
+      btn.classList.remove('tooltip');
+    }
+  };
+
+  /* ----------------------------------------------------------
+     上传触发
+     ---------------------------------------------------------- */
+  window.triggerUpload = function() {
+    document.getElementById('fileUpload').click();
+  };
+
+  window.handleFileUpload = function(input) {
+    if (input.files && input.files[0]) {
+      // 模拟：显示文件名
+      var fileName = input.files[0].name;
+      console.log('已选择参考图:', fileName);
+    }
+  };
+
+  /* ----------------------------------------------------------
+     开始生成（模拟）
+     ---------------------------------------------------------- */
+  window.startGenerate = function() {
+    var input = document.getElementById('promptInput');
+    var prompt = input.value.trim();
+    if (!prompt) return;
+
+    // 检查并发限制
+    if (state.activeTasks.length >= state.maxConcurrentTasks) return;
+
+    // 隐藏欢迎区域和示例提示词
+    var welcome = document.getElementById('welcomeSection');
+    var examples = document.getElementById('examplePrompts');
+    welcome.style.display = 'none';
+    examples.style.display = 'none';
+
+    // 生成唯一任务ID
+    var taskId = 'task-' + (++state.taskIdCounter);
+    var modelTag = state.currentModel;
+
+    // 创建新任务卡片（立即显示 pending 状态）
+    var taskCards = document.getElementById('taskCards');
+    var card = document.createElement('div');
+    card.className = 'task-card fade-in';
+    card.id = taskId;
+    card.dataset.prompt = prompt;
+    card.dataset.model = modelTag;
+
+    card.innerHTML = ''
+      + '<div class="task-card-header">'
+      +   '<div class="task-status">'
+      +     '<span class="task-status-dot generating"></span>'
+      +     '<span class="task-status-label generating">生成中</span>'
+      +   '</div>'
+      +   '<div style="display:flex;align-items:center;gap:8px;">'
+      +     '<span class="task-model-tag">' + escapeHtml(modelTag) + '</span>'
+      +     '<button class="task-cancel-btn" onclick="cancelTask(\'' + taskId + '\')">✕ 取消</button>'
+      +   '</div>'
+      + '</div>'
+      + '<div class="task-prompt">' + escapeHtml(prompt) + '</div>'
+      + '<div class="task-progress-wrapper">'
+      +   '<div class="task-progress-bar">'
+      +     '<div class="task-progress-fill generating" style="width: 0%"></div>'
+      +   '</div>'
+      +   '<div class="task-progress-info">'
+      +     '<span>已等待 0:00 · 正在启动...</span>'
+      +     '<span></span>'
+      +   '</div>'
+      + '</div>';
+
+    taskCards.insertBefore(card, taskCards.firstChild);
+
+    // 注册活跃任务
+    state.activeTasks.push(taskId);
+    updateActiveTasksUI();
+
+    // 清空输入框
+    input.value = '';
+    autoResize(input);
+    updateGenerateBtn();
+
+    // 模拟异步生成进度
+    simulateProgress(card, taskId);
+  };
+
+  function simulateProgress(card, taskId) {
+    var progress = 0;
+    var fill = card.querySelector('.task-progress-fill');
+    var info = card.querySelector('.task-progress-info');
+    var statusDot = card.querySelector('.task-status-dot');
+    var statusLabel = card.querySelector('.task-status-label');
+    var startTime = Date.now();
+
+    var timer = setInterval(function() {
+      // 检查任务是否已被取消
+      if (!document.getElementById(taskId) || card.classList.contains('cancelled')) {
+        clearInterval(timer);
+        return;
+      }
+
+      progress += Math.random() * 8 + 2;
+      var elapsed = Date.now() - startTime;
+      var elapsedStr = formatElapsed(elapsed);
+
+      if (progress >= 100) {
+        progress = 100;
+        clearInterval(timer);
+        delete state.taskTimers[taskId];
+
+        fill.style.width = '100%';
+        fill.className = 'task-progress-fill completed';
+        statusDot.className = 'task-status-dot completed';
+        statusLabel.className = 'task-status-label completed';
+        statusLabel.textContent = '已完成';
+        info.innerHTML = '<span>生成完成 · 耗时 ' + elapsedStr + '</span><span></span>';
+
+        // 移除取消按钮
+        var cancelBtn = card.querySelector('.task-cancel-btn');
+        if (cancelBtn) cancelBtn.remove();
+
+        // 添加预览
+        var gradients = ['gradient-bg-1','gradient-bg-2','gradient-bg-3','gradient-bg-4','gradient-bg-5'];
+        var randomGradient = gradients[Math.floor(Math.random() * gradients.length)];
+
+        var preview = document.createElement('div');
+        preview.className = 'task-preview';
+        preview.innerHTML = '<div class="task-preview-placeholder ' + randomGradient + '">🎬</div>';
+        card.appendChild(preview);
+
+        // 根据存储状态显示不同按钮
+        var actions = document.createElement('div');
+        actions.className = 'task-actions';
+
+        if (state.hasStorage) {
+          // S3 可用 → 自动保存成功：绿色已保存标签 + 本地下载
+          actions.innerHTML = ''
+            + '<span class="saved-badge">✓ 已保存到云端</span>'
+            + '<button class="task-action-btn primary" onclick="triggerLocalDownload()">📥 本地下载</button>';
+        } else {
+          // S3 不可用 → upstream 记录：本地下载 + 保存到存储(禁用) + 倒计时
+          var countdownId = 'cd-' + taskId;
+          actions.innerHTML = ''
+            + '<button class="task-action-btn primary" onclick="triggerLocalDownload()">📥 本地下载</button>'
+            + '<button class="task-action-btn save-storage disabled" title="管理员未开通云存储" onclick="saveToStorage()">☁️ 保存到存储</button>'
+            + '<span class="countdown-text" id="' + countdownId + '">⏱ 剩余 15:00 可下载</span>';
+          card.appendChild(actions);
+
+          // 添加倒计时进度条
+          var cdBarWrapper = document.createElement('div');
+          cdBarWrapper.className = 'countdown-bar-wrapper';
+          cdBarWrapper.id = 'cdbar-' + taskId;
+          cdBarWrapper.innerHTML = '<div class="countdown-bar"><div class="countdown-bar-fill" style="width: 100%"></div></div>';
+          card.appendChild(cdBarWrapper);
+
+          // 启动倒计时
+          startCountdown(taskId, 15 * 60);
+        }
+
+        if (!actions.parentNode) {
+          card.appendChild(actions);
+        }
+
+        // 从活跃任务中移除
+        removeActiveTask(taskId);
+
+      } else {
+        fill.style.width = progress.toFixed(0) + '%';
+        var estRemaining = Math.ceil((100 - progress) / 8 * 0.5);
+        var estStr = estRemaining > 60 ? Math.ceil(estRemaining / 60) + ' 分钟' : estRemaining + ' 秒';
+        info.innerHTML = '<span>已等待 ' + elapsedStr + ' · 预计剩余 ' + estStr + '</span><span></span>';
+      }
+    }, 500);
+
+    state.taskTimers[taskId] = timer;
+  }
+
+  /* ----------------------------------------------------------
+     格式化已等待时间
+     ---------------------------------------------------------- */
+  function formatElapsed(ms) {
+    var totalSec = Math.floor(ms / 1000);
+    var min = Math.floor(totalSec / 60);
+    var sec = totalSec % 60;
+    return min + ':' + (sec < 10 ? '0' : '') + sec;
+  }
+
+  /* ----------------------------------------------------------
+     15 分钟倒计时
+     ---------------------------------------------------------- */
+  function startCountdown(taskId, totalSeconds) {
+    var remaining = totalSeconds;
+
+    var timer = setInterval(function() {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(timer);
+        delete state.countdownTimers[taskId];
+
+        // 过期处理
+        var cdEl = document.getElementById('cd-' + taskId);
+        if (cdEl) cdEl.textContent = '⏱ 已过期，无法下载';
+
+        var barWrapper = document.getElementById('cdbar-' + taskId);
+        if (barWrapper) {
+          var fill = barWrapper.querySelector('.countdown-bar-fill');
+          if (fill) fill.style.width = '0%';
+        }
+        return;
+      }
+
+      var min = Math.floor(remaining / 60);
+      var sec = remaining % 60;
+      var timeStr = min + ':' + (sec < 10 ? '0' : '') + sec;
+      var percent = (remaining / totalSeconds * 100).toFixed(1);
+
+      var cdEl = document.getElementById('cd-' + taskId);
+      if (cdEl) cdEl.textContent = '⏱ 剩余 ' + timeStr + ' 可下载';
+
+      var barWrapper = document.getElementById('cdbar-' + taskId);
+      if (barWrapper) {
+        var fill = barWrapper.querySelector('.countdown-bar-fill');
+        if (fill) fill.style.width = percent + '%';
+      }
+
+      // 小于 2 分钟时卡片边框变红
+      var card = document.getElementById(taskId);
+      if (card) {
+        if (remaining < 120) {
+          card.classList.add('countdown-warning');
+        } else {
+          card.classList.remove('countdown-warning');
+        }
+      }
+    }, 1000);
+
+    state.countdownTimers[taskId] = timer;
+  }
+
+  /* ----------------------------------------------------------
+     取消任务
+     ---------------------------------------------------------- */
+  window.cancelTask = function(taskId) {
+    var card = document.getElementById(taskId);
+    if (!card) return;
+
+    // 清除进度计时器
+    if (state.taskTimers[taskId]) {
+      clearInterval(state.taskTimers[taskId]);
+      delete state.taskTimers[taskId];
+    }
+
+    // 更新卡片样式为 cancelled
+    card.classList.add('cancelled');
+    var statusDot = card.querySelector('.task-status-dot');
+    var statusLabel = card.querySelector('.task-status-label');
+    if (statusDot) statusDot.className = 'task-status-dot cancelled';
+    if (statusLabel) {
+      statusLabel.className = 'task-status-label cancelled';
+      statusLabel.textContent = '已取消';
+    }
+
+    // 移除取消按钮
+    var cancelBtn = card.querySelector('.task-cancel-btn');
+    if (cancelBtn) cancelBtn.remove();
+
+    // 移除进度条
+    var progressWrapper = card.querySelector('.task-progress-wrapper');
+    if (progressWrapper) progressWrapper.remove();
+
+    // 添加重新生成和删除按钮
+    var existingActions = card.querySelector('.task-actions');
+    if (existingActions) existingActions.remove();
+
+    var actions = document.createElement('div');
+    actions.className = 'task-actions';
+    actions.innerHTML = ''
+      + '<button class="task-action-btn primary" onclick="retryTask(\'' + taskId + '\')">🔄 重新生成</button>'
+      + '<button class="task-action-btn secondary" onclick="deleteTask(\'' + taskId + '\')">🗑 删除</button>';
+    card.appendChild(actions);
+
+    // 从活跃任务中移除
+    removeActiveTask(taskId);
+  };
+
+  /* ----------------------------------------------------------
+     重试任务（一键以相同参数重新生成）
+     ---------------------------------------------------------- */
+  window.retryTask = function(taskId) {
+    var card = document.getElementById(taskId);
+    if (!card) return;
+
+    var prompt = card.dataset.prompt || card.querySelector('.task-prompt').textContent;
+    var model = card.dataset.model || state.currentModel;
+
+    // 删除旧卡片
+    card.remove();
+
+    // 设置模型
+    var modelSelect = document.getElementById('modelSelect');
+    if (modelSelect) modelSelect.value = model;
+    state.currentModel = model;
+
+    // 填入 prompt 并触发生成
+    var input = document.getElementById('promptInput');
+    input.value = prompt;
+    autoResize(input);
+    startGenerate();
+  };
+
+  /* ----------------------------------------------------------
+     编辑后重试（将参数回填到创作栏）
+     ---------------------------------------------------------- */
+  window.editAndRetry = function(taskId) {
+    var card = document.getElementById(taskId);
+    if (!card) return;
+
+    var prompt = card.dataset.prompt || card.querySelector('.task-prompt').textContent;
+    var model = card.dataset.model || state.currentModel;
+
+    // 设置模型
+    var modelSelect = document.getElementById('modelSelect');
+    if (modelSelect) modelSelect.value = model;
+    state.currentModel = model;
+
+    // 回填 prompt
+    var input = document.getElementById('promptInput');
+    input.value = prompt;
+    autoResize(input);
+    updateGenerateBtn();
+    input.focus();
+
+    // 滚动到底部创作栏
+    input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  /* ----------------------------------------------------------
+     删除任务卡片
+     ---------------------------------------------------------- */
+  window.deleteTask = function(taskId) {
+    var card = document.getElementById(taskId);
+    if (!card) return;
+
+    // 清除计时器
+    if (state.taskTimers[taskId]) {
+      clearInterval(state.taskTimers[taskId]);
+      delete state.taskTimers[taskId];
+    }
+    if (state.countdownTimers[taskId]) {
+      clearInterval(state.countdownTimers[taskId]);
+      delete state.countdownTimers[taskId];
+    }
+
+    // 动画删除
+    card.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+    card.style.opacity = '0';
+    card.style.transform = 'translateY(-10px)';
+    setTimeout(function() {
+      card.remove();
+    }, 300);
+
+    // 从活跃任务中移除
+    removeActiveTask(taskId);
+  };
+
+  /* ----------------------------------------------------------
+     活跃任务 UI 更新
+     ---------------------------------------------------------- */
+  function removeActiveTask(taskId) {
+    var idx = state.activeTasks.indexOf(taskId);
+    if (idx > -1) state.activeTasks.splice(idx, 1);
+    updateActiveTasksUI();
+    updateGenerateBtn();
+    updateQueueIndicator();
+  }
+
+  function updateActiveTasksUI() {
+    var label = document.getElementById('activeTasksLabel');
+    var text = document.getElementById('activeTasksText');
+    var count = state.activeTasks.length;
+
+    if (count > 0) {
+      label.style.display = '';
+      text.textContent = '正在生成 ' + count + '/' + state.maxConcurrentTasks;
+    } else {
+      label.style.display = 'none';
+    }
+  }
+
+  function updateQueueIndicator() {
+    var count = state.activeTasks.length;
+    var dot = document.querySelector('.queue-dot');
+    var text = document.querySelector('.queue-indicator span:last-child');
+
+    if (count > 0) {
+      dot.classList.add('busy');
+      text.textContent = count + ' 个任务';
+    } else {
+      dot.classList.remove('busy');
+      text.textContent = '空闲';
+    }
+  }
+
+  /* ----------------------------------------------------------
+     配额进度条颜色更新
+     ---------------------------------------------------------- */
+  function updateQuotaBarColor(usagePercent) {
+    var fill = document.getElementById('quotaBarFill');
+    var text = document.getElementById('quotaText');
+    if (!fill || !text) return;
+
+    fill.classList.remove('warning', 'danger');
+    text.classList.remove('warning', 'danger');
+
+    if (usagePercent >= 100) {
+      fill.classList.add('danger');
+      text.classList.add('danger');
+    } else if (usagePercent >= 90) {
+      fill.classList.add('warning');
+      text.classList.add('warning');
+    }
+  }
+
+  /* ----------------------------------------------------------
+     作品库筛选
+     ---------------------------------------------------------- */
+  window.filterGallery = function(filter, btn) {
+    state.currentFilter = filter;
+
+    // 更新筛选按钮
+    document.querySelectorAll('.gallery-filter').forEach(function(f) {
+      f.classList.remove('active');
+    });
+    btn.classList.add('active');
+
+    // 筛选卡片
+    var cards = document.querySelectorAll('.gallery-card');
+    var visibleCount = 0;
+
+    cards.forEach(function(card) {
+      var type = card.dataset.type;
+      var show = (filter === 'all') || (type === filter);
+      card.style.display = show ? '' : 'none';
+      if (show) visibleCount++;
+    });
+
+    // 更新计数
+    document.getElementById('galleryCount').textContent = '共 ' + visibleCount + ' 个作品';
+
+    // 空状态
+    var emptyEl = document.getElementById('galleryEmpty');
+    var gridEl = document.getElementById('galleryGrid');
+    if (visibleCount === 0) {
+      emptyEl.classList.add('show');
+      gridEl.style.display = 'none';
+    } else {
+      emptyEl.classList.remove('show');
+      gridEl.style.display = '';
+    }
+  };
+
+  /* ----------------------------------------------------------
+     本地下载
+     ---------------------------------------------------------- */
+  window.triggerLocalDownload = function() {
+    // 模拟触发浏览器下载
+    document.getElementById('modalIcon').textContent = '📥';
+    document.getElementById('modalTitle').textContent = '正在下载';
+    document.getElementById('modalDesc').textContent = '文件已开始下载到本地，请在浏览器下载栏查看进度。';
+    document.getElementById('modalActions').innerHTML =
+      '<button class="download-modal-btn primary" onclick="closeDownloadModal()">确定</button>';
+    document.getElementById('downloadModal').classList.add('show');
+  };
+
+  window.showDownloadModal = function() {
+    document.getElementById('modalIcon').textContent = '📥';
+    document.getElementById('modalTitle').textContent = '立即下载';
+    document.getElementById('modalDesc').textContent = '当前未配置远程存储，文件仅临时保存。请立即下载以免丢失。';
+    document.getElementById('modalActions').innerHTML =
+      '<button class="download-modal-btn primary" onclick="closeDownloadModal()">下载文件</button>' +
+      '<button class="download-modal-btn ghost" onclick="closeDownloadModal()">稍后再说</button>';
+    document.getElementById('downloadModal').classList.add('show');
+  };
+
+  window.closeDownloadModal = function(e) {
+    if (e && e.target !== e.currentTarget) return;
+    document.getElementById('downloadModal').classList.remove('show');
+  };
+
+  /* ----------------------------------------------------------
+     保存到存储
+     ---------------------------------------------------------- */
+  window.saveToStorage = function(btn) {
+    if (!state.hasStorage) {
+      // 管理员未开通存储，显示提示
+      document.getElementById('storageModalIcon').textContent = '🔒';
+      document.getElementById('storageModalTitle').textContent = '存储未开通';
+      document.getElementById('storageModalDesc').textContent = '管理员尚未配置 S3 存储服务。请联系管理员在系统设置中开通 Sora S3 存储，开通后即可将作品永久保存到云端。';
+      document.getElementById('storageModalActions').innerHTML =
+        '<button class="download-modal-btn primary" onclick="closeStorageModal()">知道了</button>';
+      document.getElementById('storageModal').classList.add('show');
+      return;
+    }
+
+    // 模拟保存到存储
+    var originalText = btn.innerHTML;
+    btn.innerHTML = '⏳ 保存中...';
+    btn.classList.add('disabled');
+
+    setTimeout(function() {
+      btn.innerHTML = '✅ 已保存';
+      btn.classList.add('disabled');
+
+      // 显示成功弹窗
+      document.getElementById('storageModalIcon').textContent = '✅';
+      document.getElementById('storageModalTitle').textContent = '已保存到存储';
+      document.getElementById('storageModalDesc').textContent = '文件已成功上传到 S3 存储，可在作品库中永久访问。已占用 42.5 MB 存储空间。';
+      document.getElementById('storageModalActions').innerHTML =
+        '<button class="download-modal-btn primary" onclick="closeStorageModal()">确定</button>';
+      document.getElementById('storageModal').classList.add('show');
+    }, 1500);
+  };
+
+  window.closeStorageModal = function(e) {
+    if (e && e.target !== e.currentTarget) return;
+    document.getElementById('storageModal').classList.remove('show');
+  };
+
+  /* ----------------------------------------------------------
+     队列面板（简单切换）
+     ---------------------------------------------------------- */
+  window.toggleQueuePanel = function() {
+    // 简单提示
+    console.log('队列面板切换');
+  };
+
+  /* ----------------------------------------------------------
+     HTML 转义
+     ---------------------------------------------------------- */
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  /* ----------------------------------------------------------
+     初始化
+     ---------------------------------------------------------- */
+  function init() {
+    // 无存储模式提示
+    if (!state.hasStorage) {
+      var badge = document.getElementById('noStorageBadge');
+      badge.style.display = '';
+
+      // task-3 无存储：显示倒计时和保存按钮（禁用），隐藏已保存标签
+      var task3SavedBadge = document.getElementById('task3SavedBadge');
+      if (task3SavedBadge) task3SavedBadge.style.display = 'none';
+      var task3SaveBtn = document.getElementById('task3SaveBtn');
+      if (task3SaveBtn) {
+        task3SaveBtn.style.display = '';
+        task3SaveBtn.classList.add('disabled');
+        task3SaveBtn.title = '管理员未开通云存储';
+      }
+      var task3Countdown = document.getElementById('task3Countdown');
+      if (task3Countdown) task3Countdown.style.display = '';
+      var task3CountdownBar = document.getElementById('task3CountdownBar');
+      if (task3CountdownBar) task3CountdownBar.style.display = '';
+
+      // 为静态 task-3 启动倒计时（模拟已过去部分时间）
+      startCountdown('task-3', 11 * 60 + 28);
+
+      // 3秒后显示一次 toast
+      setTimeout(function() {
+        var toast = document.getElementById('noStorageToast');
+        toast.classList.add('show');
+        setTimeout(function() {
+          toast.classList.remove('show');
+        }, 5000);
+      }, 1500);
+    } else {
+      document.getElementById('noStorageBadge').style.display = 'none';
+
+      // task-3 有存储（自动保存成功）：显示已保存标签，隐藏保存按钮和倒计时
+      var task3SavedBadge = document.getElementById('task3SavedBadge');
+      if (task3SavedBadge) task3SavedBadge.style.display = '';
+      var task3SaveBtn = document.getElementById('task3SaveBtn');
+      if (task3SaveBtn) task3SaveBtn.style.display = 'none';
+      var task3Countdown = document.getElementById('task3Countdown');
+      if (task3Countdown) task3Countdown.style.display = 'none';
+      var task3CountdownBar = document.getElementById('task3CountdownBar');
+      if (task3CountdownBar) task3CountdownBar.style.display = 'none';
+    }
+
+    // 配额进度条颜色
+    updateQuotaBarColor(92);
+
+    // 模拟第一个任务的进度动画
+    simulateExistingTask();
+
+    // 键盘快捷键
+    document.addEventListener('keydown', function(e) {
+      // Ctrl/Cmd + Enter 触发生成
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        var input = document.getElementById('promptInput');
+        if (document.activeElement === input && input.value.trim()) {
+          e.preventDefault();
+          startGenerate();
+        }
+      }
+      // ESC 关闭弹窗
+      if (e.key === 'Escape') {
+        closeDownloadModal();
+        closeStorageModal();
+      }
+    });
+  }
+
+  function simulateExistingTask() {
+    var card = document.getElementById('task-1');
+    if (!card) return;
+
+    // 注册为活跃任务
+    state.activeTasks.push('task-1');
+    state.activeTasks.push('task-2');
+    updateActiveTasksUI();
+    updateQueueIndicator();
+
+    var fill = card.querySelector('.task-progress-fill');
+    var info = card.querySelector('.task-progress-info');
+    var statusDot = card.querySelector('.task-status-dot');
+    var statusLabel = card.querySelector('.task-status-label');
+    var progress = 65;
+    var elapsedSec = 222; // 模拟已等待 3:42
+
+    var timer = setInterval(function() {
+      // 检查是否被取消
+      if (card.classList.contains('cancelled')) {
+        clearInterval(timer);
+        return;
+      }
+
+      progress += Math.random() * 5 + 1;
+      elapsedSec += 1;
+      var elapsedStr = Math.floor(elapsedSec / 60) + ':' + (elapsedSec % 60 < 10 ? '0' : '') + (elapsedSec % 60);
+
+      if (progress >= 100) {
+        progress = 100;
+        clearInterval(timer);
+
+        fill.style.width = '100%';
+        fill.className = 'task-progress-fill completed';
+        statusDot.className = 'task-status-dot completed';
+        statusLabel.className = 'task-status-label completed';
+        statusLabel.textContent = '已完成';
+        info.innerHTML = '<span>生成完成 · 耗时 ' + elapsedStr + '</span><span></span>';
+
+        // 移除取消按钮
+        var cancelBtn = card.querySelector('.task-cancel-btn');
+        if (cancelBtn) cancelBtn.remove();
+
+        // 添加预览
+        var preview = document.createElement('div');
+        preview.className = 'task-preview';
+        preview.innerHTML = '<div class="task-preview-placeholder gradient-bg-3">🎬</div>';
+        card.appendChild(preview);
+
+        // 根据存储状态显示按钮
+        var actions = document.createElement('div');
+        actions.className = 'task-actions';
+
+        if (state.hasStorage) {
+          actions.innerHTML = ''
+            + '<span class="saved-badge">✓ 已保存到云端</span>'
+            + '<button class="task-action-btn primary" onclick="triggerLocalDownload()">📥 本地下载</button>';
+        } else {
+          actions.innerHTML = ''
+            + '<button class="task-action-btn primary" onclick="triggerLocalDownload()">📥 本地下载</button>'
+            + '<button class="task-action-btn save-storage disabled" title="管理员未开通云存储" onclick="saveToStorage()">☁️ 保存到存储</button>'
+            + '<span class="countdown-text" id="cd-task-1">⏱ 剩余 15:00 可下载</span>';
+          card.appendChild(actions);
+
+          var cdBarWrapper = document.createElement('div');
+          cdBarWrapper.className = 'countdown-bar-wrapper';
+          cdBarWrapper.id = 'cdbar-task-1';
+          cdBarWrapper.innerHTML = '<div class="countdown-bar"><div class="countdown-bar-fill" style="width: 100%"></div></div>';
+          card.appendChild(cdBarWrapper);
+
+          startCountdown('task-1', 15 * 60);
+        }
+
+        if (!actions.parentNode) {
+          card.appendChild(actions);
+        }
+
+        // 从活跃任务移除
+        removeActiveTask('task-1');
+
+        // 然后模拟第二个任务开始
+        setTimeout(function() { simulateQueuedTask(); }, 1000);
+
+      } else {
+        fill.style.width = progress.toFixed(0) + '%';
+        var estRemaining = Math.ceil((100 - progress) / 4);
+        var estStr = estRemaining > 60 ? Math.ceil(estRemaining / 60) + ' 分钟' : estRemaining + ' 秒';
+        info.innerHTML = '<span>已等待 ' + elapsedStr + ' · 预计剩余 ' + estStr + '</span><span></span>';
+      }
+    }, 800);
+
+    state.taskTimers['task-1'] = timer;
+  }
+
+  function simulateQueuedTask() {
+    var card = document.getElementById('task-2');
+    if (!card || card.classList.contains('cancelled')) return;
+
+    var fill = card.querySelector('.task-progress-fill');
+    var info = card.querySelector('.task-progress-info');
+    var statusDot = card.querySelector('.task-status-dot');
+    var statusLabel = card.querySelector('.task-status-label');
+
+    // 切换为生成中
+    statusDot.className = 'task-status-dot generating';
+    statusLabel.className = 'task-status-label generating';
+    statusLabel.textContent = '生成中';
+
+    var progress = 0;
+    var elapsedSec = 0;
+
+    var timer = setInterval(function() {
+      if (card.classList.contains('cancelled')) {
+        clearInterval(timer);
+        return;
+      }
+
+      progress += Math.random() * 6 + 2;
+      elapsedSec += 1;
+      var elapsedStr = Math.floor(elapsedSec / 60) + ':' + (elapsedSec % 60 < 10 ? '0' : '') + (elapsedSec % 60);
+
+      if (progress >= 100) {
+        progress = 100;
+        clearInterval(timer);
+        delete state.taskTimers['task-2'];
+
+        fill.style.width = '100%';
+        fill.className = 'task-progress-fill completed';
+        statusDot.className = 'task-status-dot completed';
+        statusLabel.className = 'task-status-label completed';
+        statusLabel.textContent = '已完成';
+        info.innerHTML = '<span>生成完成 · 耗时 ' + elapsedStr + '</span><span></span>';
+
+        // 移除取消按钮
+        var cancelBtn = card.querySelector('.task-cancel-btn');
+        if (cancelBtn) cancelBtn.remove();
+
+        var preview = document.createElement('div');
+        preview.className = 'task-preview';
+        preview.innerHTML = '<div class="task-preview-placeholder gradient-bg-5">🎬</div>';
+        card.appendChild(preview);
+
+        // 根据存储状态显示按钮
+        var actions = document.createElement('div');
+        actions.className = 'task-actions';
+
+        if (state.hasStorage) {
+          actions.innerHTML = ''
+            + '<span class="saved-badge">✓ 已保存到云端</span>'
+            + '<button class="task-action-btn primary" onclick="triggerLocalDownload()">📥 本地下载</button>';
+        } else {
+          actions.innerHTML = ''
+            + '<button class="task-action-btn primary" onclick="triggerLocalDownload()">📥 本地下载</button>'
+            + '<button class="task-action-btn save-storage disabled" title="管理员未开通云存储" onclick="saveToStorage()">☁️ 保存到存储</button>'
+            + '<span class="countdown-text" id="cd-task-2">⏱ 剩余 15:00 可下载</span>';
+          card.appendChild(actions);
+
+          var cdBarWrapper = document.createElement('div');
+          cdBarWrapper.className = 'countdown-bar-wrapper';
+          cdBarWrapper.id = 'cdbar-task-2';
+          cdBarWrapper.innerHTML = '<div class="countdown-bar"><div class="countdown-bar-fill" style="width: 100%"></div></div>';
+          card.appendChild(cdBarWrapper);
+
+          startCountdown('task-2', 15 * 60);
+        }
+
+        if (!actions.parentNode) {
+          card.appendChild(actions);
+        }
+
+        // 从活跃任务移除
+        removeActiveTask('task-2');
+
+      } else {
+        fill.style.width = progress.toFixed(0) + '%';
+        fill.className = 'task-progress-fill generating';
+        var estRemaining = Math.ceil((100 - progress) / 5);
+        var estStr = estRemaining > 60 ? Math.ceil(estRemaining / 60) + ' 分钟' : estRemaining + ' 秒';
+        info.innerHTML = '<span>已等待 ' + elapsedStr + ' · 预计剩余 ' + estStr + '</span><span></span>';
+      }
+    }, 600);
+
+    state.taskTimers['task-2'] = timer;
+  }
+
+  // 启动
+  init();
+
+})();
+</script>
+
+</body>
+</html>

@@ -3,8 +3,10 @@
 package response
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -107,11 +109,12 @@ func TestErrorFrom(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name         string
-		err          error
-		wantWritten  bool
-		wantHTTPCode int
-		wantBody     Response
+		name                 string
+		err                  error
+		cancelRequestContext bool
+		wantWritten          bool
+		wantHTTPCode         int
+		wantBody             Response
 	}{
 		{
 			name:        "nil_error",
@@ -184,12 +187,75 @@ func TestErrorFrom(t *testing.T) {
 				Message: errors2.UnknownMessage,
 			},
 		},
+		{
+			name:         "context_canceled_without_request_cancel_remains_500",
+			err:          context.Canceled,
+			wantWritten:  true,
+			wantHTTPCode: http.StatusInternalServerError,
+			wantBody: Response{
+				Code:    http.StatusInternalServerError,
+				Message: errors2.UnknownMessage,
+			},
+		},
+		{
+			name:                 "context_canceled_maps_to_499",
+			err:                  context.Canceled,
+			cancelRequestContext: true,
+			wantWritten:          true,
+			wantHTTPCode:         499,
+			wantBody: Response{
+				Code:    499,
+				Message: "client closed request",
+				Reason:  "CLIENT_CLOSED",
+			},
+		},
+		{
+			name:                 "wrapped_context_canceled_maps_to_499",
+			err:                  fmt.Errorf("query aborted: %w", context.Canceled),
+			cancelRequestContext: true,
+			wantWritten:          true,
+			wantHTTPCode:         499,
+			wantBody: Response{
+				Code:    499,
+				Message: "client closed request",
+				Reason:  "CLIENT_CLOSED",
+			},
+		},
+		{
+			name:         "deadline_exceeded_without_request_cancel_remains_500",
+			err:          context.DeadlineExceeded,
+			wantWritten:  true,
+			wantHTTPCode: http.StatusInternalServerError,
+			wantBody: Response{
+				Code:    http.StatusInternalServerError,
+				Message: errors2.UnknownMessage,
+			},
+		},
+		{
+			name:                 "deadline_exceeded_with_request_canceled_maps_to_499",
+			err:                  context.DeadlineExceeded,
+			cancelRequestContext: true,
+			wantWritten:          true,
+			wantHTTPCode:         499,
+			wantBody: Response{
+				Code:    499,
+				Message: "client closed request",
+				Reason:  "CLIENT_CLOSED",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			if tt.cancelRequestContext {
+				ctx, cancel := context.WithCancel(req.Context())
+				cancel()
+				req = req.WithContext(ctx)
+			}
+			c.Request = req
 
 			written := ErrorFrom(c, tt.err)
 			require.Equal(t, tt.wantWritten, written)
