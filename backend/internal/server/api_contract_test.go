@@ -779,6 +779,10 @@ func (r *stubUserRepo) RemoveGroupFromAllowedGroups(ctx context.Context, groupID
 	return 0, errors.New("not implemented")
 }
 
+func (r *stubUserRepo) AddGroupToAllowedGroups(ctx context.Context, userID int64, groupID int64) error {
+	return errors.New("not implemented")
+}
+
 func (r *stubUserRepo) UpdateTotpSecret(ctx context.Context, userID int64, encryptedSecret *string) error {
 	return errors.New("not implemented")
 }
