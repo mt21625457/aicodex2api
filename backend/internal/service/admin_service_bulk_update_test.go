@@ -12,19 +12,21 @@ import (
 
 type accountRepoStubForBulkUpdate struct {
 	accountRepoStub
-	bulkUpdateErr    error
-	bulkUpdateIDs    []int64
-	bindGroupErrByID map[int64]error
-	bindGroupsCalls  []int64
-	getByIDsAccounts []*Account
-	getByIDsErr      error
-	getByIDsCalled   bool
-	getByIDsIDs      []int64
-	getByIDAccounts  map[int64]*Account
-	getByIDErrByID   map[int64]error
-	getByIDCalled    []int64
-	listByGroupData  map[int64][]Account
-	listByGroupErr   map[int64]error
+	bulkUpdateErr     error
+	bulkUpdateIDs     []int64
+	bulkUpdatePayload AccountBulkUpdate
+	bindGroupErrByID  map[int64]error
+	bindGroupsCalls   []int64
+	getByIDsAccounts  []*Account
+	getByIDsErr       error
+	getByIDsCalled    bool
+	getByIDsIDs       []int64
+	getByIDAccounts   map[int64]*Account
+	getByIDErrByID    map[int64]error
+	getByIDCalled     []int64
+	listByGroupData   map[int64][]Account
+	listByGroupErr    map[int64]error
+	listByGroupCalls  []int64
 }
 
 func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
@@ -65,6 +67,7 @@ func (s *accountRepoStubForBulkUpdate) GetByID(_ context.Context, id int64) (*Ac
 }
 
 func (s *accountRepoStubForBulkUpdate) ListByGroup(_ context.Context, groupID int64) ([]Account, error) {
+	s.listByGroupCalls = append(s.listByGroupCalls, groupID)
 	if err, ok := s.listByGroupErr[groupID]; ok {
 		return nil, err
 	}
@@ -162,6 +165,78 @@ func TestAdminService_BulkUpdateAccounts_MixedChannelPreCheckBlocksOnExistingCon
 	input := &BulkUpdateAccountsInput{
 		AccountIDs: []int64{1},
 		GroupIDs:   &groupIDs,
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.Equal(t, 1, result.Failed)
+	require.ElementsMatch(t, []int64{1}, result.SuccessIDs)
+	require.ElementsMatch(t, []int64{2}, result.FailedIDs)
+	require.Len(t, result.Results, 2)
+	require.Contains(t, result.Results[1].Error, "mixed channel")
+	require.Equal(t, []int64{1}, repo.bindGroupsCalls)
+}
+
+func TestAdminService_BulkUpdateAccounts_MixedChannelCheckPreloadsGroupsOnce(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: 1, Platform: PlatformAnthropic},
+			{ID: 2, Platform: PlatformAnthropic},
+			{ID: 3, Platform: PlatformAnthropic},
+		},
+		listByGroupData: map[int64][]Account{
+			10: {{ID: 100, Platform: PlatformAnthropic}},
+		},
+	}
+	svc := &adminServiceImpl{
+		accountRepo: repo,
+		groupRepo:   &groupRepoStubForAdmin{getByID: &Group{ID: 10, Name: "g10"}},
+	}
+
+	groupIDs := []int64{10}
+	input := &BulkUpdateAccountsInput{
+		AccountIDs:            []int64{1, 2, 3},
+		GroupIDs:              &groupIDs,
+		SkipMixedChannelCheck: false,
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, 3, result.Success)
+	require.Len(t, repo.listByGroupCalls, 1)
+	require.Equal(t, int64(10), repo.listByGroupCalls[0])
+}
+
+func TestAdminService_BulkUpdateAccounts_ForwardsAutoPauseOnExpired(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	autoPause := true
+	input := &BulkUpdateAccountsInput{
+		AccountIDs:         []int64{101},
+		AutoPauseOnExpired: &autoPause,
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.NotNil(t, repo.bulkUpdatePayload.AutoPauseOnExpired)
+	require.True(t, *repo.bulkUpdatePayload.AutoPauseOnExpired)
+}
+
+func TestAdminService_BulkUpdateAccounts_OpenAIScopedExtraRejectsMixedTypes(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+			{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	input := &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Extra:      map[string]any{"openai_passthrough": true},
 	}
 
 	result, err := svc.BulkUpdateAccounts(context.Background(), input)

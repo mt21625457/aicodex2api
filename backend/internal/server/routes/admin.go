@@ -26,6 +26,9 @@ func RegisterAdminRoutes(
 		// 分组管理
 		registerGroupRoutes(admin, h)
 
+		// API Key 管理
+		registerAPIKeyRoutes(admin, h)
+
 		// 账号管理
 		registerAccountRoutes(admin, h)
 
@@ -224,6 +227,13 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.DELETE("/:id", h.Admin.Group.Delete)
 		groups.GET("/:id/stats", h.Admin.Group.GetStats)
 		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
+	}
+}
+
+func registerAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	apiKeys := admin.Group("/api-keys")
+	{
+		apiKeys.PUT("/:id", h.Admin.APIKey.UpdateGroup)
 	}
 }
 

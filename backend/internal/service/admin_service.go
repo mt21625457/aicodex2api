@@ -1632,6 +1632,8 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// 预加载账号平台信息（混合渠道检查需要）。
 	platformByID := map[int64]string{}
+	groupAccountsByID := map[int64][]Account{}
+	groupNameByID := map[int64]string{}
 	if needMixedChannelCheck {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
@@ -1642,6 +1644,12 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				platformByID[account.ID] = account.Platform
 			}
 		}
+		loadedAccounts, loadedNames, err := s.preloadMixedChannelRiskData(ctx, *input.GroupIDs)
+		if err != nil {
+			return nil, err
+		}
+		groupAccountsByID = loadedAccounts
+		groupNameByID = loadedNames
 	}
 
 	// 预检查混合渠道风险：在任何写操作之前，若发现风险立即返回错误。
@@ -1651,7 +1659,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			if platform == "" {
 				continue
 			}
-			if err := s.checkMixedChannelRisk(ctx, accountID, platform, *input.GroupIDs); err != nil {
+			if err := checkMixedChannelRiskWithPreloaded(accountID, platform, *input.GroupIDs, groupAccountsByID, groupNameByID); err != nil {
 				return nil, err
 			}
 		}
@@ -2367,6 +2375,78 @@ func (s *adminServiceImpl) checkMixedChannelRisk(ctx context.Context, currentAcc
 				groupName := fmt.Sprintf("Group %d", groupID)
 				if group != nil {
 					groupName = group.Name
+				}
+
+				return &MixedChannelError{
+					GroupID:         groupID,
+					GroupName:       groupName,
+					CurrentPlatform: currentPlatform,
+					OtherPlatform:   otherPlatform,
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *adminServiceImpl) preloadMixedChannelRiskData(ctx context.Context, groupIDs []int64) (map[int64][]Account, map[int64]string, error) {
+	accountsByGroup := make(map[int64][]Account)
+	groupNameByID := make(map[int64]string)
+	if len(groupIDs) == 0 {
+		return accountsByGroup, groupNameByID, nil
+	}
+
+	seen := make(map[int64]struct{}, len(groupIDs))
+	for _, groupID := range groupIDs {
+		if groupID <= 0 {
+			continue
+		}
+		if _, ok := seen[groupID]; ok {
+			continue
+		}
+		seen[groupID] = struct{}{}
+
+		accounts, err := s.accountRepo.ListByGroup(ctx, groupID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("get accounts in group %d: %w", groupID, err)
+		}
+		accountsByGroup[groupID] = accounts
+
+		group, err := s.groupRepo.GetByID(ctx, groupID)
+		if err != nil {
+			continue
+		}
+		if group != nil {
+			groupNameByID[groupID] = group.Name
+		}
+	}
+
+	return accountsByGroup, groupNameByID, nil
+}
+
+func checkMixedChannelRiskWithPreloaded(currentAccountID int64, currentAccountPlatform string, groupIDs []int64, accountsByGroup map[int64][]Account, groupNameByID map[int64]string) error {
+	currentPlatform := getAccountPlatform(currentAccountPlatform)
+	if currentPlatform == "" {
+		return nil
+	}
+
+	for _, groupID := range groupIDs {
+		accounts := accountsByGroup[groupID]
+		for _, account := range accounts {
+			if currentAccountID > 0 && account.ID == currentAccountID {
+				continue
+			}
+
+			otherPlatform := getAccountPlatform(account.Platform)
+			if otherPlatform == "" {
+				continue
+			}
+
+			if currentPlatform != otherPlatform {
+				groupName := fmt.Sprintf("Group %d", groupID)
+				if name := strings.TrimSpace(groupNameByID[groupID]); name != "" {
+					groupName = name
 				}
 
 				return &MixedChannelError{
