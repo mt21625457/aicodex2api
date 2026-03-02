@@ -31,14 +31,15 @@ func (s *BillingCacheSuite) TestUserBalance() {
 			},
 		},
 		{
-			name: "deduct_on_nonexistent_is_noop",
+			name: "deduct_on_nonexistent_returns_not_found",
 			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
 				userID := int64(1)
 				balanceKey := fmt.Sprintf("%s%d", billingBalanceKeyPrefix, userID)
 
-				require.NoError(s.T(), cache.DeductUserBalance(ctx, userID, 1), "DeductUserBalance should not error")
+				err := cache.DeductUserBalance(ctx, userID, 1)
+				require.ErrorIs(s.T(), err, service.ErrBalanceCacheNotFound, "DeductUserBalance on non-existent key should return ErrBalanceCacheNotFound")
 
-				_, err := rdb.Get(ctx, balanceKey).Result()
+				_, err = rdb.Get(ctx, balanceKey).Result()
 				require.ErrorIs(s.T(), err, redis.Nil, "expected missing key after deduct on non-existent")
 			},
 		},
