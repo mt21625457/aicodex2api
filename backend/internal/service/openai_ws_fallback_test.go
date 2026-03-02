@@ -121,6 +121,14 @@ func TestClassifyOpenAIWSErrorEvent(t *testing.T) {
 	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
 	require.True(t, recoverable)
 
+	reason, recoverable = classifyOpenAIWSErrorEventFromRaw(
+		"",
+		"invalid_request_error",
+		"No tool call found for function call output with call_id call_abc123.",
+	)
+	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
+	require.True(t, recoverable)
+
 	// reasoning orphaned items should reuse tool_output_not_found recovery path.
 	reason, recoverable = classifyOpenAIWSErrorEventFromRaw(
 		"",
@@ -201,6 +209,12 @@ func TestClassifyOpenAIWSErrorEventFromRaw_AllBranches(t *testing.T) {
 		{
 			name:        "msg_no_tool_output",
 			msgRaw:      "No tool output found for function call call_abc.",
+			wantReason:  openAIWSIngressStageToolOutputNotFound,
+			wantRecover: true,
+		},
+		{
+			name:        "msg_no_tool_call_for_function_call_output",
+			msgRaw:      "No tool call found for function call output with call_id call_abc.",
 			wantReason:  openAIWSIngressStageToolOutputNotFound,
 			wantRecover: true,
 		},
@@ -350,9 +364,21 @@ func TestOpenAIWSRetryContextError(t *testing.T) {
 }
 
 func TestClassifyOpenAIWSReadFallbackReason(t *testing.T) {
+	require.Equal(t, "service_restart", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusServiceRestart}))
+	require.Equal(t, "try_again_later", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusTryAgainLater}))
 	require.Equal(t, "policy_violation", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusPolicyViolation}))
 	require.Equal(t, "message_too_big", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusMessageTooBig}))
 	require.Equal(t, "read_event", classifyOpenAIWSReadFallbackReason(errors.New("io")))
+}
+
+func TestClassifyOpenAIWSIngressReadErrorClass(t *testing.T) {
+	require.Equal(t, "unknown", classifyOpenAIWSIngressReadErrorClass(nil))
+	require.Equal(t, "context_canceled", classifyOpenAIWSIngressReadErrorClass(context.Canceled))
+	require.Equal(t, "deadline_exceeded", classifyOpenAIWSIngressReadErrorClass(context.DeadlineExceeded))
+	require.Equal(t, "service_restart", classifyOpenAIWSIngressReadErrorClass(coderws.CloseError{Code: coderws.StatusServiceRestart}))
+	require.Equal(t, "try_again_later", classifyOpenAIWSIngressReadErrorClass(coderws.CloseError{Code: coderws.StatusTryAgainLater}))
+	require.Equal(t, "upstream_closed", classifyOpenAIWSIngressReadErrorClass(io.EOF))
+	require.Equal(t, "unknown", classifyOpenAIWSIngressReadErrorClass(errors.New("tls handshake timeout")))
 }
 
 func TestOpenAIWSStoreDisabledConnMode(t *testing.T) {
