@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -42,6 +43,8 @@ const (
 
 	// OpenAIParsedRequestBodyKey 缓存 handler 侧已解析的请求体，避免重复解析。
 	OpenAIParsedRequestBodyKey = "openai_parsed_request_body"
+	// OpenAIRequestMetaKey 缓存 handler 已提取的请求元数据，供 Service 层复用。
+	OpenAIRequestMetaKey = "openai_request_meta"
 	// OpenAI WS Mode 失败后的重连次数上限（不含首次尝试）。
 	// 与 Codex 客户端保持一致：失败后最多重连 5 次。
 	openAIWSReconnectRetryLimit = 5
@@ -49,6 +52,13 @@ const (
 	openAIWSRetryBackoffInitialDefault = 120 * time.Millisecond
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
+	openAICodexUsageUpdateConcurrency  = 16
+)
+
+// SSE 热路径包级常量，避免循环内重复分配
+var (
+	sseDataDone              = []byte("[DONE]")
+	sseResponseCompletedMark = []byte(`"response.completed"`)
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -289,17 +299,26 @@ type OpenAIGatewayService struct {
 	toolCorrector       *CodexToolCorrector
 	openaiWSResolver    OpenAIWSProtocolResolver
 
-	openaiWSPoolOnce       sync.Once
+	openaiWSIngressCtxOnce sync.Once
 	openaiWSStateStoreOnce sync.Once
 	openaiSchedulerOnce    sync.Once
-	openaiWSPool           *openAIWSConnPool
+	openaiWSIngressCtxPool *openAIWSIngressContextPool
 	openaiWSStateStore     OpenAIWSStateStore
 	openaiScheduler        OpenAIAccountScheduler
 	openaiAccountStats     *openAIAccountRuntimeStats
 
 	openaiWSFallbackUntil sync.Map // key: int64(accountID), value: time.Time
 	openaiWSRetryMetrics  openAIWSRetryMetrics
+	openaiWSAbortMetrics  openAIWSAbortMetrics
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
+
+	codexUsageUpdateOnce sync.Once
+	codexUsageUpdateSem  chan struct{}
+
+	usageBillingCompensation *UsageBillingCompensationService
+
+	// test hook for deterministic tie-break in account selection.
+	accountTieBreakIntnFn func(n int) int
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -339,15 +358,25 @@ func NewOpenAIGatewayService(
 		openaiWSResolver:     NewOpenAIWSProtocolResolver(cfg),
 		responseHeaderFilter: compileResponseHeaderFilter(cfg),
 	}
+	svc.usageBillingCompensation = NewUsageBillingCompensationService(usageLogRepo, userRepo, userSubRepo, billingCacheService, cfg)
+	svc.usageBillingCompensation.Start()
 	svc.logOpenAIWSModeBootstrap()
 	return svc
 }
 
-// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池的后台 worker 和空闲连接。
+// CloseOpenAIWSCtxPool 关闭 OpenAI WebSocket ctx_pool 的后台 worker 与连接资源。
 // 应在应用优雅关闭时调用。
-func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
-	if s != nil && s.openaiWSPool != nil {
-		s.openaiWSPool.Close()
+func (s *OpenAIGatewayService) CloseOpenAIWSCtxPool() {
+	if s != nil && s.openaiWSIngressCtxPool != nil {
+		s.openaiWSIngressCtxPool.Close()
+	}
+	if s != nil && s.openaiWSStateStore != nil {
+		if closer, ok := s.openaiWSStateStore.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
+	if s != nil && s.usageBillingCompensation != nil {
+		s.usageBillingCompensation.Stop()
 	}
 }
 
@@ -563,6 +592,34 @@ func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context
 	return true
 }
 
+func (s *OpenAIGatewayService) writeOpenAIWSV1UnsupportedResponse(c *gin.Context, account *Account) error {
+	const (
+		upstreamMessage = "openai ws v1 is temporarily unsupported; use ws v2"
+		clientMessage   = "OpenAI WSv1 is temporarily unsupported. Please enable responses_websockets_v2."
+	)
+	setOpsUpstreamError(c, http.StatusBadRequest, upstreamMessage, "")
+	if account != nil {
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: http.StatusBadRequest,
+			Kind:               "ws_error",
+			Message:            upstreamMessage,
+		})
+	}
+	if c != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": clientMessage,
+			},
+		})
+		c.Abort()
+	}
+	return errors.New(upstreamMessage)
+}
+
 func (s *OpenAIGatewayService) openAIWSRetryBackoff(attempt int) time.Duration {
 	if attempt <= 0 {
 		return 0
@@ -636,6 +693,16 @@ func (s *OpenAIGatewayService) openAIWSRetryTotalBudget() time.Duration {
 	return 0
 }
 
+func openAIWSRetryContextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return wrapOpenAIWSFallback("retry_context_canceled", err)
+	}
+	return nil
+}
+
 func (s *OpenAIGatewayService) recordOpenAIWSRetryAttempt(backoff time.Duration) {
 	if s == nil {
 		return
@@ -669,6 +736,70 @@ func (s *OpenAIGatewayService) SnapshotOpenAIWSRetryMetrics() OpenAIWSRetryMetri
 		RetryBackoffMsTotal:           s.openaiWSRetryMetrics.retryBackoffMs.Load(),
 		RetryExhaustedTotal:           s.openaiWSRetryMetrics.retryExhausted.Load(),
 		NonRetryableFastFallbackTotal: s.openaiWSRetryMetrics.nonRetryableFastFallback.Load(),
+	}
+}
+
+func (s *OpenAIGatewayService) recordOpenAIWSTurnAbort(reason openAIWSIngressTurnAbortReason, expected bool) {
+	if s == nil {
+		return
+	}
+	normalizedReason := strings.TrimSpace(string(reason))
+	if normalizedReason == "" {
+		normalizedReason = string(openAIWSIngressTurnAbortReasonUnknown)
+	}
+	key := openAIWSTurnAbortMetricKey{
+		reason:   normalizedReason,
+		expected: expected,
+	}
+	counterAny, _ := s.openaiWSAbortMetrics.turnAbortTotal.LoadOrStore(key, &atomic.Int64{})
+	counter, ok := counterAny.(*atomic.Int64)
+	if !ok || counter == nil {
+		return
+	}
+	counter.Add(1)
+}
+
+func (s *OpenAIGatewayService) recordOpenAIWSTurnAbortRecovered() {
+	if s == nil {
+		return
+	}
+	s.openaiWSAbortMetrics.turnAbortRecovered.Add(1)
+}
+
+func (s *OpenAIGatewayService) SnapshotOpenAIWSAbortMetrics() OpenAIWSAbortMetricsSnapshot {
+	if s == nil {
+		return OpenAIWSAbortMetricsSnapshot{}
+	}
+	points := make([]OpenAIWSTurnAbortMetricPoint, 0, 8)
+	s.openaiWSAbortMetrics.turnAbortTotal.Range(func(key, value any) bool {
+		label, ok := key.(openAIWSTurnAbortMetricKey)
+		if !ok {
+			return true
+		}
+		counter, ok := value.(*atomic.Int64)
+		if !ok || counter == nil {
+			return true
+		}
+		total := counter.Load()
+		if total <= 0 {
+			return true
+		}
+		points = append(points, OpenAIWSTurnAbortMetricPoint{
+			Reason:   label.reason,
+			Expected: label.expected,
+			Total:    total,
+		})
+		return true
+	})
+	sort.Slice(points, func(i, j int) bool {
+		if points[i].Reason == points[j].Reason {
+			return !points[i].Expected && points[j].Expected
+		}
+		return points[i].Reason < points[j].Reason
+	})
+	return OpenAIWSAbortMetricsSnapshot{
+		TurnAbortTotal:          points,
+		TurnAbortRecoveredTotal: s.openaiWSAbortMetrics.turnAbortRecovered.Load(),
 	}
 }
 
@@ -1497,6 +1628,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	clientTransport := GetOpenAIClientTransport(c)
+	if shouldWarnOpenAIWSUnknownTransportFallback(wsDecision, clientTransport) {
+		logOpenAIWSModeInfo(
+			"client_transport_unknown_fallback_http account_id=%d account_type=%s resolved_transport=%s resolved_reason=%s",
+			account.ID,
+			account.Type,
+			normalizeOpenAIWSLogValue(string(wsDecision.Transport)),
+			normalizeOpenAIWSLogValue(wsDecision.Reason),
+		)
+	}
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport)
 	if c != nil {
@@ -1516,15 +1656,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	// 当前仅支持 WSv2；WSv1 命中时直接返回错误，避免出现“配置可开但行为不确定”。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
-		if c != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": gin.H{
-					"type":    "invalid_request_error",
-					"message": "OpenAI WSv1 is temporarily unsupported. Please enable responses_websockets_v2.",
-				},
-			})
-		}
-		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
+		return nil, s.writeOpenAIWSV1UnsupportedResponse(c, account)
 	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	if passthroughEnabled {
@@ -1813,6 +1945,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		retryStartedAt := time.Now()
 	wsRetryLoop:
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			if cancelErr := openAIWSRetryContextError(ctx); cancelErr != nil {
+				wsErr = cancelErr
+				break
+			}
 			wsAttempts = attempt
 			wsResult, wsErr = s.forwardOpenAIWSV2(
 				ctx,
@@ -2987,13 +3123,14 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 			}
 
-			dataBytes := []byte(data)
-
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
-			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
-				dataBytes = correctedData
-				data = string(correctedData)
-				line = "data: " + data
+			// 仅在 toolCorrector 存在时才转换为 []byte，避免热路径无谓分配
+			if s.toolCorrector != nil {
+				dataBytes := []byte(data)
+				if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
+					data = string(correctedData)
+					line = "data: " + data
+				}
 			}
 
 			// 写入客户端（客户端断开后继续 drain 上游）
@@ -3022,7 +3159,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
-			s.parseSSEUsageBytes(dataBytes, usage)
+			// 使用 string 版本解析 usage，避免 string→[]byte 转换
+			s.parseSSEUsageString(data, usage)
 			return
 		}
 
@@ -3196,18 +3334,18 @@ func (s *OpenAIGatewayService) correctToolCallsInResponseBody(body []byte) []byt
 }
 
 func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
-	s.parseSSEUsageBytes([]byte(data), usage)
+	s.parseSSEUsageString(data, usage)
 }
 
-func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsage) {
-	if usage == nil || len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+// parseSSEUsageString 使用 gjson.Get（string 版本）解析 usage，避免 string→[]byte 转换
+func (s *OpenAIGatewayService) parseSSEUsageString(data string, usage *OpenAIUsage) {
+	if usage == nil || len(data) == 0 || data == "[DONE]" {
 		return
 	}
-	// 选择性解析：仅在数据中包含 completed 事件标识时才进入字段提取。
-	if len(data) < 80 || !bytes.Contains(data, []byte(`"response.completed"`)) {
+	if len(data) < 80 || !strings.Contains(data, `"response.completed"`) {
 		return
 	}
-	if gjson.GetBytes(data, "type").String() != "response.completed" {
+	if gjson.Get(data, "type").String() != "response.completed" {
 		return
 	}
 	usageFields := gjson.GetMany(data,
@@ -3219,6 +3357,29 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 	usage.OutputTokens = int(usageFields[1].Int())
 	usage.CacheReadInputTokens = int(usageFields[2].Int())
 }
+
+func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsage) {
+	if usage == nil || len(data) == 0 || bytes.Equal(data, sseDataDone) {
+		return
+	}
+	// 选择性解析：仅在数据中包含 completed 事件标识时才进入字段提取。
+	if len(data) < 80 || !bytes.Contains(data, sseResponseCompletedMark) {
+		return
+	}
+	if gjson.GetBytes(data, "type").String() != "response.completed" {
+		return
+	}
+	// 使用 GetManyBytes 一次提取 3 个 usage 字段
+	usageFields := gjson.GetManyBytes(data,
+		"response.usage.input_tokens",
+		"response.usage.output_tokens",
+		"response.usage.input_tokens_details.cached_tokens",
+	)
+	usage.InputTokens = int(usageFields[0].Int())
+	usage.OutputTokens = int(usageFields[1].Int())
+	usage.CacheReadInputTokens = int(usageFields[2].Int())
+}
+
 func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false

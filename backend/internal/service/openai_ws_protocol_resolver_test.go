@@ -143,21 +143,35 @@ func TestOpenAIWSProtocolResolver_Resolve_ModeRouterV2(t *testing.T) {
 	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
 	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
 	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
-	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModeShared
+	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModeOff
 
-	account := &Account{
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeOAuth,
-		Concurrency: 1,
-		Extra: map[string]any{
-			"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeDedicated,
-		},
-	}
-
-	t.Run("dedicated mode routes to ws v2", func(t *testing.T) {
+	t.Run("dedicated mode is blocked and routes to http", func(t *testing.T) {
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Concurrency: 1,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeDedicated,
+			},
+		}
 		decision := NewOpenAIWSProtocolResolver(cfg).Resolve(account)
+		// dedicated is now mapped to ctx_pool for backward compatibility
 		require.Equal(t, OpenAIUpstreamTransportResponsesWebsocketV2, decision.Transport)
-		require.Equal(t, "ws_v2_mode_dedicated", decision.Reason)
+		require.Equal(t, "ws_v2_mode_ctx_pool", decision.Reason)
+	})
+
+	t.Run("ctx_pool mode routes to ws v2", func(t *testing.T) {
+		ctxPoolAccount := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Concurrency: 1,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeCtxPool,
+			},
+		}
+		decision := NewOpenAIWSProtocolResolver(cfg).Resolve(ctxPoolAccount)
+		require.Equal(t, OpenAIUpstreamTransportResponsesWebsocketV2, decision.Transport)
+		require.Equal(t, "ws_v2_mode_ctx_pool", decision.Reason)
 	})
 
 	t.Run("off mode routes to http", func(t *testing.T) {
@@ -174,7 +188,7 @@ func TestOpenAIWSProtocolResolver_Resolve_ModeRouterV2(t *testing.T) {
 		require.Equal(t, "account_mode_off", decision.Reason)
 	})
 
-	t.Run("legacy boolean maps to shared in v2 router", func(t *testing.T) {
+	t.Run("legacy boolean maps to ctx_pool in v2 router", func(t *testing.T) {
 		legacyAccount := &Account{
 			Platform:    PlatformOpenAI,
 			Type:        AccountTypeAPIKey,
@@ -185,7 +199,7 @@ func TestOpenAIWSProtocolResolver_Resolve_ModeRouterV2(t *testing.T) {
 		}
 		decision := NewOpenAIWSProtocolResolver(cfg).Resolve(legacyAccount)
 		require.Equal(t, OpenAIUpstreamTransportResponsesWebsocketV2, decision.Transport)
-		require.Equal(t, "ws_v2_mode_shared", decision.Reason)
+		require.Equal(t, "ws_v2_mode_ctx_pool", decision.Reason)
 	})
 
 	t.Run("non-positive concurrency is rejected in v2 router", func(t *testing.T) {
@@ -193,7 +207,7 @@ func TestOpenAIWSProtocolResolver_Resolve_ModeRouterV2(t *testing.T) {
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
 			Extra: map[string]any{
-				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeShared,
+				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeCtxPool,
 			},
 		}
 		decision := NewOpenAIWSProtocolResolver(cfg).Resolve(invalidConcurrency)

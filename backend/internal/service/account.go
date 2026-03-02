@@ -855,16 +855,18 @@ const (
 	OpenAIWSIngressModeOff       = "off"
 	OpenAIWSIngressModeShared    = "shared"
 	OpenAIWSIngressModeDedicated = "dedicated"
+	OpenAIWSIngressModeCtxPool   = "ctx_pool"
 )
 
 func normalizeOpenAIWSIngressMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case OpenAIWSIngressModeOff:
 		return OpenAIWSIngressModeOff
-	case OpenAIWSIngressModeShared:
-		return OpenAIWSIngressModeShared
-	case OpenAIWSIngressModeDedicated:
-		return OpenAIWSIngressModeDedicated
+	case OpenAIWSIngressModeCtxPool:
+		return OpenAIWSIngressModeCtxPool
+	case OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
+		// Deprecated: shared/dedicated 已废弃，平滑迁移到 ctx_pool
+		return OpenAIWSIngressModeCtxPool
 	default:
 		return ""
 	}
@@ -874,16 +876,16 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 	if normalized := normalizeOpenAIWSIngressMode(mode); normalized != "" {
 		return normalized
 	}
-	return OpenAIWSIngressModeShared
+	return OpenAIWSIngressModeOff
 }
 
-// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/shared/dedicated）。
+// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/ctx_pool）。
 //
 // 优先级：
 // 1. 分类型 mode 新字段（string）
 // 2. 分类型 enabled 旧字段（bool）
 // 3. 兼容 enabled 旧字段（bool）
-// 4. defaultMode（非法时回退 shared）
+// 4. defaultMode（非法时回退 off）
 func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
 	resolvedDefault := normalizeOpenAIWSIngressDefaultMode(defaultMode)
 	if a == nil || !a.IsOpenAI() {
@@ -918,7 +920,8 @@ func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) stri
 			return "", false
 		}
 		if enabled {
-			return OpenAIWSIngressModeShared, true
+			// 兼容旧 enabled 字段：开启时至少落到 ctx_pool。
+			return OpenAIWSIngressModeCtxPool, true
 		}
 		return OpenAIWSIngressModeOff, true
 	}
@@ -1137,80 +1140,6 @@ func (a *Account) GetSessionIdleTimeoutMinutes() int {
 	return 5
 }
 
-// GetBaseRPM 获取基础 RPM 限制
-// 返回 0 表示未启用（负数视为无效配置，按 0 处理）
-func (a *Account) GetBaseRPM() int {
-	if a.Extra == nil {
-		return 0
-	}
-	if v, ok := a.Extra["base_rpm"]; ok {
-		val := parseExtraInt(v)
-		if val > 0 {
-			return val
-		}
-	}
-	return 0
-}
-
-// GetRPMStrategy 获取 RPM 策略
-// "tiered" = 三区模型（默认）, "sticky_exempt" = 粘性豁免
-func (a *Account) GetRPMStrategy() string {
-	if a.Extra == nil {
-		return "tiered"
-	}
-	if v, ok := a.Extra["rpm_strategy"]; ok {
-		if s, ok := v.(string); ok && s == "sticky_exempt" {
-			return "sticky_exempt"
-		}
-	}
-	return "tiered"
-}
-
-// GetRPMStickyBuffer 获取 RPM 粘性缓冲数量
-// tiered 模式下的黄区大小，默认为 base_rpm 的 20%（至少 1）
-func (a *Account) GetRPMStickyBuffer() int {
-	if a.Extra == nil {
-		return 0
-	}
-	if v, ok := a.Extra["rpm_sticky_buffer"]; ok {
-		val := parseExtraInt(v)
-		if val > 0 {
-			return val
-		}
-	}
-	base := a.GetBaseRPM()
-	buffer := base / 5
-	if buffer < 1 && base > 0 {
-		buffer = 1
-	}
-	return buffer
-}
-
-// CheckRPMSchedulability 根据当前 RPM 计数检查调度状态
-// 复用 WindowCostSchedulability 三态：Schedulable / StickyOnly / NotSchedulable
-func (a *Account) CheckRPMSchedulability(currentRPM int) WindowCostSchedulability {
-	baseRPM := a.GetBaseRPM()
-	if baseRPM <= 0 {
-		return WindowCostSchedulable
-	}
-
-	if currentRPM < baseRPM {
-		return WindowCostSchedulable
-	}
-
-	strategy := a.GetRPMStrategy()
-	if strategy == "sticky_exempt" {
-		return WindowCostStickyOnly // 粘性豁免无红区
-	}
-
-	// tiered: 黄区 + 红区
-	buffer := a.GetRPMStickyBuffer()
-	if currentRPM < baseRPM+buffer {
-		return WindowCostStickyOnly
-	}
-	return WindowCostNotSchedulable
-}
-
 // CheckWindowCostSchedulability 根据当前窗口费用检查调度状态
 // - 费用 < 阈值: WindowCostSchedulable（可正常调度）
 // - 费用 >= 阈值 且 < 阈值+预留: WindowCostStickyOnly（仅粘性会话）
@@ -1274,12 +1203,6 @@ func parseExtraFloat64(value any) float64 {
 }
 
 // parseExtraInt 从 extra 字段解析 int 值
-// ParseExtraInt 从 extra 字段的 any 值解析为 int。
-// 支持 int, int64, float64, json.Number, string 类型，无法解析时返回 0。
-func ParseExtraInt(value any) int {
-	return parseExtraInt(value)
-}
-
 func parseExtraInt(value any) int {
 	switch v := value.(type) {
 	case int:
