@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -42,6 +43,7 @@ type AdminService interface {
 	DeleteGroup(ctx context.Context, id int64) error
 	GetGroupAPIKeys(ctx context.Context, groupID int64, page, pageSize int) ([]APIKey, int64, error)
 	UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error
+	AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error)
 
 	// Account management
 	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64) ([]Account, int64, error)
@@ -244,6 +246,14 @@ type BulkUpdateAccountResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// AdminUpdateAPIKeyGroupIDResult is the result of AdminUpdateAPIKeyGroupID.
+type AdminUpdateAPIKeyGroupIDResult struct {
+	APIKey                 *APIKey
+	AutoGrantedGroupAccess bool
+	GrantedGroupID         *int64
+	GrantedGroupName       string
+}
+
 // BulkUpdateAccountsResult is the aggregated response for bulk updates.
 type BulkUpdateAccountsResult struct {
 	Success    int                       `json:"success"`
@@ -408,6 +418,7 @@ type adminServiceImpl struct {
 	proxyProber          ProxyExitInfoProber
 	proxyLatencyCache    ProxyLatencyCache
 	authCacheInvalidator APIKeyAuthCacheInvalidator
+	entClient            *dbent.Client // 用于开启数据库事务
 }
 
 type userGroupRateBatchReader interface {
@@ -432,6 +443,7 @@ func NewAdminService(
 	proxyProber ProxyExitInfoProber,
 	proxyLatencyCache ProxyLatencyCache,
 	authCacheInvalidator APIKeyAuthCacheInvalidator,
+	entClient *dbent.Client,
 ) AdminService {
 	return &adminServiceImpl{
 		userRepo:             userRepo,
@@ -446,6 +458,7 @@ func NewAdminService(
 		proxyProber:          proxyProber,
 		proxyLatencyCache:    proxyLatencyCache,
 		authCacheInvalidator: authCacheInvalidator,
+		entClient:            entClient,
 	}
 }
 
@@ -1185,6 +1198,91 @@ func (s *adminServiceImpl) GetGroupAPIKeys(ctx context.Context, groupID int64, p
 
 func (s *adminServiceImpl) UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error {
 	return s.groupRepo.UpdateSortOrders(ctx, updates)
+}
+
+// AdminUpdateAPIKeyGroupID allows admins to update API key-group binding.
+// groupID: nil=unchanged, 0=unbind, >0=bind to target group.
+func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error) {
+	apiKey, err := s.apiKeyRepo.GetByID(ctx, keyID)
+	if err != nil {
+		return nil, err
+	}
+
+	if groupID == nil {
+		return &AdminUpdateAPIKeyGroupIDResult{APIKey: apiKey}, nil
+	}
+	if *groupID < 0 {
+		return nil, infraerrors.BadRequest("INVALID_GROUP_ID", "group_id must be non-negative")
+	}
+
+	result := &AdminUpdateAPIKeyGroupIDResult{}
+	if *groupID == 0 {
+		apiKey.GroupID = nil
+		apiKey.Group = nil
+	} else {
+		group, err := s.groupRepo.GetByID(ctx, *groupID)
+		if err != nil {
+			return nil, err
+		}
+		if group.Status != StatusActive {
+			return nil, infraerrors.BadRequest("GROUP_NOT_ACTIVE", "target group is not active")
+		}
+		if group.IsSubscriptionType() {
+			return nil, infraerrors.BadRequest("SUBSCRIPTION_GROUP_NOT_ALLOWED", "subscription groups must be managed through the subscription workflow")
+		}
+
+		gid := *groupID
+		apiKey.GroupID = &gid
+		apiKey.Group = group
+
+		if group.IsExclusive {
+			opCtx := ctx
+			var tx *dbent.Tx
+			if s.entClient == nil {
+				logger.LegacyPrintf("service.admin", "Warning: entClient is nil, skipping transaction protection for exclusive group binding")
+			} else {
+				var txErr error
+				tx, txErr = s.entClient.Tx(ctx)
+				if txErr != nil {
+					return nil, fmt.Errorf("begin transaction: %w", txErr)
+				}
+				defer func() { _ = tx.Rollback() }()
+				opCtx = dbent.NewTxContext(ctx, tx)
+			}
+
+			if addErr := s.userRepo.AddGroupToAllowedGroups(opCtx, apiKey.UserID, gid); addErr != nil {
+				return nil, fmt.Errorf("add group to user allowed groups: %w", addErr)
+			}
+			if err := s.apiKeyRepo.Update(opCtx, apiKey); err != nil {
+				return nil, fmt.Errorf("update api key: %w", err)
+			}
+			if tx != nil {
+				if err := tx.Commit(); err != nil {
+					return nil, fmt.Errorf("commit transaction: %w", err)
+				}
+			}
+
+			result.AutoGrantedGroupAccess = true
+			result.GrantedGroupID = &gid
+			result.GrantedGroupName = group.Name
+			if s.authCacheInvalidator != nil {
+				s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, apiKey.Key)
+			}
+
+			result.APIKey = apiKey
+			return result, nil
+		}
+	}
+
+	if err := s.apiKeyRepo.Update(ctx, apiKey); err != nil {
+		return nil, fmt.Errorf("update api key: %w", err)
+	}
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, apiKey.Key)
+	}
+
+	result.APIKey = apiKey
+	return result, nil
 }
 
 // Account management implementations
