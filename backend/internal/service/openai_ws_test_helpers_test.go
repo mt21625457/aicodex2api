@@ -10,42 +10,6 @@ import (
 	"time"
 )
 
-func requestToJSONString(payload map[string]any) string {
-	body, _ := json.Marshal(payload)
-	return string(body)
-}
-
-type openAIWSCaptureDialer struct {
-	mu          sync.Mutex
-	conn        openAIWSClientConn
-	handshake   http.Header
-	lastHeaders http.Header
-	dialCount   int
-}
-
-func (d *openAIWSCaptureDialer) Dial(
-	ctx context.Context,
-	wsURL string,
-	headers http.Header,
-	proxyURL string,
-) (openAIWSClientConn, int, http.Header, error) {
-	_ = ctx
-	_ = wsURL
-	_ = proxyURL
-	d.mu.Lock()
-	d.lastHeaders = cloneHeader(headers)
-	d.dialCount++
-	respHeaders := cloneHeader(d.handshake)
-	d.mu.Unlock()
-	return d.conn, 0, respHeaders, nil
-}
-
-func (d *openAIWSCaptureDialer) DialCount() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.dialCount
-}
-
 type openAIWSQueueDialer struct {
 	mu        sync.Mutex
 	conns     []openAIWSClientConn
@@ -85,7 +49,6 @@ type openAIWSCaptureConn struct {
 	mu         sync.Mutex
 	readDelays []time.Duration
 	events     [][]byte
-	lastWrite  map[string]any
 	writes     []map[string]any
 	closed     bool
 }
@@ -99,18 +62,15 @@ func (c *openAIWSCaptureConn) WriteJSON(ctx context.Context, value any) error {
 	}
 	switch payload := value.(type) {
 	case map[string]any:
-		c.lastWrite = cloneMapStringAny(payload)
 		c.writes = append(c.writes, cloneMapStringAny(payload))
 	case json.RawMessage:
 		var parsed map[string]any
 		if err := json.Unmarshal(payload, &parsed); err == nil {
-			c.lastWrite = cloneMapStringAny(parsed)
 			c.writes = append(c.writes, cloneMapStringAny(parsed))
 		}
 	case []byte:
 		var parsed map[string]any
 		if err := json.Unmarshal(payload, &parsed); err == nil {
-			c.lastWrite = cloneMapStringAny(parsed)
 			c.writes = append(c.writes, cloneMapStringAny(parsed))
 		}
 	}
@@ -160,6 +120,12 @@ func (c *openAIWSCaptureConn) Close() error {
 	defer c.mu.Unlock()
 	c.closed = true
 	return nil
+}
+
+func (c *openAIWSCaptureConn) Closed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 func cloneMapStringAny(src map[string]any) map[string]any {
@@ -256,4 +222,56 @@ func (c *openAIWSPingFailConn) Ping(context.Context) error {
 
 func (c *openAIWSPingFailConn) Close() error {
 	return nil
+}
+
+// openAIWSDelayedPingFailConn 是带可控延迟的 Ping 失败连接，
+// 用于模拟"Ping 执行期间连接被重建"的竞态场景。
+type openAIWSDelayedPingFailConn struct {
+	delay    time.Duration
+	pingDone chan struct{} // Ping 开始执行时关闭，通知测试可以进行下一步
+	mu       sync.Mutex
+	closed   bool
+}
+
+func newOpenAIWSDelayedPingFailConn(delay time.Duration) *openAIWSDelayedPingFailConn {
+	return &openAIWSDelayedPingFailConn{
+		delay:    delay,
+		pingDone: make(chan struct{}),
+	}
+}
+
+func (c *openAIWSDelayedPingFailConn) WriteJSON(context.Context, any) error { return nil }
+func (c *openAIWSDelayedPingFailConn) ReadMessage(context.Context) ([]byte, error) {
+	return []byte(`{"type":"response.completed","response":{"id":"resp_delayed_ping"}}`), nil
+}
+
+func (c *openAIWSDelayedPingFailConn) Ping(ctx context.Context) error {
+	// 通知测试 Ping 已开始
+	select {
+	case <-c.pingDone:
+	default:
+		close(c.pingDone)
+	}
+	// 等待延迟或上下文取消
+	timer := time.NewTimer(c.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+	}
+	return errors.New("ping failed after delay")
+}
+
+func (c *openAIWSDelayedPingFailConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (c *openAIWSDelayedPingFailConn) Closed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }

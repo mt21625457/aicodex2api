@@ -682,20 +682,6 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 	)
 }
 
-func (s *openAIAccountRuntimeStats) reportWithCB(accountID int64, success bool, firstTokenMs *int, cbThreshold int, model string, ttftMs float64) {
-	s.reportWithOptions(
-		accountID,
-		success,
-		firstTokenMs,
-		cbThreshold,
-		true,
-		model,
-		ttftMs,
-		true,
-		defaultPerModelTTFTMaxModels,
-	)
-}
-
 func (s *openAIAccountRuntimeStats) reportWithOptions(
 	accountID int64,
 	success bool,

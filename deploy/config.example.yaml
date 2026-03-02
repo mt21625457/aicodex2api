@@ -242,6 +242,10 @@ gateway:
     write_timeout_seconds: 120
     pool_target_utilization: 0.7
     queue_limit_per_conn: 64
+    # 上游 WebSocket 连接最大存活时间（秒）。
+    # OpenAI 在 60 分钟后强制断开连接，此参数控制主动轮换阈值。
+    # 默认 3300（55 分钟）；设为 0 则禁用超龄轮换。
+    upstream_conn_max_age_seconds: 3300
     # 流式写出批量 flush 参数
     event_flush_batch_size: 1
     event_flush_interval_ms: 10
