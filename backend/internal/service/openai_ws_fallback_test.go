@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	coderws "github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -108,6 +111,154 @@ func TestClassifyOpenAIWSErrorEvent(t *testing.T) {
 	reason, recoverable = classifyOpenAIWSErrorEvent([]byte(`{"type":"error","error":{"code":"previous_response_not_found","message":"not found"}}`))
 	require.Equal(t, "previous_response_not_found", reason)
 	require.True(t, recoverable)
+
+	// tool_output_not_found: 用户按 ESC 取消 function_call 后重新发送消息
+	reason, recoverable = classifyOpenAIWSErrorEvent([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"No tool output found for function call call_zXKPiNecBmIAoKeW9o2pNMvo.","param":"input"}}`))
+	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
+	require.True(t, recoverable)
+
+	reason, recoverable = classifyOpenAIWSErrorEventFromRaw("", "invalid_request_error", "No tool output found for function call call_abc123.")
+	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
+	require.True(t, recoverable)
+
+	reason, recoverable = classifyOpenAIWSErrorEventFromRaw(
+		"",
+		"invalid_request_error",
+		"No tool call found for function call output with call_id call_abc123.",
+	)
+	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
+	require.True(t, recoverable)
+
+	// reasoning orphaned items should reuse tool_output_not_found recovery path.
+	reason, recoverable = classifyOpenAIWSErrorEventFromRaw(
+		"",
+		"invalid_request_error",
+		"Item 'rs_xxx' of type 'reasoning' was provided without its required following item.",
+	)
+	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
+	require.True(t, recoverable)
+
+	reason, recoverable = classifyOpenAIWSErrorEventFromRaw(
+		"",
+		"invalid_request_error",
+		"Item 'rs_xxx' of type 'reasoning' was provided without its required preceding item.",
+	)
+	require.Equal(t, openAIWSIngressStageToolOutputNotFound, reason)
+	require.True(t, recoverable)
+}
+
+func TestClassifyOpenAIWSErrorEventFromRaw_AllBranches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		codeRaw     string
+		errTypeRaw  string
+		msgRaw      string
+		wantReason  string
+		wantRecover bool
+	}{
+		{
+			name:        "code_upgrade_required",
+			codeRaw:     "upgrade_required",
+			wantReason:  "upgrade_required",
+			wantRecover: true,
+		},
+		{
+			name:        "code_ws_unsupported",
+			codeRaw:     "websocket_not_supported",
+			wantReason:  "ws_unsupported",
+			wantRecover: true,
+		},
+		{
+			name:        "code_ws_connection_limit",
+			codeRaw:     "websocket_connection_limit_reached",
+			wantReason:  "ws_connection_limit_reached",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_upgrade_required",
+			msgRaw:      "status 426 upgrade required",
+			wantReason:  "upgrade_required",
+			wantRecover: true,
+		},
+		{
+			name:        "err_type_upgrade",
+			errTypeRaw:  "gateway_upgrade_error",
+			wantReason:  "upgrade_required",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_ws_unsupported",
+			msgRaw:      "websocket is unsupported in this region",
+			wantReason:  "ws_unsupported",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_ws_connection_limit",
+			msgRaw:      "websocket connection limit exceeded",
+			wantReason:  "ws_connection_limit_reached",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_previous_response_not_found_variant",
+			msgRaw:      "previous response is not found",
+			wantReason:  "previous_response_not_found",
+			wantRecover: true,
+		},
+		{
+			name:        "msg_no_tool_output",
+			msgRaw:      "No tool output found for function call call_abc.",
+			wantReason:  openAIWSIngressStageToolOutputNotFound,
+			wantRecover: true,
+		},
+		{
+			name:        "msg_no_tool_call_for_function_call_output",
+			msgRaw:      "No tool call found for function call output with call_id call_abc.",
+			wantReason:  openAIWSIngressStageToolOutputNotFound,
+			wantRecover: true,
+		},
+		{
+			name:        "msg_reasoning_missing_following",
+			msgRaw:      "Item 'rs_xxx' of type 'reasoning' was provided without its required following item.",
+			wantReason:  openAIWSIngressStageToolOutputNotFound,
+			wantRecover: true,
+		},
+		{
+			name:        "msg_reasoning_missing_preceding",
+			msgRaw:      "Item 'rs_xxx' of type 'reasoning' was provided without its required preceding item.",
+			wantReason:  openAIWSIngressStageToolOutputNotFound,
+			wantRecover: true,
+		},
+		{
+			name:        "server_error_by_type",
+			errTypeRaw:  "server_error",
+			wantReason:  "upstream_error_event",
+			wantRecover: true,
+		},
+		{
+			name:        "server_error_by_code",
+			codeRaw:     "server_error",
+			wantReason:  "upstream_error_event",
+			wantRecover: true,
+		},
+		{
+			name:        "unknown_event_error",
+			codeRaw:     "other",
+			errTypeRaw:  "other",
+			msgRaw:      "other",
+			wantReason:  "event_error",
+			wantRecover: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, recoverable := classifyOpenAIWSErrorEventFromRaw(tt.codeRaw, tt.errTypeRaw, tt.msgRaw)
+			require.Equal(t, tt.wantReason, reason)
+			require.Equal(t, tt.wantRecover, recoverable)
+		})
+	}
 }
 
 func TestClassifyOpenAIWSReconnectReason(t *testing.T) {
@@ -197,10 +348,37 @@ func TestOpenAIWSRetryTotalBudget(t *testing.T) {
 	require.Equal(t, time.Duration(0), svc.openAIWSRetryTotalBudget())
 }
 
+func TestOpenAIWSRetryContextError(t *testing.T) {
+	require.NoError(t, openAIWSRetryContextError(nil))
+	require.NoError(t, openAIWSRetryContextError(context.Background()))
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := openAIWSRetryContextError(canceledCtx)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+
+	var fallbackErr *openAIWSFallbackError
+	require.ErrorAs(t, err, &fallbackErr)
+	require.Equal(t, "retry_context_canceled", fallbackErr.Reason)
+}
+
 func TestClassifyOpenAIWSReadFallbackReason(t *testing.T) {
+	require.Equal(t, "service_restart", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusServiceRestart}))
+	require.Equal(t, "try_again_later", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusTryAgainLater}))
 	require.Equal(t, "policy_violation", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusPolicyViolation}))
 	require.Equal(t, "message_too_big", classifyOpenAIWSReadFallbackReason(coderws.CloseError{Code: coderws.StatusMessageTooBig}))
 	require.Equal(t, "read_event", classifyOpenAIWSReadFallbackReason(errors.New("io")))
+}
+
+func TestClassifyOpenAIWSIngressReadErrorClass(t *testing.T) {
+	require.Equal(t, "unknown", classifyOpenAIWSIngressReadErrorClass(nil))
+	require.Equal(t, "context_canceled", classifyOpenAIWSIngressReadErrorClass(context.Canceled))
+	require.Equal(t, "deadline_exceeded", classifyOpenAIWSIngressReadErrorClass(context.DeadlineExceeded))
+	require.Equal(t, "service_restart", classifyOpenAIWSIngressReadErrorClass(coderws.CloseError{Code: coderws.StatusServiceRestart}))
+	require.Equal(t, "try_again_later", classifyOpenAIWSIngressReadErrorClass(coderws.CloseError{Code: coderws.StatusTryAgainLater}))
+	require.Equal(t, "upstream_closed", classifyOpenAIWSIngressReadErrorClass(io.EOF))
+	require.Equal(t, "unknown", classifyOpenAIWSIngressReadErrorClass(errors.New("tls handshake timeout")))
 }
 
 func TestOpenAIWSStoreDisabledConnMode(t *testing.T) {
@@ -237,6 +415,117 @@ func TestOpenAIWSRetryMetricsSnapshot(t *testing.T) {
 	require.Equal(t, int64(150), snapshot.RetryBackoffMsTotal)
 	require.Equal(t, int64(1), snapshot.RetryExhaustedTotal)
 	require.Equal(t, int64(1), snapshot.NonRetryableFastFallbackTotal)
+}
+
+func TestWriteOpenAIWSV1UnsupportedResponse_TracksOps(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       42,
+		Name:     "acc-ws-v1",
+		Platform: PlatformOpenAI,
+	}
+
+	err := svc.writeOpenAIWSV1UnsupportedResponse(c, account)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "openai ws v1 is temporarily unsupported")
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "invalid_request_error")
+	require.Contains(t, rec.Body.String(), "temporarily unsupported")
+
+	rawStatus, ok := c.Get(OpsUpstreamStatusCodeKey)
+	require.True(t, ok)
+	require.Equal(t, http.StatusBadRequest, rawStatus)
+
+	rawMsg, ok := c.Get(OpsUpstreamErrorMessageKey)
+	require.True(t, ok)
+	require.Equal(t, "openai ws v1 is temporarily unsupported; use ws v2", rawMsg)
+
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Equal(t, account.ID, events[0].AccountID)
+	require.Equal(t, account.Platform, events[0].Platform)
+	require.Equal(t, http.StatusBadRequest, events[0].UpstreamStatusCode)
+	require.Equal(t, "ws_error", events[0].Kind)
+}
+
+func TestIsOpenAIWSStreamWriteDisconnectError(t *testing.T) {
+	require.False(t, isOpenAIWSStreamWriteDisconnectError(nil, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.True(t, isOpenAIWSStreamWriteDisconnectError(errors.New("writer failed"), ctx))
+
+	require.True(t, isOpenAIWSStreamWriteDisconnectError(errors.New("broken pipe"), context.Background()))
+	require.True(t, isOpenAIWSStreamWriteDisconnectError(io.EOF, context.Background()))
+
+	require.False(t, isOpenAIWSStreamWriteDisconnectError(errors.New("template execute failed"), context.Background()))
+}
+
+func TestShouldFlushOpenAIWSBufferedEventsOnError(t *testing.T) {
+	require.True(t, shouldFlushOpenAIWSBufferedEventsOnError(true, true, false))
+	require.False(t, shouldFlushOpenAIWSBufferedEventsOnError(true, false, false))
+	require.False(t, shouldFlushOpenAIWSBufferedEventsOnError(true, true, true))
+	require.False(t, shouldFlushOpenAIWSBufferedEventsOnError(false, true, false))
+}
+
+func TestCloneOpenAIWSJSONRawString(t *testing.T) {
+	require.Nil(t, cloneOpenAIWSJSONRawString(""))
+	require.Nil(t, cloneOpenAIWSJSONRawString("   "))
+
+	raw := `{"id":"resp_1","type":"response"}`
+	cloned := cloneOpenAIWSJSONRawString(raw)
+	require.Equal(t, raw, string(cloned))
+	require.Equal(t, len(raw), len(cloned))
+}
+
+func TestOpenAIWSAbortMetricsSnapshot(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	svc.recordOpenAIWSTurnAbort(openAIWSIngressTurnAbortReasonUpstreamError, true)
+	svc.recordOpenAIWSTurnAbort(openAIWSIngressTurnAbortReasonUpstreamError, true)
+	svc.recordOpenAIWSTurnAbort(openAIWSIngressTurnAbortReasonWriteUpstream, false)
+	svc.recordOpenAIWSTurnAbortRecovered()
+
+	snapshot := svc.SnapshotOpenAIWSAbortMetrics()
+	require.Equal(t, int64(1), snapshot.TurnAbortRecoveredTotal)
+
+	getTotal := func(reason string, expected bool) int64 {
+		for _, point := range snapshot.TurnAbortTotal {
+			if point.Reason == reason && point.Expected == expected {
+				return point.Total
+			}
+		}
+		return 0
+	}
+	require.Equal(t, int64(2), getTotal(string(openAIWSIngressTurnAbortReasonUpstreamError), true))
+	require.Equal(t, int64(1), getTotal(string(openAIWSIngressTurnAbortReasonWriteUpstream), false))
+}
+
+func TestOpenAIWSPerformanceMetricsSnapshot_ContainsAbortMetrics(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	svc.recordOpenAIWSTurnAbort(openAIWSIngressTurnAbortReasonClientClosed, true)
+	svc.recordOpenAIWSTurnAbortRecovered()
+
+	snapshot := svc.SnapshotOpenAIWSPerformanceMetrics()
+	require.Equal(t, int64(1), snapshot.Abort.TurnAbortRecoveredTotal)
+
+	found := false
+	for _, point := range snapshot.Abort.TurnAbortTotal {
+		if point.Reason == string(openAIWSIngressTurnAbortReasonClientClosed) && point.Expected {
+			require.Equal(t, int64(1), point.Total)
+			found = true
+			break
+		}
+	}
+	require.True(t, found)
 }
 
 func TestShouldLogOpenAIWSPayloadSchema(t *testing.T) {

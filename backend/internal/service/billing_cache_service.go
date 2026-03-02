@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -184,7 +185,7 @@ func (s *BillingCacheService) cacheWriteWorker(ch <-chan cacheWriteTask) {
 			}
 		case cacheWriteDeductBalance:
 			if s.cache != nil {
-				if err := s.cache.DeductUserBalance(ctx, task.userID, task.amount); err != nil {
+				if err := s.cache.DeductUserBalance(ctx, task.userID, task.amount); err != nil && !errors.Is(err, ErrBalanceCacheNotFound) {
 					logger.LegacyPrintf("service.billing_cache", "Warning: deduct balance cache failed for user %d: %v", task.userID, err)
 				}
 			}
@@ -318,7 +319,13 @@ func (s *BillingCacheService) DeductBalanceCache(ctx context.Context, userID int
 	if s.cache == nil {
 		return nil
 	}
-	return s.cache.DeductUserBalance(ctx, userID, amount)
+	err := s.cache.DeductUserBalance(ctx, userID, amount)
+	if errors.Is(err, ErrBalanceCacheNotFound) {
+		// 缓存 key 不存在（已过期），无法原子扣减，不阻塞主流程。
+		// 下次 GetUserBalance 将从数据库回源重建缓存。
+		return nil
+	}
+	return err
 }
 
 // QueueDeductBalance 异步扣减余额缓存

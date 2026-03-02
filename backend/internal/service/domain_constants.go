@@ -127,6 +127,9 @@ const (
 	// Gemini 配额策略（JSON）
 	SettingKeyGeminiQuotaPolicy = "gemini_quota_policy"
 
+	// Bulk edit template library（JSON）
+	SettingKeyBulkEditTemplateLibrary = "bulk_edit_template_library_v1"
+
 	// Model fallback settings
 	SettingKeyEnableModelFallback      = "enable_model_fallback"
 	SettingKeyFallbackModelAnthropic   = "fallback_model_anthropic"
@@ -193,13 +196,6 @@ const (
 	// =========================
 
 	SettingKeySoraDefaultStorageQuotaBytes = "sora_default_storage_quota_bytes" // 新用户默认 Sora 存储配额（字节）
-
-	// =========================
-	// Claude Code Version Check
-	// =========================
-
-	// SettingKeyMinClaudeCodeVersion 最低 Claude Code 版本号要求 (semver, 如 "2.1.0"，空值=不检查)
-	SettingKeyMinClaudeCodeVersion = "min_claude_code_version"
 )
 
 // AdminAPIKeyPrefix is the prefix for admin API keys (distinct from user "sk-" keys).

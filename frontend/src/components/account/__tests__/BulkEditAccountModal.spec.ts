@@ -28,19 +28,26 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
-function mountModal() {
+function mountModal(
+  scope: { scopePlatform: string; scopeType: string } = {
+    scopePlatform: 'gemini',
+    scopeType: 'apikey'
+  },
+  selectStub: boolean | Record<string, unknown> = true
+) {
   return mount(BulkEditAccountModal, {
     props: {
       show: true,
       accountIds: [1, 2],
-      selectedPlatforms: ['antigravity'],
+      scopePlatform: scope.scopePlatform,
+      scopeType: scope.scopeType,
       proxies: [],
       groups: []
     } as any,
     global: {
       stubs: {
         BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
-        Select: true,
+        Select: selectStub,
         ProxySelector: true,
         GroupSelector: true,
         Icon: true
@@ -50,7 +57,7 @@ function mountModal() {
 }
 
 describe('BulkEditAccountModal', () => {
-  it('antigravity 白名单包含 Gemini 图片模型且过滤掉普通 GPT 模型', () => {
+  it('Gemini 范围白名单包含图片模型并过滤 GPT 模型', () => {
     const wrapper = mountModal()
 
     expect(wrapper.text()).toContain('Gemini 3.1 Flash Image')
@@ -58,7 +65,7 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.text()).not.toContain('GPT-5.3 Codex')
   })
 
-  it('antigravity 映射预设包含图片映射并过滤 OpenAI 预设', async () => {
+  it('Gemini 范围映射预设包含图片映射并过滤 OpenAI 预设', async () => {
     const wrapper = mountModal()
 
     const mappingTab = wrapper.findAll('button').find((btn) => btn.text().includes('admin.accounts.modelMapping'))
@@ -68,5 +75,21 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.text()).toContain('Gemini 3.1 Image')
     expect(wrapper.text()).toContain('G3 Image→3.1')
     expect(wrapper.text()).not.toContain('GPT-5.3 Codex')
+  })
+
+  it('OpenAI OAuth 范围 WS mode 选项仅保留 off 与 ctx_pool', () => {
+    const wrapper = mountModal(
+      { scopePlatform: 'openai', scopeType: 'oauth' },
+      {
+        props: ['options'],
+        template:
+          '<div><span v-for="option in options" :key="option.value">{{ option.value }}</span></div>'
+      }
+    )
+
+    expect(wrapper.text()).toContain('off')
+    expect(wrapper.text()).toContain('ctx_pool')
+    expect(wrapper.text()).not.toContain('shared')
+    expect(wrapper.text()).not.toContain('dedicated')
   })
 })

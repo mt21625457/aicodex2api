@@ -333,7 +333,7 @@ var ProviderSet = wire.NewSet(
 	ProvideRateLimitService,
 	NewAccountUsageService,
 	NewAccountTestService,
-	ProvideSettingService,
+	NewSettingService,
 	NewDataManagementService,
 	ProvideOpsSystemLogSink,
 	NewOpsService,

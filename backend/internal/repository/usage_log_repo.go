@@ -218,6 +218,275 @@ func (r *usageLogRepository) Create(ctx context.Context, log *service.UsageLog) 
 	return true, nil
 }
 
+func (r *usageLogRepository) usageSQLExecutor(ctx context.Context) sqlExecutor {
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return tx.Client()
+	}
+	return r.sql
+}
+
+func (r *usageLogRepository) WithUsageBillingTx(ctx context.Context, fn func(txCtx context.Context) error) error {
+	if fn == nil {
+		return nil
+	}
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return fn(ctx)
+	}
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	txCtx := dbent.NewTxContext(ctx, tx)
+	if err := fn(txCtx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *usageLogRepository) GetUsageBillingEntryByUsageLogID(ctx context.Context, usageLogID int64) (*service.UsageBillingEntry, error) {
+	query := `
+		SELECT
+			id,
+			usage_log_id,
+			user_id,
+			api_key_id,
+			subscription_id,
+			billing_type,
+			applied,
+			delta_usd,
+			status,
+			attempt_count,
+			next_retry_at,
+			updated_at,
+			created_at,
+			last_error
+		FROM billing_usage_entries
+		WHERE usage_log_id = $1
+	`
+	rows, err := r.usageSQLExecutor(ctx).QueryContext(ctx, query, usageLogID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		if err = rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, service.ErrUsageBillingEntryNotFound
+	}
+	entry, err := scanUsageBillingEntry(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return entry, nil
+}
+
+func (r *usageLogRepository) UpsertUsageBillingEntry(ctx context.Context, entry *service.UsageBillingEntry) (*service.UsageBillingEntry, bool, error) {
+	if entry == nil {
+		return nil, false, nil
+	}
+
+	insertQuery := `
+		INSERT INTO billing_usage_entries (
+			usage_log_id,
+			user_id,
+			api_key_id,
+			subscription_id,
+			billing_type,
+			applied,
+			delta_usd,
+			status,
+			attempt_count,
+			next_retry_at,
+			updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, FALSE, $6, $7, 0, NOW(), NOW()
+		)
+		ON CONFLICT (usage_log_id) DO NOTHING
+		RETURNING
+			id,
+			usage_log_id,
+			user_id,
+			api_key_id,
+			subscription_id,
+			billing_type,
+			applied,
+			delta_usd,
+			status,
+			attempt_count,
+			next_retry_at,
+			updated_at,
+			created_at,
+			last_error
+	`
+
+	exec := r.usageSQLExecutor(ctx)
+	rows, err := exec.QueryContext(
+		ctx,
+		insertQuery,
+		entry.UsageLogID,
+		entry.UserID,
+		entry.APIKeyID,
+		nullInt64(entry.SubscriptionID),
+		entry.BillingType,
+		entry.DeltaUSD,
+		service.UsageBillingEntryStatusPending,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() {
+		created, scanErr := scanUsageBillingEntry(rows)
+		if scanErr != nil {
+			return nil, false, scanErr
+		}
+		return created, true, nil
+	}
+	if err = rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	existing, err := r.GetUsageBillingEntryByUsageLogID(ctx, entry.UsageLogID)
+	if err != nil {
+		return nil, false, err
+	}
+	return existing, false, nil
+}
+
+func (r *usageLogRepository) MarkUsageBillingEntryApplied(ctx context.Context, entryID int64) error {
+	query := `
+		UPDATE billing_usage_entries
+		SET
+			applied = TRUE,
+			status = $2,
+			last_error = NULL,
+			next_retry_at = NOW(),
+			updated_at = NOW()
+		WHERE id = $1
+	`
+	res, err := r.usageSQLExecutor(ctx).ExecContext(ctx, query, entryID, service.UsageBillingEntryStatusApplied)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrUsageBillingEntryNotFound
+	}
+	return nil
+}
+
+func (r *usageLogRepository) MarkUsageBillingEntryRetry(ctx context.Context, entryID int64, nextRetryAt time.Time, lastError string) error {
+	query := `
+		UPDATE billing_usage_entries
+		SET
+			applied = FALSE,
+			status = $2,
+			next_retry_at = $3,
+			last_error = $4,
+			updated_at = NOW()
+		WHERE id = $1
+	`
+	res, err := r.usageSQLExecutor(ctx).ExecContext(
+		ctx,
+		query,
+		entryID,
+		service.UsageBillingEntryStatusPending,
+		nextRetryAt,
+		nullString(&lastError),
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrUsageBillingEntryNotFound
+	}
+	return nil
+}
+
+func (r *usageLogRepository) ClaimUsageBillingEntries(ctx context.Context, limit int, processingStaleAfter time.Duration) ([]service.UsageBillingEntry, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	staleAt := time.Now().Add(-processingStaleAfter)
+	query := `
+		WITH candidates AS (
+			SELECT id
+			FROM billing_usage_entries
+			WHERE applied = FALSE
+				AND (
+					(status = $1 AND next_retry_at <= NOW())
+					OR (status = $2 AND updated_at <= $3)
+				)
+			ORDER BY id
+			LIMIT $4
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE billing_usage_entries b
+		SET
+			status = $2,
+			attempt_count = b.attempt_count + 1,
+			updated_at = NOW(),
+			last_error = NULL
+		FROM candidates c
+		WHERE b.id = c.id
+		RETURNING
+			b.id,
+			b.usage_log_id,
+			b.user_id,
+			b.api_key_id,
+			b.subscription_id,
+			b.billing_type,
+			b.applied,
+			b.delta_usd,
+			b.status,
+			b.attempt_count,
+			b.next_retry_at,
+			b.updated_at,
+			b.created_at,
+			b.last_error
+	`
+
+	rows, err := r.usageSQLExecutor(ctx).QueryContext(
+		ctx,
+		query,
+		service.UsageBillingEntryStatusPending,
+		service.UsageBillingEntryStatusProcessing,
+		staleAt,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	entries := make([]service.UsageBillingEntry, 0, limit)
+	for rows.Next() {
+		item, scanErr := scanUsageBillingEntry(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		entries = append(entries, *item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 func (r *usageLogRepository) GetByID(ctx context.Context, id int64) (log *service.UsageLog, err error) {
 	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE id = $1"
 	rows, err := r.sql.QueryContext(ctx, query, id)
@@ -2509,6 +2778,52 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	}
 
 	return log, nil
+}
+
+func scanUsageBillingEntry(scanner interface{ Scan(...any) error }) (*service.UsageBillingEntry, error) {
+	var (
+		subscriptionID sql.NullInt64
+		nextRetryAt    time.Time
+		updatedAt      time.Time
+		createdAt      time.Time
+		lastError      sql.NullString
+		status         int16
+		entry          service.UsageBillingEntry
+	)
+
+	if err := scanner.Scan(
+		&entry.ID,
+		&entry.UsageLogID,
+		&entry.UserID,
+		&entry.APIKeyID,
+		&subscriptionID,
+		&entry.BillingType,
+		&entry.Applied,
+		&entry.DeltaUSD,
+		&status,
+		&entry.AttemptCount,
+		&nextRetryAt,
+		&updatedAt,
+		&createdAt,
+		&lastError,
+	); err != nil {
+		return nil, err
+	}
+
+	if subscriptionID.Valid {
+		v := subscriptionID.Int64
+		entry.SubscriptionID = &v
+	}
+	entry.Status = service.UsageBillingEntryStatus(status)
+	entry.NextRetryAt = nextRetryAt
+	entry.UpdatedAt = updatedAt
+	entry.CreatedAt = createdAt
+	if lastError.Valid {
+		msg := lastError.String
+		entry.LastError = &msg
+	}
+
+	return &entry, nil
 }
 
 func scanTrendRows(rows *sql.Rows) ([]TrendDataPoint, error) {

@@ -41,6 +41,27 @@ func TestOpenAIWSStateStore_ResponseConnTTL(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestOpenAIWSStateStore_ResponsePendingToolCallsTTL(t *testing.T) {
+	store := NewOpenAIWSStateStore(nil)
+	groupID := int64(9)
+	store.BindResponsePendingToolCalls(groupID, "resp_pending_tool_1", []string{"call_1", "call_2", "call_1", " "}, 30*time.Millisecond)
+
+	callIDs, ok := store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_1")
+	require.True(t, ok)
+	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
+	_, ok = store.GetResponsePendingToolCalls(groupID+1, "resp_pending_tool_1")
+	require.False(t, ok, "pending tool calls should be group-isolated")
+
+	store.DeleteResponsePendingToolCalls(groupID, "resp_pending_tool_1")
+	_, ok = store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_1")
+	require.False(t, ok)
+
+	store.BindResponsePendingToolCalls(groupID, "resp_pending_tool_2", []string{"call_3"}, 30*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	_, ok = store.GetResponsePendingToolCalls(groupID, "resp_pending_tool_2")
+	require.False(t, ok)
+}
+
 func TestOpenAIWSStateStore_SessionTurnStateTTL(t *testing.T) {
 	store := NewOpenAIWSStateStore(nil)
 	store.BindSessionTurnState(9, "session_hash_1", "turn_state_1", 30*time.Millisecond)
@@ -75,6 +96,178 @@ func TestOpenAIWSStateStore_SessionConnTTL(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestOpenAIWSStateStore_SessionLastResponseIDTTL(t *testing.T) {
+	store := NewOpenAIWSStateStore(nil)
+	store.BindSessionLastResponseID(9, "session_hash_resp_1", "resp_1", 30*time.Millisecond)
+
+	responseID, ok := store.GetSessionLastResponseID(9, "session_hash_resp_1")
+	require.True(t, ok)
+	require.Equal(t, "resp_1", responseID)
+
+	// group 隔离
+	_, ok = store.GetSessionLastResponseID(10, "session_hash_resp_1")
+	require.False(t, ok)
+
+	time.Sleep(60 * time.Millisecond)
+	_, ok = store.GetSessionLastResponseID(9, "session_hash_resp_1")
+	require.False(t, ok)
+}
+
+type openAIWSSessionLastResponseProbeCache struct {
+	sessionData map[string]string
+	setCalled   bool
+	getCalled   bool
+	delCalled   bool
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) GetSessionAccountID(context.Context, int64, string) (int64, error) {
+	return 0, nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) SetSessionAccountID(context.Context, int64, string, int64, time.Duration) error {
+	return nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) RefreshSessionTTL(context.Context, int64, string, time.Duration) error {
+	return nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) DeleteSessionAccountID(context.Context, int64, string) error {
+	return nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) SetOpenAIWSSessionLastResponseID(_ context.Context, groupID int64, sessionHash, responseID string, _ time.Duration) error {
+	if c.sessionData == nil {
+		c.sessionData = make(map[string]string)
+	}
+	c.setCalled = true
+	c.sessionData[fmt.Sprintf("%d:%s", groupID, sessionHash)] = responseID
+	return nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) GetOpenAIWSSessionLastResponseID(_ context.Context, groupID int64, sessionHash string) (string, error) {
+	c.getCalled = true
+	return c.sessionData[fmt.Sprintf("%d:%s", groupID, sessionHash)], nil
+}
+
+func (c *openAIWSSessionLastResponseProbeCache) DeleteOpenAIWSSessionLastResponseID(_ context.Context, groupID int64, sessionHash string) error {
+	c.delCalled = true
+	delete(c.sessionData, fmt.Sprintf("%d:%s", groupID, sessionHash))
+	return nil
+}
+
+func TestOpenAIWSStateStore_SessionLastResponseID_UsesOptionalCacheFallback(t *testing.T) {
+	probe := &openAIWSSessionLastResponseProbeCache{sessionData: make(map[string]string)}
+	raw := NewOpenAIWSStateStore(probe)
+	store, ok := raw.(*defaultOpenAIWSStateStore)
+	require.True(t, ok)
+
+	groupID := int64(9)
+	sessionHash := "session_hash_resp_cache_1"
+	responseID := "resp_cache_1"
+	store.BindSessionLastResponseID(groupID, sessionHash, responseID, time.Minute)
+	require.True(t, probe.setCalled, "绑定 session last_response_id 时应写入可选缓存")
+
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	store.sessionToLastRespMu.Lock()
+	delete(store.sessionToLastResp, key)
+	store.sessionToLastRespMu.Unlock()
+
+	gotResponseID, found := store.GetSessionLastResponseID(groupID, sessionHash)
+	require.True(t, found, "本地缓存缺失时应降级读取可选缓存")
+	require.Equal(t, responseID, gotResponseID)
+	require.True(t, probe.getCalled)
+
+	store.DeleteSessionLastResponseID(groupID, sessionHash)
+	require.True(t, probe.delCalled, "删除 session last_response_id 时应同步删除可选缓存")
+	_, found = store.GetSessionLastResponseID(groupID, sessionHash)
+	require.False(t, found)
+}
+
+type openAIWSResponsePendingToolCallsProbeCache struct {
+	pendingData map[string][]string
+	setCalls    int
+	getCalls    int
+	delCalls    int
+}
+
+func (c *openAIWSResponsePendingToolCallsProbeCache) GetSessionAccountID(context.Context, int64, string) (int64, error) {
+	return 0, nil
+}
+
+func (c *openAIWSResponsePendingToolCallsProbeCache) SetSessionAccountID(context.Context, int64, string, int64, time.Duration) error {
+	return nil
+}
+
+func (c *openAIWSResponsePendingToolCallsProbeCache) RefreshSessionTTL(context.Context, int64, string, time.Duration) error {
+	return nil
+}
+
+func (c *openAIWSResponsePendingToolCallsProbeCache) DeleteSessionAccountID(context.Context, int64, string) error {
+	return nil
+}
+
+func (c *openAIWSResponsePendingToolCallsProbeCache) SetOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string, callIDs []string, _ time.Duration) error {
+	if c.pendingData == nil {
+		c.pendingData = make(map[string][]string)
+	}
+	key := fmt.Sprintf("%d:%s", groupID, responseID)
+	normalized := normalizeOpenAIWSPendingToolCallIDs(callIDs)
+	if len(normalized) == 0 {
+		delete(c.pendingData, key)
+	} else {
+		c.pendingData[key] = append([]string(nil), normalized...)
+	}
+	c.setCalls++
+	return nil
+}
+
+func (c *openAIWSResponsePendingToolCallsProbeCache) GetOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string) ([]string, error) {
+	c.getCalls++
+	callIDs := c.pendingData[fmt.Sprintf("%d:%s", groupID, responseID)]
+	return append([]string(nil), callIDs...), nil
+}
+
+func (c *openAIWSResponsePendingToolCallsProbeCache) DeleteOpenAIWSResponsePendingToolCalls(_ context.Context, groupID int64, responseID string) error {
+	c.delCalls++
+	delete(c.pendingData, fmt.Sprintf("%d:%s", groupID, responseID))
+	return nil
+}
+
+func TestOpenAIWSStateStore_ResponsePendingToolCalls_UsesOptionalCacheFallback(t *testing.T) {
+	probe := &openAIWSResponsePendingToolCallsProbeCache{pendingData: make(map[string][]string)}
+	raw := NewOpenAIWSStateStore(probe)
+	store, ok := raw.(*defaultOpenAIWSStateStore)
+	require.True(t, ok)
+
+	groupID := int64(11)
+	responseID := "resp_pending_tool_cache_1"
+	store.BindResponsePendingToolCalls(groupID, responseID, []string{"call_1", "call_2", "call_1"}, time.Minute)
+	require.Equal(t, 1, probe.setCalls, "绑定 pending_tool_calls 时应写入可选缓存")
+
+	store.responsePendingToolMu.Lock()
+	delete(store.responsePendingTool, openAIWSResponsePendingToolCallsBindingKey(groupID, responseID))
+	store.responsePendingToolMu.Unlock()
+
+	callIDs, found := store.GetResponsePendingToolCalls(groupID, responseID)
+	require.True(t, found, "本地缓存缺失时应降级读取可选缓存")
+	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
+	require.Equal(t, 1, probe.getCalls)
+
+	// 回填后再次读取应命中本地缓存，不再触发 Redis 回源。
+	callIDs, found = store.GetResponsePendingToolCalls(groupID, responseID)
+	require.True(t, found)
+	require.ElementsMatch(t, []string{"call_1", "call_2"}, callIDs)
+	require.Equal(t, 1, probe.getCalls)
+	_, found = store.GetResponsePendingToolCalls(groupID+1, responseID)
+	require.False(t, found, "optional cache fallback should remain group-isolated")
+
+	store.DeleteResponsePendingToolCalls(groupID, responseID)
+	require.Equal(t, 1, probe.delCalls, "删除 pending_tool_calls 时应同步删除可选缓存")
+	_, found = store.GetResponsePendingToolCalls(groupID, responseID)
+	require.False(t, found)
+}
+
 func TestOpenAIWSStateStore_GetResponseAccount_NoStaleAfterCacheMiss(t *testing.T) {
 	cache := &stubGatewayCache{sessionBindings: map[string]int64{}}
 	store := NewOpenAIWSStateStore(cache)
@@ -94,6 +287,42 @@ func TestOpenAIWSStateStore_GetResponseAccount_NoStaleAfterCacheMiss(t *testing.
 	require.Zero(t, accountID, "上游缓存失效后不应继续命中本地陈旧映射")
 }
 
+func TestOpenAIWSStateStore_GetResponseAccount_LegacyKeyFallback(t *testing.T) {
+	cache := &stubGatewayCache{sessionBindings: map[string]int64{}}
+	store := NewOpenAIWSStateStore(cache)
+	ctx := context.Background()
+	groupID := int64(18)
+	responseID := "resp_cache_legacy_fallback"
+
+	legacyKey := openAIWSResponseAccountLegacyCacheKey(responseID)
+	v2Key := openAIWSResponseAccountCacheKey(responseID)
+	cache.sessionBindings[legacyKey] = 601
+
+	accountID, err := store.GetResponseAccount(ctx, groupID, responseID)
+	require.NoError(t, err)
+	require.Equal(t, int64(601), accountID, "应支持 legacy cache key 回读")
+	require.Equal(t, int64(601), cache.sessionBindings[v2Key], "legacy 回读后应回填 v2 cache key")
+}
+
+func TestOpenAIWSStateStore_DeleteResponseAccount_DeletesLegacyAndV2Keys(t *testing.T) {
+	cache := &stubGatewayCache{sessionBindings: map[string]int64{}}
+	store := NewOpenAIWSStateStore(cache)
+	ctx := context.Background()
+	groupID := int64(19)
+	responseID := "resp_cache_delete_both_keys"
+
+	legacyKey := openAIWSResponseAccountLegacyCacheKey(responseID)
+	v2Key := openAIWSResponseAccountCacheKey(responseID)
+	cache.sessionBindings[legacyKey] = 701
+	cache.sessionBindings[v2Key] = 701
+
+	require.NoError(t, store.DeleteResponseAccount(ctx, groupID, responseID))
+	_, legacyExists := cache.sessionBindings[legacyKey]
+	_, v2Exists := cache.sessionBindings[v2Key]
+	require.False(t, legacyExists, "删除 response account 绑定时应清理 legacy key")
+	require.False(t, v2Exists, "删除 response account 绑定时应清理 v2 key")
+}
+
 func TestOpenAIWSStateStore_MaybeCleanupRemovesExpiredIncrementally(t *testing.T) {
 	raw := NewOpenAIWSStateStore(nil)
 	store, ok := raw.(*defaultOpenAIWSStateStore)
@@ -101,21 +330,27 @@ func TestOpenAIWSStateStore_MaybeCleanupRemovesExpiredIncrementally(t *testing.T
 
 	expiredAt := time.Now().Add(-time.Minute)
 	total := 2048
-	store.responseToConnMu.Lock()
 	for i := 0; i < total; i++ {
-		store.responseToConn[fmt.Sprintf("resp_%d", i)] = openAIWSConnBinding{
+		key := fmt.Sprintf("resp_%d", i)
+		shard := store.connShard(key)
+		shard.mu.Lock()
+		shard.m[key] = openAIWSConnBinding{
 			connID:    "conn_incremental",
 			expiresAt: expiredAt,
 		}
+		shard.mu.Unlock()
 	}
-	store.responseToConnMu.Unlock()
 
 	store.lastCleanupUnixNano.Store(time.Now().Add(-2 * openAIWSStateStoreCleanupInterval).UnixNano())
 	store.maybeCleanup()
 
-	store.responseToConnMu.RLock()
-	remainingAfterFirst := len(store.responseToConn)
-	store.responseToConnMu.RUnlock()
+	remainingAfterFirst := 0
+	for i := range store.responseToConnShards {
+		shard := &store.responseToConnShards[i]
+		shard.mu.RLock()
+		remainingAfterFirst += len(shard.m)
+		shard.mu.RUnlock()
+	}
 	require.Less(t, remainingAfterFirst, total, "单轮 cleanup 应至少有进展")
 	require.Greater(t, remainingAfterFirst, 0, "增量清理不要求单轮清空全部键")
 
@@ -124,36 +359,99 @@ func TestOpenAIWSStateStore_MaybeCleanupRemovesExpiredIncrementally(t *testing.T
 		store.maybeCleanup()
 	}
 
-	store.responseToConnMu.RLock()
-	remaining := len(store.responseToConn)
-	store.responseToConnMu.RUnlock()
+	remaining := 0
+	for i := range store.responseToConnShards {
+		shard := &store.responseToConnShards[i]
+		shard.mu.RLock()
+		remaining += len(shard.m)
+		shard.mu.RUnlock()
+	}
 	require.Zero(t, remaining, "多轮 cleanup 后应逐步清空全部过期键")
 }
 
+func TestOpenAIWSStateStore_BackgroundCleanupRemovesExpiredWithoutNewWrites(t *testing.T) {
+	store := newOpenAIWSStateStore(nil, 20*time.Millisecond)
+	defer store.Close()
+
+	expiredAt := time.Now().Add(-time.Minute)
+	store.responseToAccountMu.Lock()
+	for i := 0; i < 64; i++ {
+		key := fmt.Sprintf("bg_cleanup_resp_%d", i)
+		store.responseToAccount[key] = openAIWSAccountBinding{
+			accountID: int64(i + 1),
+			expiresAt: expiredAt,
+		}
+	}
+	store.responseToAccountMu.Unlock()
+
+	// Backdate cleanup watermark so the worker can run immediately on next tick.
+	store.lastCleanupUnixNano.Store(time.Now().Add(-time.Minute).UnixNano())
+
+	require.Eventually(t, func() bool {
+		store.responseToAccountMu.RLock()
+		remaining := len(store.responseToAccount)
+		store.responseToAccountMu.RUnlock()
+		return remaining == 0
+	}, 600*time.Millisecond, 10*time.Millisecond, "后台 cleanup 应在无新写入时清理过期项")
+}
+
 func TestEnsureBindingCapacity_EvictsOneWhenMapIsFull(t *testing.T) {
-	bindings := map[string]int{
-		"a": 1,
-		"b": 2,
+	bindings := map[string]openAIWSAccountBinding{
+		"a": {accountID: 1, expiresAt: time.Now().Add(time.Hour)},
+		"b": {accountID: 2, expiresAt: time.Now().Add(time.Hour)},
 	}
 
 	ensureBindingCapacity(bindings, "c", 2)
-	bindings["c"] = 3
+	bindings["c"] = openAIWSAccountBinding{accountID: 3, expiresAt: time.Now().Add(time.Hour)}
 
 	require.Len(t, bindings, 2)
-	require.Equal(t, 3, bindings["c"])
+	require.Equal(t, int64(3), bindings["c"].accountID)
 }
 
 func TestEnsureBindingCapacity_DoesNotEvictWhenUpdatingExistingKey(t *testing.T) {
-	bindings := map[string]int{
-		"a": 1,
-		"b": 2,
+	bindings := map[string]openAIWSAccountBinding{
+		"a": {accountID: 1, expiresAt: time.Now().Add(time.Hour)},
+		"b": {accountID: 2, expiresAt: time.Now().Add(time.Hour)},
 	}
 
 	ensureBindingCapacity(bindings, "a", 2)
-	bindings["a"] = 9
+	bindings["a"] = openAIWSAccountBinding{accountID: 9, expiresAt: time.Now().Add(time.Hour)}
 
 	require.Len(t, bindings, 2)
-	require.Equal(t, 9, bindings["a"])
+	require.Equal(t, int64(9), bindings["a"].accountID)
+}
+
+func TestEnsureBindingCapacity_PrefersExpiredEntry(t *testing.T) {
+	bindings := map[string]openAIWSAccountBinding{
+		"expired": {accountID: 1, expiresAt: time.Now().Add(-time.Hour)},
+		"active":  {accountID: 2, expiresAt: time.Now().Add(time.Hour)},
+	}
+
+	ensureBindingCapacity(bindings, "c", 2)
+	bindings["c"] = openAIWSAccountBinding{accountID: 3, expiresAt: time.Now().Add(time.Hour)}
+
+	require.Len(t, bindings, 2)
+	_, hasExpired := bindings["expired"]
+	require.False(t, hasExpired, "expired entry should have been evicted")
+	require.Equal(t, int64(2), bindings["active"].accountID)
+	require.Equal(t, int64(3), bindings["c"].accountID)
+}
+
+func TestEnsureBindingCapacity_EvictsEarliestExpiryWhenNoExpired(t *testing.T) {
+	now := time.Now()
+	bindings := map[string]openAIWSAccountBinding{
+		"soon":  {accountID: 1, expiresAt: now.Add(30 * time.Second)},
+		"later": {accountID: 2, expiresAt: now.Add(5 * time.Minute)},
+	}
+
+	ensureBindingCapacity(bindings, "new", 2)
+	bindings["new"] = openAIWSAccountBinding{accountID: 3, expiresAt: now.Add(10 * time.Minute)}
+
+	require.Len(t, bindings, 2)
+	_, hasSoon := bindings["soon"]
+	require.False(t, hasSoon, "entry with earliest expiresAt should be evicted")
+	require.Equal(t, int64(2), bindings["later"].accountID)
+	require.Equal(t, int64(3), bindings["new"].accountID)
 }
 
 type openAIWSStateStoreTimeoutProbeCache struct {
@@ -204,13 +502,14 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 
 	accountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_timeout_probe")
 	require.NoError(t, getErr)
-	require.Equal(t, int64(11), accountID, "本地缓存命中应优先返回已绑定账号")
+	require.Equal(t, int64(11), accountID, "Redis Set 失败时本地缓存仍应保留作为降级保障")
 
 	require.NoError(t, store.DeleteResponseAccount(ctx, groupID, "resp_timeout_probe"))
 
 	require.True(t, probe.setHasDeadline, "SetSessionAccountID 应携带独立超时上下文")
 	require.True(t, probe.deleteHasDeadline, "DeleteSessionAccountID 应携带独立超时上下文")
-	require.False(t, probe.getHasDeadline, "GetSessionAccountID 本用例应由本地缓存命中，不触发 Redis 读取")
+	// 本地缓存作为降级保障保留，Get 直接命中本地缓存不会穿透到 Redis
+	require.False(t, probe.getHasDeadline, "本地缓存命中时不应穿透到 Redis 读取")
 	require.Greater(t, probe.setDeadlineDelta, 2*time.Second)
 	require.LessOrEqual(t, probe.setDeadlineDelta, 3*time.Second)
 	require.Greater(t, probe.delDeadlineDelta, 2*time.Second)
@@ -224,6 +523,26 @@ func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 	require.True(t, probe2.getHasDeadline, "GetSessionAccountID 在缓存未命中时应携带独立超时上下文")
 	require.Greater(t, probe2.getDeadlineDelta, 2*time.Second)
 	require.LessOrEqual(t, probe2.getDeadlineDelta, 3*time.Second)
+}
+
+func TestOpenAIWSStateStore_BindResponseAccount_UsesShortLocalHotTTL(t *testing.T) {
+	cache := &stubGatewayCache{}
+	raw := NewOpenAIWSStateStore(cache)
+	store, ok := raw.(*defaultOpenAIWSStateStore)
+	require.True(t, ok)
+
+	groupID := int64(23)
+	responseID := "resp_local_hot_ttl"
+	require.NoError(t, store.BindResponseAccount(context.Background(), groupID, responseID, 902, 24*time.Hour))
+
+	id := normalizeOpenAIWSResponseID(responseID)
+	require.NotEmpty(t, id)
+	store.responseToAccountMu.RLock()
+	binding, exists := store.responseToAccount[id]
+	store.responseToAccountMu.RUnlock()
+	require.True(t, exists)
+	require.Equal(t, int64(902), binding.accountID)
+	require.WithinDuration(t, time.Now().Add(openAIWSStateStoreHotCacheTTL), binding.expiresAt, 1500*time.Millisecond)
 }
 
 func TestWithOpenAIWSStateStoreRedisTimeout_WithParentContext(t *testing.T) {

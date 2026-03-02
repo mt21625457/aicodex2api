@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
@@ -273,13 +273,7 @@ func (s *OpenAIOAuthService) ExchangeSoraSessionToken(ctx context.Context, sessi
 	req.Header.Set("Referer", "https://sora.chatgpt.com/")
 	req.Header.Set("User-Agent", "Sora/1.2026.007 (Android 15; 24122RKC7C; build 2600700)")
 
-	client, err := httpclient.GetClient(httpclient.Options{
-		ProxyURL: proxyURL,
-		Timeout:  120 * time.Second,
-	})
-	if err != nil {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "SORA_SESSION_CLIENT_FAILED", "create http client failed: %v", err)
-	}
+	client := newOpenAIOAuthHTTPClient(proxyURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "SORA_SESSION_REQUEST_FAILED", "request failed: %v", err)
@@ -534,6 +528,19 @@ func (s *OpenAIOAuthService) resolveProxyURL(ctx context.Context, proxyID *int64
 		return "", nil
 	}
 	return proxy.URL(), nil
+}
+
+func newOpenAIOAuthHTTPClient(proxyURL string) *http.Client {
+	transport := &http.Transport{}
+	if strings.TrimSpace(proxyURL) != "" {
+		if parsed, err := url.Parse(proxyURL); err == nil && parsed.Host != "" {
+			transport.Proxy = http.ProxyURL(parsed)
+		}
+	}
+	return &http.Client{
+		Timeout:   120 * time.Second,
+		Transport: transport,
+	}
 }
 
 func normalizeOpenAIOAuthPlatform(platform string) string {
