@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -65,6 +64,7 @@ const (
 	openAIWSAutoAbortedToolOutputValue           = `{"error":"tool call aborted by gateway"}`
 	openAIWSClientReadIdleTimeoutDefault         = 30 * time.Minute
 	openAIWSIngressClientDisconnectDrainTimeout  = 5 * time.Second
+	openAIWSUpstreamPumpInfoMinAlive             = 100 * time.Millisecond
 )
 
 type openAIWSIngressTurnAbortReason string
@@ -83,6 +83,7 @@ const (
 	openAIWSIngressTurnAbortReasonWriteClient             openAIWSIngressTurnAbortReason = "write_client"
 	openAIWSIngressTurnAbortReasonContinuationUnavailable openAIWSIngressTurnAbortReason = "continuation_unavailable"
 	openAIWSIngressTurnAbortReasonClientPreempted         openAIWSIngressTurnAbortReason = "client_preempted"
+	openAIWSIngressTurnAbortReasonUpstreamRestart         openAIWSIngressTurnAbortReason = "upstream_restart"
 )
 
 type openAIWSIngressTurnAbortDisposition string
@@ -1719,6 +1720,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	// 持久客户端读取 goroutine：将客户端消息推送到 channel，
 	// 使 sendAndRelay 可以通过 select 同时监听上游事件和客户端新请求。
 	var nextClientPreemptedPayload []byte
+	var pendingClientReadErr error
 	clientMsgCh := make(chan []byte, 1)
 	clientReadErrCh := make(chan error, 1)
 	go func() {
@@ -1826,15 +1828,27 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		go func() {
 			defer func() {
 				close(pumpEventCh)
-				if pumpCtx.Err() != nil {
+				if pumpCtx.Err() == nil {
+					return
+				}
+				pumpAlive := time.Since(pumpStartedAt)
+				if pumpAlive >= openAIWSUpstreamPumpInfoMinAlive {
 					logOpenAIWSModeInfo(
 						"ingress_ws_upstream_pump_exit account_id=%d turn=%d conn_id=%s reason=context_cancelled pump_alive_ms=%d",
 						account.ID,
 						turn,
 						truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
-						time.Since(pumpStartedAt).Milliseconds(),
+						pumpAlive.Milliseconds(),
 					)
+					return
 				}
+				logOpenAIWSModeDebug(
+					"ingress_ws_upstream_pump_exit account_id=%d turn=%d conn_id=%s reason=context_cancelled pump_alive_ms=%d",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+					pumpAlive.Milliseconds(),
+				)
 			}()
 			for {
 				msg, readErr := lease.ReadMessageWithContextTimeout(pumpCtx, s.openAIWSReadTimeout())
@@ -1909,6 +1923,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						buildPartialResult("client_disconnected"),
 					)
 				}
+				pendingClientReadErr = readErr
+				cause := "-"
+				if readErr != nil {
+					cause = truncateOpenAIWSLogValue(readErr.Error(), openAIWSLogValueMaxLen)
+				}
+				logOpenAIWSModeInfo(
+					"ingress_ws_client_read_error_deferred account_id=%d turn=%d conn_id=%s cause=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+					cause,
+				)
 				clientMsgCh = nil
 				clientReadErrCh = nil
 				continue
@@ -1951,22 +1977,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						buildPartialResult("client_disconnected_drain_timeout"),
 					)
 				}
-				readErrClass := "unknown"
-				if errors.Is(readErr, context.Canceled) {
-					readErrClass = "context_canceled"
-				} else if errors.Is(readErr, context.DeadlineExceeded) {
-					readErrClass = "deadline_exceeded"
-				} else if isOpenAIWSClientDisconnectError(readErr) {
-					readErrClass = "upstream_closed"
-				} else if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
-					readErrClass = "eof"
-				}
+				readErrClass := classifyOpenAIWSIngressReadErrorClass(readErr)
+				closeStatus, closeReason := summarizeOpenAIWSReadCloseError(readErr)
 				logOpenAIWSModeInfo(
-					"ingress_ws_upstream_read_error account_id=%d turn=%d conn_id=%s class=%s events_received=%d wrote_downstream=%v response_id=%s cause=%s",
+					"ingress_ws_upstream_read_error account_id=%d turn=%d conn_id=%s class=%s close_status=%s close_reason=%s events_received=%d wrote_downstream=%v response_id=%s cause=%s",
 					account.ID,
 					turn,
 					truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
 					normalizeOpenAIWSLogValue(readErrClass),
+					closeStatus,
+					closeReason,
 					eventCount,
 					wroteDownstream,
 					truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
@@ -2599,6 +2619,25 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				len(nextClientMessage),
 			)
 		} else {
+			if pendingReadErr := openAIWSAdvanceConsumePendingClientReadErr(&pendingClientReadErr); pendingReadErr != nil {
+				logOpenAIWSModeInfo(
+					"ingress_ws_advance_read_fail account_id=%d turn=%d conn_id=%s cause=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(pendingReadErr.Error(), openAIWSLogValueMaxLen),
+				)
+				return false, pendingReadErr
+			}
+			if openAIWSAdvanceClientReadUnavailable(clientMsgCh, clientReadErrCh) {
+				logOpenAIWSModeInfo(
+					"ingress_ws_advance_read_unavailable account_id=%d turn=%d conn_id=%s",
+					account.ID,
+					turn,
+					truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				)
+				return false, fmt.Errorf("read client websocket request: %w", errOpenAIWSAdvanceClientReadUnavailable)
+			}
 			select {
 			case msg, ok := <-clientMsgCh:
 				if !ok {
@@ -2989,6 +3028,32 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
 						time.Since(preemptRecoverStart).Milliseconds(),
 					)
+				} else if abortReason == openAIWSIngressTurnAbortReasonUpstreamRestart {
+					// 上游重启（1012/1013）：连接级关闭，客户端未收到任何终端事件，
+					// 始终补发 error 事件（无论 wroteDownstream 状态），避免客户端永远等待响应。
+					abortMessage := "upstream service restarting, please retry"
+					if finalErr != nil {
+						abortMessage = finalErr.Error()
+					}
+					errorEvent := []byte(`{"type":"error","error":{"type":"server_error","code":"` + string(abortReason) + `","message":` + strconv.Quote(abortMessage) + `}}`)
+					if writeErr := writeClientMessage(errorEvent); writeErr != nil {
+						logOpenAIWSModeInfo(
+							"ingress_ws_upstream_restart_notify_failed account_id=%d turn=%d conn_id=%s cause=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+							truncateOpenAIWSLogValue(writeErr.Error(), openAIWSLogValueMaxLen),
+						)
+					} else {
+						logOpenAIWSModeInfo(
+							"ingress_ws_upstream_restart_notified account_id=%d turn=%d conn_id=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+						)
+					}
+					resetSessionLease(true)
+					clearSessionLastResponseID()
 				} else {
 					// turn 级终止：当前 turn 失败，但客户端 WS 会话继续。
 					// 这样可与 Codex 客户端语义对齐：后续 turn 允许在新上游连接上继续进行。
@@ -3372,4 +3437,3 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 	}
 	return nil, nil
 }
-

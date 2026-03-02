@@ -385,6 +385,31 @@ func isOpenAIWSClientDisconnectError(err error) bool {
 		strings.Contains(message, "broken pipe")
 }
 
+func classifyOpenAIWSIngressReadErrorClass(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	switch coderws.CloseStatus(err) {
+	case coderws.StatusServiceRestart:
+		return "service_restart"
+	case coderws.StatusTryAgainLater:
+		return "try_again_later"
+	}
+	if isOpenAIWSClientDisconnectError(err) {
+		return "upstream_closed"
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return "eof"
+	}
+	return "unknown"
+}
+
 func isOpenAIWSStreamWriteDisconnectError(err error, reqCtx context.Context) bool {
 	if err == nil {
 		return false
@@ -448,6 +473,35 @@ func shouldFlushOpenAIWSBufferedEventsOnError(reqStream bool, wroteDownstream bo
 // errOpenAIWSClientPreempted 表示客户端在当前 turn 尚未完成时发送了新的 response.create 请求。
 var errOpenAIWSClientPreempted = errors.New("client preempted current turn with new request")
 
+var errOpenAIWSAdvanceClientReadUnavailable = errors.New("client reader channels unavailable")
+
+func openAIWSAdvanceConsumePendingClientReadErr(pendingErr *error) error {
+	if pendingErr == nil || *pendingErr == nil {
+		return nil
+	}
+	readErr := *pendingErr
+	*pendingErr = nil
+	return fmt.Errorf("read client websocket request: %w", readErr)
+}
+
+func openAIWSAdvanceClientReadUnavailable(clientMsgCh <-chan []byte, clientReadErrCh <-chan error) bool {
+	return clientMsgCh == nil && clientReadErrCh == nil
+}
+
+// isOpenAIWSUpstreamRestartCloseError 检测上游是否因服务重启/维护关闭了连接。
+// 1012=ServiceRestart, 1013=TryAgainLater，都是临时性上游维护，proxy 应视为可恢复错误。
+func isOpenAIWSUpstreamRestartCloseError(err error) bool {
+	var turnErr *openAIWSIngressTurnError
+	if !errors.As(err, &turnErr) || turnErr == nil {
+		return false
+	}
+	if turnErr.stage != "read_upstream" {
+		return false
+	}
+	status := coderws.CloseStatus(turnErr.cause)
+	return status == 1012 || status == 1013 // ServiceRestart, TryAgainLater
+}
+
 func classifyOpenAIWSIngressTurnAbortReason(err error) (openAIWSIngressTurnAbortReason, bool) {
 	if err == nil {
 		return openAIWSIngressTurnAbortReasonUnknown, false
@@ -476,6 +530,11 @@ func classifyOpenAIWSIngressTurnAbortReason(err error) (openAIWSIngressTurnAbort
 	if isOpenAIWSClientDisconnectError(err) {
 		return openAIWSIngressTurnAbortReasonClientClosed, true
 	}
+	// 上游 ServiceRestart/TryAgainLater：必须在 stage-based 分类之前检测，
+	// 否则会被 "read_upstream" 分支兜底为 FailRequest。
+	if isOpenAIWSUpstreamRestartCloseError(err) {
+		return openAIWSIngressTurnAbortReasonUpstreamRestart, true
+	}
 
 	var turnErr *openAIWSIngressTurnError
 	if errors.As(err, &turnErr) && turnErr != nil {
@@ -496,7 +555,8 @@ func openAIWSIngressTurnAbortDispositionForReason(reason openAIWSIngressTurnAbor
 	case openAIWSIngressTurnAbortReasonPreviousResponse,
 		openAIWSIngressTurnAbortReasonToolOutput,
 		openAIWSIngressTurnAbortReasonUpstreamError,
-		openAIWSIngressTurnAbortReasonClientPreempted:
+		openAIWSIngressTurnAbortReasonClientPreempted,
+		openAIWSIngressTurnAbortReasonUpstreamRestart:
 		return openAIWSIngressTurnAbortDispositionContinueTurn
 	case openAIWSIngressTurnAbortReasonContextCanceled,
 		openAIWSIngressTurnAbortReasonClientClosed:
@@ -511,6 +571,10 @@ func classifyOpenAIWSReadFallbackReason(err error) string {
 		return "read_event"
 	}
 	switch coderws.CloseStatus(err) {
+	case coderws.StatusServiceRestart:
+		return "service_restart"
+	case coderws.StatusTryAgainLater:
+		return "try_again_later"
 	case coderws.StatusPolicyViolation:
 		return "policy_violation"
 	case coderws.StatusMessageTooBig:
@@ -582,10 +646,12 @@ func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (stri
 		(strings.Contains(msg, "previous response") && strings.Contains(msg, "not found")) {
 		return "previous_response_not_found", true
 	}
-	// "No tool output found for function call <call_id>" 表示 previous_response_id 指向的
-	// response 包含未完成的 function_call（例如用户在 Codex CLI 按 ESC 取消了 function_call
-	// 后重新发送消息）。此时 previous_response_id 本身就是问题，需要移除后重放。
-	if strings.Contains(msg, "no tool output found") {
+	// "No tool output found for function call <call_id>" / "No tool call found for function call output..."
+	// 表示 previous_response_id 指向的 response 包含未完成的 function_call（例如用户在 Codex CLI
+	// 按 ESC 取消 function_call 后重新发送消息）。此时 previous_response_id 本身就是问题，需要移除后重放。
+	if strings.Contains(msg, "no tool output found") ||
+		strings.Contains(msg, "no tool call found for function call output") ||
+		(strings.Contains(msg, "no tool call found") && strings.Contains(msg, "function call output")) {
 		return openAIWSIngressStageToolOutputNotFound, true
 	}
 	if strings.Contains(msg, "without its required following item") ||

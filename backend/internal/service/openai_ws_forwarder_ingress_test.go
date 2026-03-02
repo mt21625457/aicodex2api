@@ -196,6 +196,46 @@ func TestClassifyOpenAIWSIngressTurnAbortReason(t *testing.T) {
 			wantReason:   openAIWSIngressTurnAbortReasonContinuationUnavailable,
 			wantExpected: true,
 		},
+		{
+			name: "upstream restart 1012",
+			err: wrapOpenAIWSIngressTurnError(
+				"read_upstream",
+				coderws.CloseError{Code: coderws.StatusServiceRestart, Reason: "service restart"},
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonUpstreamRestart,
+			wantExpected: true,
+		},
+		{
+			name: "upstream try again later 1013",
+			err: wrapOpenAIWSIngressTurnError(
+				"read_upstream",
+				coderws.CloseError{Code: coderws.StatusTryAgainLater, Reason: "try again later"},
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonUpstreamRestart,
+			wantExpected: true,
+		},
+		{
+			name: "upstream restart 1012 with wroteDownstream",
+			err: wrapOpenAIWSIngressTurnError(
+				"read_upstream",
+				coderws.CloseError{Code: coderws.StatusServiceRestart, Reason: "service restart"},
+				true,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonUpstreamRestart,
+			wantExpected: true,
+		},
+		{
+			name: "1012 on non-read_upstream stage should not match",
+			err: wrapOpenAIWSIngressTurnError(
+				"write_upstream",
+				coderws.CloseError{Code: coderws.StatusServiceRestart, Reason: "service restart"},
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonWriteUpstream,
+			wantExpected: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -400,6 +440,11 @@ func TestOpenAIWSIngressTurnAbortDispositionForReason(t *testing.T) {
 			name: "default fail request on write client reason",
 			in:   openAIWSIngressTurnAbortReasonWriteClient,
 			want: openAIWSIngressTurnAbortDispositionFailRequest,
+		},
+		{
+			name: "continue turn on upstream restart",
+			in:   openAIWSIngressTurnAbortReasonUpstreamRestart,
+			want: openAIWSIngressTurnAbortDispositionContinueTurn,
 		},
 	}
 

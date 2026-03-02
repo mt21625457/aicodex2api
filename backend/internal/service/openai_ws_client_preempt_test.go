@@ -137,10 +137,10 @@ func TestClassifyAbortReason_ClientPreempted_NotConfusedWithOther(t *testing.T) 
 
 	// 确保其他错误不会被误分类为 client_preempted
 	others := []error{
-		errors.New("client preempted"),        // 文本相同但不是同一哨兵
-		context.Canceled,                      // context 取消
-		io.EOF,                                // 客户端断连
-		errors.New("random error"),            // 随机错误
+		errors.New("client preempted"), // 文本相同但不是同一哨兵
+		context.Canceled,               // context 取消
+		io.EOF,                         // 客户端断连
+		errors.New("random error"),     // 随机错误
 	}
 
 	for _, err := range others {
@@ -459,8 +459,8 @@ func TestDisposition_AllReasons_IncludeClientPreempted(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		reason     openAIWSIngressTurnAbortReason
-		wantDisp   openAIWSIngressTurnAbortDisposition
+		reason   openAIWSIngressTurnAbortReason
+		wantDisp openAIWSIngressTurnAbortDisposition
 	}{
 		{openAIWSIngressTurnAbortReasonPreviousResponse, openAIWSIngressTurnAbortDispositionContinueTurn},
 		{openAIWSIngressTurnAbortReasonToolOutput, openAIWSIngressTurnAbortDispositionContinueTurn},
@@ -791,6 +791,39 @@ func TestSelectLoop_ClientReadErr_NilChannelsAfterError(t *testing.T) {
 	}
 }
 
+func TestAdvanceConsumePendingClientReadErr(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, openAIWSAdvanceConsumePendingClientReadErr(nil))
+
+	var pendingErr error
+	require.NoError(t, openAIWSAdvanceConsumePendingClientReadErr(&pendingErr))
+
+	sourceErr := errors.New("custom read error")
+	pendingErr = sourceErr
+
+	gotErr := openAIWSAdvanceConsumePendingClientReadErr(&pendingErr)
+	require.Error(t, gotErr)
+	require.ErrorIs(t, gotErr, sourceErr)
+	require.Nil(t, pendingErr, "pending error should be consumed once")
+	require.NoError(t, openAIWSAdvanceConsumePendingClientReadErr(&pendingErr))
+}
+
+func TestAdvanceClientReadUnavailable(t *testing.T) {
+	t.Parallel()
+
+	var nilMsgCh chan []byte
+	var nilErrCh chan error
+	require.True(t, openAIWSAdvanceClientReadUnavailable(nilMsgCh, nilErrCh))
+
+	msgCh := make(chan []byte, 1)
+	require.False(t, openAIWSAdvanceClientReadUnavailable(msgCh, nilErrCh))
+
+	errCh := make(chan error, 1)
+	require.False(t, openAIWSAdvanceClientReadUnavailable(nilMsgCh, errCh))
+	require.False(t, openAIWSAdvanceClientReadUnavailable(msgCh, errCh))
+}
+
 // ---------------------------------------------------------------------------
 // advanceToNextClientTurn channel 读取路径测试
 // ---------------------------------------------------------------------------
@@ -1021,10 +1054,10 @@ func TestShouldFlushBufferedEvents_ClientPreempted(t *testing.T) {
 	// client_preempted 场景下 clientDisconnected=false（客户端仍在），
 	// 是否 flush 取决于 reqStream 和 wroteDownstream
 	tests := []struct {
-		name             string
-		reqStream        bool
-		wroteDownstream  bool
-		wantFlush        bool
+		name            string
+		reqStream       bool
+		wroteDownstream bool
+		wantFlush       bool
 	}{
 		{"stream_wrote", true, true, true},
 		{"stream_not_wrote", true, false, false},
