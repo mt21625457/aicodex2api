@@ -1822,8 +1822,20 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		pumpEventCh := make(chan openAIWSUpstreamPumpEvent, openAIWSUpstreamPumpBufferSize)
 		pumpCtx, pumpCancel := context.WithCancel(ctx)
 		defer pumpCancel()
+		pumpStartedAt := time.Now()
 		go func() {
-			defer close(pumpEventCh)
+			defer func() {
+				close(pumpEventCh)
+				if pumpCtx.Err() != nil {
+					logOpenAIWSModeInfo(
+						"ingress_ws_upstream_pump_exit account_id=%d turn=%d conn_id=%s reason=context_cancelled pump_alive_ms=%d",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+						time.Since(pumpStartedAt).Milliseconds(),
+					)
+				}
+			}()
 			for {
 				msg, readErr := lease.ReadMessageWithContextTimeout(pumpCtx, s.openAIWSReadTimeout())
 				select {
@@ -2266,6 +2278,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if sessionLease == nil {
 			return
 		}
+		resetStart := time.Now()
+		resetConnID := sessionConnID
 		if markBroken {
 			sessionLease.MarkBroken()
 		}
@@ -2273,6 +2287,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		sessionLease = nil
 		sessionConnID = ""
 		preferredConnID = ""
+		if elapsed := time.Since(resetStart); elapsed > 100*time.Millisecond {
+			logOpenAIWSModeInfo(
+				"ingress_ws_reset_session_lease_slow account_id=%d conn_id=%s mark_broken=%v elapsed_ms=%d",
+				account.ID,
+				truncateOpenAIWSLogValue(resetConnID, openAIWSIDValueMaxLen),
+				markBroken,
+				elapsed.Milliseconds(),
+			)
+		}
 	}
 	recoverIngressPrevResponseNotFound := func(relayErr error, turn int, connID string) bool {
 		isPrevNotFound := isOpenAIWSIngressPreviousResponseNotFound(relayErr)
@@ -2557,6 +2580,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if nextClientPreemptedPayload != nil {
 			nextClientMessage = nextClientPreemptedPayload
 			nextClientPreemptedPayload = nil
+			logOpenAIWSModeInfo(
+				"ingress_ws_advance_use_preempted_payload account_id=%d turn=%d conn_id=%s payload_bytes=%d",
+				account.ID,
+				turn,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				len(nextClientMessage),
+			)
 		} else {
 			select {
 			case msg, ok := <-clientMsgCh:
@@ -2939,7 +2969,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				if abortReason == openAIWSIngressTurnAbortReasonClientPreempted {
 					// 客户端抢占：不通知 error（客户端已发出新请求，不需要旧 turn 的错误事件），
 					// 保留上一轮 response_id（被抢占的 turn 未完成，上一轮 response_id 仍有效供新 turn 续链）。
+					preemptRecoverStart := time.Now()
 					resetSessionLease(true)
+					logOpenAIWSModeInfo(
+						"ingress_ws_client_preempt_recover account_id=%d turn=%d conn_id=%s reset_elapsed_ms=%d",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+						time.Since(preemptRecoverStart).Milliseconds(),
+					)
 				} else {
 					// turn 级终止：当前 turn 失败，但客户端 WS 会话继续。
 					// 这样可与 Codex 客户端语义对齐：后续 turn 允许在新上游连接上继续进行。
