@@ -445,6 +445,9 @@ func shouldFlushOpenAIWSBufferedEventsOnError(reqStream bool, wroteDownstream bo
 	return reqStream && wroteDownstream && !clientDisconnected
 }
 
+// errOpenAIWSClientPreempted 表示客户端在当前 turn 尚未完成时发送了新的 response.create 请求。
+var errOpenAIWSClientPreempted = errors.New("client preempted current turn with new request")
+
 func classifyOpenAIWSIngressTurnAbortReason(err error) (openAIWSIngressTurnAbortReason, bool) {
 	if err == nil {
 		return openAIWSIngressTurnAbortReasonUnknown, false
@@ -460,6 +463,9 @@ func classifyOpenAIWSIngressTurnAbortReason(err error) (openAIWSIngressTurnAbort
 	}
 	if isOpenAIWSContinuationUnavailableCloseError(err) {
 		return openAIWSIngressTurnAbortReasonContinuationUnavailable, true
+	}
+	if errors.Is(err, errOpenAIWSClientPreempted) {
+		return openAIWSIngressTurnAbortReasonClientPreempted, true
 	}
 	if errors.Is(err, context.Canceled) {
 		return openAIWSIngressTurnAbortReasonContextCanceled, true
@@ -489,7 +495,8 @@ func openAIWSIngressTurnAbortDispositionForReason(reason openAIWSIngressTurnAbor
 	switch reason {
 	case openAIWSIngressTurnAbortReasonPreviousResponse,
 		openAIWSIngressTurnAbortReasonToolOutput,
-		openAIWSIngressTurnAbortReasonUpstreamError:
+		openAIWSIngressTurnAbortReasonUpstreamError,
+		openAIWSIngressTurnAbortReasonClientPreempted:
 		return openAIWSIngressTurnAbortDispositionContinueTurn
 	case openAIWSIngressTurnAbortReasonContextCanceled,
 		openAIWSIngressTurnAbortReasonClientClosed:
