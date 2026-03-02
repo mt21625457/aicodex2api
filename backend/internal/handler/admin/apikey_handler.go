@@ -35,6 +35,10 @@ func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {
 		response.BadRequest(c, "Invalid API key ID")
 		return
 	}
+	if keyID <= 0 {
+		response.BadRequest(c, "Invalid API key ID")
+		return
+	}
 
 	var req AdminUpdateAPIKeyGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

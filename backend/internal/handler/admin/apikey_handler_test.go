@@ -36,6 +36,19 @@ func TestAdminAPIKeyHandler_UpdateGroup_InvalidID(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "Invalid API key ID")
 }
 
+func TestAdminAPIKeyHandler_UpdateGroup_InvalidNegativeID(t *testing.T) {
+	router := setupAPIKeyHandler(newStubAdminService())
+	body := `{"group_id": 2}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/api-keys/-1", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "Invalid API key ID")
+}
+
 func TestAdminAPIKeyHandler_UpdateGroup_InvalidJSON(t *testing.T) {
 	router := setupAPIKeyHandler(newStubAdminService())
 
