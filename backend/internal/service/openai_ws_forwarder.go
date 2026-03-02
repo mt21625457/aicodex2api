@@ -3165,6 +3165,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		)
 		if persistLastResponseID {
 			lastTurnResponseID = responseID
+		} else if responseID != "" && len(result.PendingFunctionCallIDs) > 0 {
+			// response 未 completed/done（如 incomplete/failed/cancelled），但包含未完成的 function_call。
+			// 保留 response_id 以便下一个 turn 的 function_call_output 能够关联。
+			lastTurnResponseID = responseID
 		} else {
 			clearSessionLastResponseID()
 		}
