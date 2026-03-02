@@ -942,6 +942,9 @@ func (r *stubUserRepoForHandler) ExistsByEmail(context.Context, string) (bool, e
 func (r *stubUserRepoForHandler) RemoveGroupFromAllowedGroups(context.Context, int64) (int64, error) {
 	return 0, nil
 }
+func (r *stubUserRepoForHandler) AddGroupToAllowedGroups(context.Context, int64, int64) error {
+	return nil
+}
 func (r *stubUserRepoForHandler) UpdateTotpSecret(context.Context, int64, *string) error { return nil }
 func (r *stubUserRepoForHandler) EnableTotp(context.Context, int64) error                { return nil }
 func (r *stubUserRepoForHandler) DisableTotp(context.Context, int64) error               { return nil }
