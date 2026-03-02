@@ -269,35 +269,6 @@ type openAIWSAbortMetrics struct {
 	turnAbortRecovered atomic.Int64
 }
 
-type OpenAIWSRetryMetricsSnapshot struct {
-	RetryAttemptsTotal            int64 `json:"retry_attempts_total"`
-	RetryBackoffMsTotal           int64 `json:"retry_backoff_ms_total"`
-	RetryExhaustedTotal           int64 `json:"retry_exhausted_total"`
-	NonRetryableFastFallbackTotal int64 `json:"non_retryable_fast_fallback_total"`
-}
-
-type OpenAICompatibilityFallbackMetricsSnapshot struct {
-	SessionHashLegacyReadFallbackTotal int64   `json:"session_hash_legacy_read_fallback_total"`
-	SessionHashLegacyReadFallbackHit   int64   `json:"session_hash_legacy_read_fallback_hit"`
-	SessionHashLegacyDualWriteTotal    int64   `json:"session_hash_legacy_dual_write_total"`
-	SessionHashLegacyReadHitRate       float64 `json:"session_hash_legacy_read_hit_rate"`
-
-	MetadataLegacyFallbackIsMaxTokensOneHaikuTotal int64 `json:"metadata_legacy_fallback_is_max_tokens_one_haiku_total"`
-	MetadataLegacyFallbackThinkingEnabledTotal     int64 `json:"metadata_legacy_fallback_thinking_enabled_total"`
-	MetadataLegacyFallbackPrefetchedStickyAccount  int64 `json:"metadata_legacy_fallback_prefetched_sticky_account_total"`
-	MetadataLegacyFallbackPrefetchedStickyGroup    int64 `json:"metadata_legacy_fallback_prefetched_sticky_group_total"`
-	MetadataLegacyFallbackSingleAccountRetryTotal  int64 `json:"metadata_legacy_fallback_single_account_retry_total"`
-	MetadataLegacyFallbackAccountSwitchCountTotal  int64 `json:"metadata_legacy_fallback_account_switch_count_total"`
-	MetadataLegacyFallbackTotal                    int64 `json:"metadata_legacy_fallback_total"`
-}
-
-type openAIWSRetryMetrics struct {
-	retryAttempts            atomic.Int64
-	retryBackoffMs           atomic.Int64
-	retryExhausted           atomic.Int64
-	nonRetryableFastFallback atomic.Int64
-}
-
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
 	accountRepo         AccountRepository
@@ -3248,12 +3219,6 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 	usage.OutputTokens = int(usageFields[1].Int())
 	usage.CacheReadInputTokens = int(usageFields[2].Int())
 }
-
-	usage.InputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens").Int())
-	usage.OutputTokens = int(gjson.GetBytes(data, "response.usage.output_tokens").Int())
-	usage.CacheReadInputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens_details.cached_tokens").Int())
-}
-
 func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false

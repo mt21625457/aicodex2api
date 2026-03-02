@@ -168,14 +168,11 @@ func TestAdminService_BulkUpdateAccounts_MixedChannelPreCheckBlocksOnExistingCon
 	}
 
 	result, err := svc.BulkUpdateAccounts(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, 1, result.Success)
-	require.Equal(t, 1, result.Failed)
-	require.ElementsMatch(t, []int64{1}, result.SuccessIDs)
-	require.ElementsMatch(t, []int64{2}, result.FailedIDs)
-	require.Len(t, result.Results, 2)
-	require.Contains(t, result.Results[1].Error, "mixed channel")
-	require.Equal(t, []int64{1}, repo.bindGroupsCalls)
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mixed channel")
+	require.Empty(t, repo.bindGroupsCalls)
+	require.Empty(t, repo.bulkUpdateIDs)
 }
 
 func TestAdminService_BulkUpdateAccounts_MixedChannelCheckPreloadsGroupsOnce(t *testing.T) {
@@ -242,7 +239,7 @@ func TestAdminService_BulkUpdateAccounts_OpenAIScopedExtraRejectsMixedTypes(t *t
 	result, err := svc.BulkUpdateAccounts(context.Background(), input)
 	require.Nil(t, result)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "mixed channel")
-	// No BindGroups should have been called since the check runs before any write.
+	require.Contains(t, err.Error(), "same type")
 	require.Empty(t, repo.bindGroupsCalls)
+	require.Empty(t, repo.bulkUpdateIDs)
 }

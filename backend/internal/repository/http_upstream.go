@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -270,7 +271,10 @@ func (s *httpUpstreamService) acquireClientWithTLS(proxyURL string, accountID in
 // TLS 指纹客户端使用独立的缓存键，与普通客户端隔离
 func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
 	isolation := s.getIsolationMode()
-	proxyKey, parsedProxy := normalizeProxyURL(proxyURL)
+	proxyKey, parsedProxy, err := normalizeProxyURL(proxyURL)
+	if err != nil {
+		return nil, err
+	}
 	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
 	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
 	poolKey := s.buildPoolKey(isolation, accountConcurrency, upstreamProtocolModeDefault) + ":tls"
@@ -413,9 +417,8 @@ func (s *httpUpstreamService) acquireClientWithProfile(proxyURL string, accountI
 //   - proxy: 按代理地址隔离，同一代理共享客户端
 //   - account: 按账户隔离，同一账户共享客户端（代理变更时重建）
 //   - account_proxy: 按账户+代理组合隔离，最细粒度
-func (s *httpUpstreamService) getOrCreateClient(proxyURL string, accountID int64, accountConcurrency int) *upstreamClientEntry {
-	entry, _ := s.getClientEntry(proxyURL, accountID, accountConcurrency, service.HTTPUpstreamProfileDefault, false, false)
-	return entry
+func (s *httpUpstreamService) getOrCreateClient(proxyURL string, accountID int64, accountConcurrency int) (*upstreamClientEntry, error) {
+	return s.getClientEntry(proxyURL, accountID, accountConcurrency, service.HTTPUpstreamProfileDefault, false, false)
 }
 
 // getClientEntry 获取或创建客户端条目
@@ -425,7 +428,10 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	// 获取隔离模式
 	isolation := s.getIsolationMode()
 	// 标准化代理 URL 并解析
-	proxyKey, parsedProxy := normalizeProxyURL(proxyURL)
+	proxyKey, parsedProxy, err := normalizeProxyURL(proxyURL)
+	if err != nil {
+		return nil, err
+	}
 	// 根据请求 profile（例如 OpenAI）选择协议模式
 	protocolMode := s.resolveProtocolMode(profile, proxyKey, parsedProxy)
 	// 构建缓存键（根据隔离策略不同）
@@ -732,17 +738,18 @@ func buildCacheKey(isolation, proxyKey string, accountID int64, protocolMode str
 //   - raw: 原始代理 URL 字符串
 //
 // 返回:
-//   - string: 标准化的代理键（空或解析失败返回 "direct"）
-//   - *url.URL: 解析后的 URL（空或解析失败返回 nil）
-func normalizeProxyURL(raw string) (string, *url.URL) {
-	proxyURL := strings.TrimSpace(raw)
-	if proxyURL == "" {
-		return directProxyKey, nil
-	}
-	parsed, err := url.Parse(proxyURL)
+//   - string: 标准化的代理键（空返回 "direct"）
+//   - *url.URL: 解析后的 URL（空返回 nil）
+//   - error: 非空代理 URL 解析失败时返回错误（禁止回退到直连）
+func normalizeProxyURL(raw string) (string, *url.URL, error) {
+	_, parsed, err := proxyurl.Parse(raw)
 	if err != nil {
-		return directProxyKey, nil
+		return "", nil, err
 	}
+	if parsed == nil {
+		return directProxyKey, nil, nil
+	}
+	// 规范化：小写 scheme/host，去除路径和查询参数
 	parsed.Scheme = strings.ToLower(parsed.Scheme)
 	parsed.Host = strings.ToLower(parsed.Host)
 	parsed.Path = ""
@@ -762,7 +769,7 @@ func normalizeProxyURL(raw string) (string, *url.URL) {
 			parsed.Host = hostname
 		}
 	}
-	return parsed.String(), parsed
+	return parsed.String(), parsed, nil
 }
 
 func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {

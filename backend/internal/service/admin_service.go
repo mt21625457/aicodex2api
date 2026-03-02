@@ -1630,20 +1630,30 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	needOpenAIScopeCheck := hasOpenAIBulkScopedExtraField(input.Extra)
 	needAccountSnapshot := needMixedChannelCheck || needOpenAIScopeCheck
 
-	// 预加载账号平台信息（混合渠道检查需要）。
+	accountsByID := map[int64]*Account{}
 	platformByID := map[int64]string{}
 	groupAccountsByID := map[int64][]Account{}
 	groupNameByID := map[int64]string{}
-	if needMixedChannelCheck {
+	if needAccountSnapshot {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
 		}
 		for _, account := range accounts {
 			if account != nil {
+				accountsByID[account.ID] = account
 				platformByID[account.ID] = account.Platform
 			}
 		}
+	}
+
+	if needOpenAIScopeCheck {
+		if err := validateOpenAIBulkScopedAccounts(accountsByID, input.AccountIDs); err != nil {
+			return nil, err
+		}
+	}
+
+	if needMixedChannelCheck {
 		loadedAccounts, loadedNames, err := s.preloadMixedChannelRiskData(ctx, *input.GroupIDs)
 		if err != nil {
 			return nil, err
@@ -2106,7 +2116,6 @@ func (s *adminServiceImpl) CheckProxyQuality(ctx context.Context, id int64) (*Pr
 		ProxyURL:              proxyURL,
 		Timeout:               proxyQualityRequestTimeout,
 		ResponseHeaderTimeout: proxyQualityResponseHeaderTimeout,
-		ProxyStrict:           true,
 	})
 	if err != nil {
 		result.Items = append(result.Items, ProxyQualityCheckItem{
@@ -2461,7 +2470,6 @@ func checkMixedChannelRiskWithPreloaded(currentAccountID int64, currentAccountPl
 
 	return nil
 }
-
 func (s *adminServiceImpl) validateGroupIDsExist(ctx context.Context, groupIDs []int64) error {
 	if len(groupIDs) == 0 {
 		return nil
