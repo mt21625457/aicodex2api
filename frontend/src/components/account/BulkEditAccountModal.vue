@@ -1035,7 +1035,8 @@ import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
-import type { Proxy as ProxyConfig, AdminGroup, AccountPlatform, AccountType } from '@/types'
+import type { BulkEditTemplateVersionRecord as BulkEditTemplateVersionRemoteRecord } from '@/api/admin/bulkEditTemplates'
+import type { Proxy, AdminGroup, AccountPlatform, AccountType } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
@@ -1085,9 +1086,10 @@ interface BulkEditTemplateVersionRecord {
 interface Props {
   show: boolean
   accountIds: number[]
-  selectedPlatforms: AccountPlatform[]
-  selectedTypes: AccountType[]
-  proxies: ProxyConfig[]
+  scopePlatform?: AccountPlatform | ''
+  scopeType?: AccountType | ''
+  scopeGroupIds?: number[]
+  proxies: Proxy[]
   groups: AdminGroup[]
 }
 
@@ -1100,18 +1102,6 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const appStore = useAppStore()
 
-// Platform awareness
-const isMixedPlatform = computed(() => props.selectedPlatforms.length > 1)
-
-// 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
-const allAnthropicOAuthOrSetupToken = computed(() => {
-  return (
-    props.selectedPlatforms.length === 1 &&
-    props.selectedPlatforms[0] === 'anthropic' &&
-    props.selectedTypes.every(t => t === 'oauth' || t === 'setup-token')
-  )
-})
-
 const platformModelPrefix: Record<string, string[]> = {
   anthropic: ['claude-'],
   antigravity: ['claude-', 'gemini-', 'gpt-oss-', 'tab_'],
@@ -1120,26 +1110,25 @@ const platformModelPrefix: Record<string, string[]> = {
   sora: []
 }
 
+const scopedModelPrefixes = computed(() => {
+  if (!props.scopePlatform) return []
+  const prefixes = platformModelPrefix[props.scopePlatform] ?? []
+  return [...new Set(prefixes)]
+})
+
 const filteredModels = computed(() => {
-  if (props.selectedPlatforms.length === 0) return allModels
-  const prefixes = [...new Set(props.selectedPlatforms.flatMap(p => platformModelPrefix[p] || []))]
-  if (prefixes.length === 0) return allModels
-  return allModels.filter(m => prefixes.some(prefix => m.value.startsWith(prefix)))
+  if (scopedModelPrefixes.value.length === 0) return allModels
+  return allModels.filter((model) =>
+    scopedModelPrefixes.value.some(prefix => model.value.startsWith(prefix))
+  )
 })
 
 const filteredPresets = computed(() => {
-  if (props.selectedPlatforms.length === 0) return presetMappings
-  const prefixes = [...new Set(props.selectedPlatforms.flatMap(p => platformModelPrefix[p] || []))]
-  if (prefixes.length === 0) return presetMappings
-  return presetMappings.filter(m => prefixes.some(prefix => m.from.startsWith(prefix)))
+  if (scopedModelPrefixes.value.length === 0) return presetMappings
+  return presetMappings.filter((preset) =>
+    scopedModelPrefixes.value.some(prefix => preset.from.startsWith(prefix))
+  )
 })
-
-// Model mapping type
-interface ModelMapping {
-  from: string
-  to: string
-}
-
 // State - field enable flags
 const enableBaseUrl = ref(false)
 const enableModelRestriction = ref(false)
@@ -1179,10 +1168,15 @@ const priority = ref(1)
 const rateMultiplier = ref(1)
 const status = ref<'active' | 'inactive'>('active')
 const groupIds = ref<number[]>([])
-const rpmLimitEnabled = ref(false)
-const bulkBaseRpm = ref<number | null>(null)
-const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
-const bulkRpmStickyBuffer = ref<number | null>(null)
+const templateLoading = ref(false)
+const templateName = ref('')
+const templateShareScope = ref<BulkEditTemplateShareScope>('private')
+const templateShareGroupIds = ref<number[]>([])
+const selectedTemplateId = ref<string | null>(null)
+const templateRecords = ref<BulkEditTemplateRecord<BulkEditTemplateState>[]>([])
+const templateVersionLoading = ref(false)
+const templateRollbackingVersionID = ref<string | null>(null)
+const templateVersionRecords = ref<BulkEditTemplateVersionRecord[]>([])
 
 // All models list (combined Anthropic + OpenAI + Gemini)
 const allModels = [
@@ -1854,101 +1848,39 @@ const removeErrorCode = (code: number) => {
 }
 
 const buildUpdatePayload = (): Record<string, unknown> | null => {
-  const updates: Record<string, unknown> = {}
-  const credentials: Record<string, unknown> = {}
-  let credentialsChanged = false
-
-  if (enableProxy.value) {
-    // 后端期望 proxy_id: 0 表示清除代理，而不是 null
-    updates.proxy_id = proxyId.value === null ? 0 : proxyId.value
-  }
-
-  if (enableConcurrency.value) {
-    updates.concurrency = concurrency.value
-  }
-
-  if (enablePriority.value) {
-    updates.priority = priority.value
-  }
-
-  if (enableRateMultiplier.value) {
-    updates.rate_multiplier = rateMultiplier.value
-  }
-
-  if (enableStatus.value) {
-    updates.status = status.value
-  }
-
-  if (enableGroups.value) {
-    updates.group_ids = groupIds.value
-  }
-
-  if (enableBaseUrl.value) {
-    const baseUrlValue = baseUrl.value.trim()
-    if (baseUrlValue) {
-      credentials.base_url = baseUrlValue
-      credentialsChanged = true
-    }
-  }
-
-  if (enableModelRestriction.value) {
-    const modelMapping = buildModelMappingObject()
-
-    // 统一使用 model_mapping 字段
-    if (modelRestrictionMode.value === 'whitelist') {
-      if (allowedModels.value.length > 0) {
-        // 白名单模式：将模型转换为 model_mapping 格式（key=value）
-        const mapping: Record<string, string> = {}
-        for (const m of allowedModels.value) {
-          mapping[m] = m
-        }
-        credentials.model_mapping = mapping
-        credentialsChanged = true
-      }
-    } else {
-      if (modelMapping) {
-        credentials.model_mapping = modelMapping
-        credentialsChanged = true
-      }
-    }
-  }
-
-  if (enableCustomErrorCodes.value) {
-    credentials.custom_error_codes_enabled = true
-    credentials.custom_error_codes = [...selectedErrorCodes.value]
-    credentialsChanged = true
-  }
-
-  if (enableInterceptWarmup.value) {
-    credentials.intercept_warmup_requests = interceptWarmupRequests.value
-    credentialsChanged = true
-  }
-
-  if (credentialsChanged) {
-    updates.credentials = credentials
-  }
-
-  // RPM limit settings (写入 extra 字段)
-  if (enableRpmLimit.value) {
-    const extra: Record<string, unknown> = {}
-    if (rpmLimitEnabled.value && bulkBaseRpm.value != null && bulkBaseRpm.value > 0) {
-      extra.base_rpm = bulkBaseRpm.value
-      extra.rpm_strategy = bulkRpmStrategy.value
-      if (bulkRpmStickyBuffer.value != null && bulkRpmStickyBuffer.value > 0) {
-        extra.rpm_sticky_buffer = bulkRpmStickyBuffer.value
-      }
-    } else {
-      // 关闭 RPM 限制 - 设置 base_rpm 为 0，并用空值覆盖关联字段
-      // 后端使用 JSONB || merge 语义，不会删除已有 key，
-      // 所以必须显式发送空值来重置（后端读取时会 fallback 到默认值）
-      extra.base_rpm = 0
-      extra.rpm_strategy = ''
-      extra.rpm_sticky_buffer = 0
-    }
-    updates.extra = extra
-  }
-
-  return Object.keys(updates).length > 0 ? updates : null
+  return buildBulkEditUpdatePayload({
+    scopeType: props.scopeType,
+    enableBaseUrl: enableBaseUrl.value,
+    enableModelRestriction: enableModelRestriction.value,
+    enableCustomErrorCodes: enableCustomErrorCodes.value,
+    enableInterceptWarmup: enableInterceptWarmup.value,
+    enableOpenAIPassthrough: enableOpenAIPassthrough.value,
+    enableOpenAIWSMode: enableOpenAIWSMode.value,
+    enableCodexCLIOnly: enableCodexCLIOnly.value,
+    enableAnthropicPassthrough: enableAnthropicPassthrough.value,
+    enableProxy: enableProxy.value,
+    enableConcurrency: enableConcurrency.value,
+    enablePriority: enablePriority.value,
+    enableRateMultiplier: enableRateMultiplier.value,
+    enableStatus: enableStatus.value,
+    enableGroups: enableGroups.value,
+    baseUrl: baseUrl.value,
+    modelRestrictionMode: modelRestrictionMode.value,
+    allowedModels: allowedModels.value,
+    modelMappings: modelMappings.value,
+    selectedErrorCodes: selectedErrorCodes.value,
+    interceptWarmupRequests: interceptWarmupRequests.value,
+    openAIPassthroughEnabled: openAIPassthroughEnabled.value,
+    openAIWSMode: openAIWSMode.value,
+    codexCLIOnlyEnabled: codexCLIOnlyEnabled.value,
+    anthropicPassthroughEnabled: anthropicPassthroughEnabled.value,
+    proxyId: proxyId.value,
+    concurrency: concurrency.value,
+    priority: priority.value,
+    rateMultiplier: rateMultiplier.value,
+    status: status.value,
+    groupIds: groupIds.value
+  })
 }
 
 const mixedChannelConfirmed = ref(false)
@@ -1997,18 +1929,22 @@ const handleSubmit = async () => {
     return
   }
 
-  const hasAnyFieldEnabled =
-    enableBaseUrl.value ||
-    enableModelRestriction.value ||
-    enableCustomErrorCodes.value ||
-    enableInterceptWarmup.value ||
-    enableProxy.value ||
-    enableConcurrency.value ||
-    enablePriority.value ||
-    enableRateMultiplier.value ||
-    enableStatus.value ||
-    enableGroups.value ||
-    enableRpmLimit.value
+  const hasAnyFieldEnabled = hasAnyBulkEditFieldEnabled({
+    enableBaseUrl: enableBaseUrl.value,
+    enableModelRestriction: enableModelRestriction.value,
+    enableCustomErrorCodes: enableCustomErrorCodes.value,
+    enableInterceptWarmup: enableInterceptWarmup.value,
+    enableOpenAIPassthrough: enableOpenAIPassthrough.value,
+    enableOpenAIWSMode: enableOpenAIWSMode.value,
+    enableCodexCLIOnly: enableCodexCLIOnly.value,
+    enableAnthropicPassthrough: enableAnthropicPassthrough.value,
+    enableProxy: enableProxy.value,
+    enableConcurrency: enableConcurrency.value,
+    enablePriority: enablePriority.value,
+    enableRateMultiplier: enableRateMultiplier.value,
+    enableStatus: enableStatus.value,
+    enableGroups: enableGroups.value
+  })
 
   if (!hasAnyFieldEnabled) {
     appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
@@ -2068,57 +2004,49 @@ const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
   }
 }
 
-const handleMixedChannelConfirm = async () => {
-  showMixedChannelWarning.value = false
-  mixedChannelConfirmed.value = true
-  if (pendingUpdatesForConfirm.value) {
-    await submitBulkUpdate(pendingUpdatesForConfirm.value)
-  }
-}
+watch(
+  scopedTemplateRecords,
+  () => {
+    syncSelectedTemplate()
+  },
+  { immediate: true }
+)
 
-const handleMixedChannelCancel = () => {
-  showMixedChannelWarning.value = false
-  pendingUpdatesForConfirm.value = null
-}
+watch(selectedTemplateId, (id) => {
+  if (!id) {
+    templateVersionRecords.value = []
+    return
+  }
+  const selected = scopedTemplateRecords.value.find((item) => item.id === id)
+  if (selected) {
+    templateName.value = selected.name
+    templateShareScope.value = selected.shareScope
+    templateShareGroupIds.value = [...selected.groupIds]
+    void loadTemplateVersionRecordsFromServer()
+  }
+})
+
+watch(templateShareScope, (scope) => {
+  if (scope !== 'groups') {
+    templateShareGroupIds.value = []
+  }
+})
+
+watch(
+  () => normalizedScopeGroupIDs.value.join(','),
+  () => {
+    if (!props.show) return
+    void loadTemplateRecordsFromServer()
+  }
+)
 
 // Reset form when modal closes
 watch(
   () => props.show,
   (newShow) => {
-    if (!newShow) {
-      // Reset all enable flags
-      enableBaseUrl.value = false
-      enableModelRestriction.value = false
-      enableCustomErrorCodes.value = false
-      enableInterceptWarmup.value = false
-      enableProxy.value = false
-      enableConcurrency.value = false
-      enablePriority.value = false
-      enableRateMultiplier.value = false
-      enableStatus.value = false
-      enableGroups.value = false
-      enableRpmLimit.value = false
-
-      // Reset all values
-      baseUrl.value = ''
-      modelRestrictionMode.value = 'whitelist'
-      allowedModels.value = []
-      modelMappings.value = []
-      selectedErrorCodes.value = []
-      customErrorCodeInput.value = null
-      interceptWarmupRequests.value = false
-      proxyId.value = null
-      concurrency.value = 1
-      priority.value = 1
-      rateMultiplier.value = 1
-      status.value = 'active'
-      groupIds.value = []
-
-      // Reset mixed channel warning state
-      showMixedChannelWarning.value = false
-      mixedChannelWarningMessage.value = ''
-      pendingUpdatesForConfirm.value = null
-      mixedChannelConfirmed.value = false
+    if (newShow) {
+      void loadTemplateRecordsFromServer()
+      return
     }
     resetFormState()
   }

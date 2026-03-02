@@ -105,6 +105,49 @@ func (s *GatewayCacheSuite) TestGetSessionAccountID_CorruptedValue() {
 	require.False(s.T(), errors.Is(err, redis.Nil), "expected parsing error, not redis.Nil")
 }
 
+func (s *GatewayCacheSuite) TestSetAndGetOpenAIWSResponsePendingToolCalls() {
+	type responsePendingToolCallsCache interface {
+		SetOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string, callIDs []string, ttl time.Duration) error
+		GetOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string) ([]string, error)
+	}
+	cache, ok := s.cache.(responsePendingToolCallsCache)
+	require.True(s.T(), ok, "gateway cache should implement pending tool calls cache")
+
+	responseID := "resp_pending_integration_1"
+	groupID := int64(1)
+	ttl := 2 * time.Minute
+	require.NoError(s.T(), cache.SetOpenAIWSResponsePendingToolCalls(s.ctx, groupID, responseID, []string{"call_1", "call_2", "call_1", " "}, ttl))
+
+	callIDs, err := cache.GetOpenAIWSResponsePendingToolCalls(s.ctx, groupID, responseID)
+	require.NoError(s.T(), err)
+	require.ElementsMatch(s.T(), []string{"call_1", "call_2"}, callIDs)
+	_, err = cache.GetOpenAIWSResponsePendingToolCalls(s.ctx, groupID+1, responseID)
+	require.True(s.T(), errors.Is(err, redis.Nil), "pending tool calls should be isolated by group")
+
+	key := buildOpenAIWSResponsePendingToolCallsKey(groupID, responseID)
+	remainingTTL, ttlErr := s.rdb.TTL(s.ctx, key).Result()
+	require.NoError(s.T(), ttlErr)
+	s.AssertTTLWithin(remainingTTL, 1*time.Second, ttl)
+}
+
+func (s *GatewayCacheSuite) TestDeleteOpenAIWSResponsePendingToolCalls() {
+	type responsePendingToolCallsCache interface {
+		SetOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string, callIDs []string, ttl time.Duration) error
+		GetOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string) ([]string, error)
+		DeleteOpenAIWSResponsePendingToolCalls(ctx context.Context, groupID int64, responseID string) error
+	}
+	cache, ok := s.cache.(responsePendingToolCallsCache)
+	require.True(s.T(), ok, "gateway cache should implement pending tool calls cache")
+
+	responseID := "resp_pending_integration_2"
+	groupID := int64(1)
+	require.NoError(s.T(), cache.SetOpenAIWSResponsePendingToolCalls(s.ctx, groupID, responseID, []string{"call_3"}, time.Minute))
+	require.NoError(s.T(), cache.DeleteOpenAIWSResponsePendingToolCalls(s.ctx, groupID, responseID))
+
+	_, err := cache.GetOpenAIWSResponsePendingToolCalls(s.ctx, groupID, responseID)
+	require.True(s.T(), errors.Is(err, redis.Nil), "expected redis.Nil after delete")
+}
+
 func TestGatewayCacheSuite(t *testing.T) {
 	suite.Run(t, new(GatewayCacheSuite))
 }

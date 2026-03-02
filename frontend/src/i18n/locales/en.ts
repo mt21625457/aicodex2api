@@ -280,7 +280,7 @@ export default {
     logout: 'Logout',
     github: 'GitHub',
     mySubscriptions: 'My Subscriptions',
-    buySubscription: 'Recharge / Subscription',
+    buySubscription: 'Purchase Subscription',
     docs: 'Docs',
     sora: 'Sora Studio'
   },
@@ -1765,7 +1765,8 @@ export default {
         templateRollbacking: 'Rolling back...',
         templateRollbackConfirm: 'Rollback template "{name}" to {updatedAt}?',
         templateRollbackSuccess: 'Template "{name}" rollback succeeded',
-        templateRollbackFailed: 'Failed to rollback template'
+        templateRollbackFailed: 'Failed to rollback template',
+        mixedPlatformWarning: 'Selected accounts span multiple platforms ({platforms}). Model mapping presets shown are combined — ensure mappings are appropriate for each platform.'
       },
       bulkDeleteTitle: 'Bulk Delete Accounts',
       bulkDeleteConfirm: 'Delete the selected {count} account(s)? This action cannot be undone.',
@@ -1810,6 +1811,7 @@ export default {
         wsModeOff: 'Off (off)',
         wsModeShared: 'Shared (shared)',
         wsModeDedicated: 'Dedicated (dedicated)',
+        wsModeCtxPool: 'Context Pool (ctx_pool)',
         wsModeConcurrencyHint:
           'When WS mode is enabled, account concurrency becomes the WS connection pool limit for this account.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
@@ -3668,6 +3670,12 @@ export default {
           '⚠️ iframe note: Some websites block embedding via X-Frame-Options or CSP (frame-ancestors). If the page is blank, provide an "Open in new tab" alternative.',
         integrationDoc: 'Payment Integration Docs',
         integrationDocHint: 'Covers endpoint specs, idempotency semantics, and code samples'
+      },
+      soraClient: {
+        title: 'Sora Client',
+        description: 'Control whether to show the Sora client entry in the sidebar',
+        enabled: 'Enable Sora Client',
+        enabledHint: 'When enabled, the Sora entry will be shown in the sidebar for users to access Sora features'
       },
       soraClient: {
         title: 'Sora Client',

@@ -206,30 +206,41 @@ func TestAccount_IsOpenAIResponsesWebSocketV2Enabled(t *testing.T) {
 }
 
 func TestAccount_ResolveOpenAIResponsesWebSocketV2Mode(t *testing.T) {
-	t.Run("default fallback to shared", func(t *testing.T) {
+	t.Run("default fallback to off", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
 			Extra:    map[string]any{},
 		}
-		require.Equal(t, OpenAIWSIngressModeShared, account.ResolveOpenAIResponsesWebSocketV2Mode(""))
-		require.Equal(t, OpenAIWSIngressModeShared, account.ResolveOpenAIResponsesWebSocketV2Mode("invalid"))
+		require.Equal(t, OpenAIWSIngressModeOff, account.ResolveOpenAIResponsesWebSocketV2Mode(""))
+		require.Equal(t, OpenAIWSIngressModeOff, account.ResolveOpenAIResponsesWebSocketV2Mode("invalid"))
 	})
 
-	t.Run("oauth mode field has highest priority", func(t *testing.T) {
+	t.Run("unsupported mode field falls back to enabled flag", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
 			Extra: map[string]any{
 				"openai_oauth_responses_websockets_v2_mode":    OpenAIWSIngressModeDedicated,
-				"openai_oauth_responses_websockets_v2_enabled": false,
+				"openai_oauth_responses_websockets_v2_enabled": true,
 				"responses_websockets_v2_enabled":              false,
 			},
 		}
-		require.Equal(t, OpenAIWSIngressModeDedicated, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeShared))
+		require.Equal(t, OpenAIWSIngressModeCtxPool, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeOff))
 	})
 
-	t.Run("legacy enabled maps to shared", func(t *testing.T) {
+	t.Run("ctx_pool mode field is recognized", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeCtxPool,
+			},
+		}
+		require.Equal(t, OpenAIWSIngressModeCtxPool, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeOff))
+	})
+
+	t.Run("legacy enabled maps to ctx_pool when default is off", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeAPIKey,
@@ -237,7 +248,18 @@ func TestAccount_ResolveOpenAIResponsesWebSocketV2Mode(t *testing.T) {
 				"responses_websockets_v2_enabled": true,
 			},
 		}
-		require.Equal(t, OpenAIWSIngressModeShared, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeOff))
+		require.Equal(t, OpenAIWSIngressModeCtxPool, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeOff))
+	})
+
+	t.Run("legacy enabled ignores unsupported default and maps to ctx_pool", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"responses_websockets_v2_enabled": true,
+			},
+		}
+		require.Equal(t, OpenAIWSIngressModeCtxPool, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeDedicated))
 	})
 
 	t.Run("legacy disabled maps to off", func(t *testing.T) {
@@ -249,7 +271,7 @@ func TestAccount_ResolveOpenAIResponsesWebSocketV2Mode(t *testing.T) {
 				"responses_websockets_v2_enabled":               true,
 			},
 		}
-		require.Equal(t, OpenAIWSIngressModeOff, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeShared))
+		require.Equal(t, OpenAIWSIngressModeOff, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeCtxPool))
 	})
 
 	t.Run("non openai always off", func(t *testing.T) {
@@ -260,7 +282,7 @@ func TestAccount_ResolveOpenAIResponsesWebSocketV2Mode(t *testing.T) {
 				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeDedicated,
 			},
 		}
-		require.Equal(t, OpenAIWSIngressModeOff, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeDedicated))
+		require.Equal(t, OpenAIWSIngressModeOff, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeCtxPool))
 	})
 }
 

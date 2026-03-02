@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -423,6 +422,14 @@ type adminServiceImpl struct {
 	entClient            *dbent.Client // 用于开启数据库事务
 	settingService       *SettingService
 	defaultSubAssigner   DefaultSubscriptionAssigner
+}
+
+type userGroupRateBatchReader interface {
+	GetByUserIDs(ctx context.Context, userIDs []int64) (map[int64]map[int64]float64, error)
+}
+
+type groupExistenceBatchReader interface {
+	ExistsByIDs(ctx context.Context, ids []int64) (map[int64]bool, error)
 }
 
 type userGroupRateBatchReader interface {
@@ -1632,23 +1639,25 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	accountsByID := map[int64]*Account{}
 	platformByID := map[int64]string{}
+	accountByID := map[int64]*Account{}
 	groupAccountsByID := map[int64][]Account{}
 	groupNameByID := map[int64]string{}
 	if needAccountSnapshot {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
-		}
-		for _, account := range accounts {
-			if account != nil {
-				accountsByID[account.ID] = account
-				platformByID[account.ID] = account.Platform
+		} else {
+			for _, account := range accounts {
+				if account != nil {
+					accountByID[account.ID] = account
+					platformByID[account.ID] = account.Platform
+				}
 			}
 		}
 	}
 
 	if needOpenAIScopeCheck {
-		if err := validateOpenAIBulkScopedAccounts(accountsByID, input.AccountIDs); err != nil {
+		if err := validateOpenAIBulkScopedAccounts(accountByID, input.AccountIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -1660,19 +1669,6 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 		groupAccountsByID = loadedAccounts
 		groupNameByID = loadedNames
-	}
-
-	// 预检查混合渠道风险：在任何写操作之前，若发现风险立即返回错误。
-	if needMixedChannelCheck {
-		for _, accountID := range input.AccountIDs {
-			platform := platformByID[accountID]
-			if platform == "" {
-				continue
-			}
-			if err := checkMixedChannelRiskWithPreloaded(accountID, platform, *input.GroupIDs, groupAccountsByID, groupNameByID); err != nil {
-				return nil, err
-			}
-		}
 	}
 
 	if input.RateMultiplier != nil {
@@ -1719,8 +1715,34 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// Handle group bindings per account (requires individual operations).
 	for _, accountID := range input.AccountIDs {
 		entry := BulkUpdateAccountResult{AccountID: accountID}
+		platform := ""
 
 		if input.GroupIDs != nil {
+			// 检查混合渠道风险（除非用户已确认）
+			if !input.SkipMixedChannelCheck {
+				platform = platformByID[accountID]
+				if platform == "" {
+					account, err := s.accountRepo.GetByID(ctx, accountID)
+					if err != nil {
+						entry.Success = false
+						entry.Error = err.Error()
+						result.Failed++
+						result.FailedIDs = append(result.FailedIDs, accountID)
+						result.Results = append(result.Results, entry)
+						continue
+					}
+					platform = account.Platform
+				}
+				if err := s.checkMixedChannelRiskWithPreloaded(accountID, platform, *input.GroupIDs, groupAccountsByID, groupNameByID); err != nil {
+					entry.Success = false
+					entry.Error = err.Error()
+					result.Failed++
+					result.FailedIDs = append(result.FailedIDs, accountID)
+					result.Results = append(result.Results, entry)
+					continue
+				}
+			}
+
 			if err := s.accountRepo.BindGroups(ctx, accountID, *input.GroupIDs); err != nil {
 				entry.Success = false
 				entry.Error = err.Error()
@@ -1728,6 +1750,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				result.FailedIDs = append(result.FailedIDs, accountID)
 				result.Results = append(result.Results, entry)
 				continue
+			}
+			if !input.SkipMixedChannelCheck && platform != "" {
+				updateMixedChannelPreloadedAccounts(groupAccountsByID, *input.GroupIDs, accountID, platform)
 			}
 		}
 
@@ -2434,7 +2459,36 @@ func (s *adminServiceImpl) preloadMixedChannelRiskData(ctx context.Context, grou
 	return accountsByGroup, groupNameByID, nil
 }
 
-func checkMixedChannelRiskWithPreloaded(currentAccountID int64, currentAccountPlatform string, groupIDs []int64, accountsByGroup map[int64][]Account, groupNameByID map[int64]string) error {
+func (s *adminServiceImpl) validateGroupIDsExist(ctx context.Context, groupIDs []int64) error {
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	if s.groupRepo == nil {
+		return errors.New("group repository not configured")
+	}
+
+	if batchReader, ok := s.groupRepo.(groupExistenceBatchReader); ok {
+		existsByID, err := batchReader.ExistsByIDs(ctx, groupIDs)
+		if err != nil {
+			return fmt.Errorf("check groups exists: %w", err)
+		}
+		for _, groupID := range groupIDs {
+			if groupID <= 0 || !existsByID[groupID] {
+				return fmt.Errorf("get group: %w", ErrGroupNotFound)
+			}
+		}
+		return nil
+	}
+
+	for _, groupID := range groupIDs {
+		if _, err := s.groupRepo.GetByID(ctx, groupID); err != nil {
+			return fmt.Errorf("get group: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *adminServiceImpl) checkMixedChannelRiskWithPreloaded(currentAccountID int64, currentAccountPlatform string, groupIDs []int64, accountsByGroup map[int64][]Account, groupNameByID map[int64]string) error {
 	currentPlatform := getAccountPlatform(currentAccountPlatform)
 	if currentPlatform == "" {
 		return nil
@@ -2470,33 +2524,33 @@ func checkMixedChannelRiskWithPreloaded(currentAccountID int64, currentAccountPl
 
 	return nil
 }
-func (s *adminServiceImpl) validateGroupIDsExist(ctx context.Context, groupIDs []int64) error {
-	if len(groupIDs) == 0 {
-		return nil
-	}
-	if s.groupRepo == nil {
-		return errors.New("group repository not configured")
-	}
 
-	if batchReader, ok := s.groupRepo.(groupExistenceBatchReader); ok {
-		existsByID, err := batchReader.ExistsByIDs(ctx, groupIDs)
-		if err != nil {
-			return fmt.Errorf("check groups exists: %w", err)
-		}
-		for _, groupID := range groupIDs {
-			if groupID <= 0 || !existsByID[groupID] {
-				return fmt.Errorf("get group: %w", ErrGroupNotFound)
-			}
-		}
-		return nil
+func updateMixedChannelPreloadedAccounts(accountsByGroup map[int64][]Account, groupIDs []int64, accountID int64, platform string) {
+	if len(groupIDs) == 0 || accountID <= 0 || platform == "" {
+		return
 	}
-
 	for _, groupID := range groupIDs {
-		if _, err := s.groupRepo.GetByID(ctx, groupID); err != nil {
-			return fmt.Errorf("get group: %w", err)
+		if groupID <= 0 {
+			continue
 		}
+		accounts := accountsByGroup[groupID]
+		found := false
+		for i := range accounts {
+			if accounts[i].ID != accountID {
+				continue
+			}
+			accounts[i].Platform = platform
+			found = true
+			break
+		}
+		if !found {
+			accounts = append(accounts, Account{
+				ID:       accountID,
+				Platform: platform,
+			})
+		}
+		accountsByGroup[groupID] = accounts
 	}
-	return nil
 }
 
 // CheckMixedChannelRisk checks whether target groups contain mixed channels for the current account platform.

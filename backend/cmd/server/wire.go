@@ -210,9 +210,9 @@ func provideCleanup(
 				antigravityOAuth.Stop()
 				return nil
 			}},
-			{"OpenAIWSPool", func() error {
+			{"OpenAIWSCtxPool", func() error {
 				if openAIGateway != nil {
-					openAIGateway.CloseOpenAIWSPool()
+					openAIGateway.CloseOpenAIWSCtxPool()
 				}
 				return nil
 			}},

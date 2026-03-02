@@ -237,10 +237,10 @@ func (s *stubAdminService) SetAccountSchedulable(ctx context.Context, id int64, 
 }
 
 func (s *stubAdminService) BulkUpdateAccounts(ctx context.Context, input *service.BulkUpdateAccountsInput) (*service.BulkUpdateAccountsResult, error) {
-	if s.bulkUpdateAccountErr != nil {
-		return nil, s.bulkUpdateAccountErr
-	}
-	return &service.BulkUpdateAccountsResult{Success: len(input.AccountIDs), Failed: 0, SuccessIDs: input.AccountIDs}, nil
+	s.mu.Lock()
+	s.lastBulkUpdateInput = input
+	s.mu.Unlock()
+	return &service.BulkUpdateAccountsResult{Success: 1, Failed: 0, SuccessIDs: []int64{1}}, nil
 }
 
 func (s *stubAdminService) CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error {

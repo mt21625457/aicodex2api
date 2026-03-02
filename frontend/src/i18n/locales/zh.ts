@@ -280,7 +280,7 @@ export default {
     logout: '退出登录',
     github: 'GitHub',
     mySubscriptions: '我的订阅',
-    buySubscription: '充值/订阅',
+    buySubscription: '购买订阅',
     docs: '文档',
     sora: 'Sora 创作'
   },
@@ -1911,7 +1911,8 @@ export default {
         templateRollbacking: '回滚中...',
         templateRollbackConfirm: '确定将模板“{name}”回滚到 {updatedAt} 吗？',
         templateRollbackSuccess: '模板“{name}”回滚成功',
-        templateRollbackFailed: '模板回滚失败'
+        templateRollbackFailed: '模板回滚失败',
+        mixedPlatformWarning: '所选账号跨越多个平台（{platforms}）。显示的模型映射预设为合并结果——请确保映射对每个平台都适用。'
       },
       bulkDeleteTitle: '批量删除账号',
       bulkDeleteConfirm: '确定要删除选中的 {count} 个账号吗？此操作无法撤销。',
@@ -1958,6 +1959,7 @@ export default {
         wsModeOff: '关闭（off）',
         wsModeShared: '共享（shared）',
         wsModeDedicated: '独享（dedicated）',
+        wsModeCtxPool: '上下文池（ctx_pool）',
         wsModeConcurrencyHint: '启用 WS mode 后，该账号并发数将作为该账号 WS 连接池上限。',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
@@ -3826,17 +3828,15 @@ export default {
         hideCcsImportButtonHint: '启用后将在 API Keys 页面隐藏"导入 CCS"按钮'
       },
       purchase: {
-        title: '充值/订阅页面',
-        description: '在侧边栏展示“充值/订阅”入口，并在页面内通过 iframe 打开指定链接',
-        enabled: '显示充值/订阅入口',
+        title: '购买订阅页面',
+        description: '在侧边栏展示”购买订阅”入口，并在页面内通过 iframe 打开指定链接',
+        enabled: '显示购买订阅入口',
         enabledHint: '仅在标准模式（非简单模式）下展示',
         url: '充值/订阅页面 URL',
         urlPlaceholder: 'https://example.com/purchase',
         urlHint: '必须是完整的 http(s) 链接',
         iframeWarning:
-          '⚠️ iframe 提示：部分网站会通过 X-Frame-Options 或 CSP（frame-ancestors）禁止被 iframe 嵌入，出现空白时可引导用户使用”新窗口打开”。',
-        integrationDoc: '支付集成文档',
-        integrationDocHint: '包含接口说明、幂等语义及示例代码'
+          '⚠️ iframe 提示：部分网站会通过 X-Frame-Options 或 CSP（frame-ancestors）禁止被 iframe 嵌入，出现空白时可引导用户使用”新窗口打开”。'
       },
       soraClient: {
         title: 'Sora 客户端',

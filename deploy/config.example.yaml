@@ -207,10 +207,10 @@ gateway:
   openai_passthrough_allow_timeout_headers: false
   # OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
   openai_ws:
-    # 新版 WS mode 路由（默认关闭）。关闭时保持当前 legacy 实现行为。
-    mode_router_v2_enabled: false
-    # ingress 默认模式：off|shared|dedicated（仅 mode_router_v2_enabled=true 生效）
-    ingress_mode_default: shared
+    # 新版 WS mode 路由（默认开启）。关闭时保持当前 legacy 实现行为。
+    mode_router_v2_enabled: true
+    # ingress 默认模式：off|ctx_pool（仅 mode_router_v2_enabled=true 生效）
+    ingress_mode_default: ctx_pool
     # 全局总开关，默认 true；关闭时所有请求保持原有 HTTP/SSE 路由
     enabled: true
     # 按账号类型细分开关
@@ -248,6 +248,10 @@ gateway:
     write_timeout_seconds: 120
     pool_target_utilization: 0.7
     queue_limit_per_conn: 64
+    # 上游 WebSocket 连接最大存活时间（秒）。
+    # OpenAI 在 60 分钟后强制断开连接，此参数控制主动轮换阈值。
+    # 默认 3300（55 分钟）；设为 0 则禁用超龄轮换。
+    upstream_conn_max_age_seconds: 3300
     # 流式写出批量 flush 参数
     event_flush_batch_size: 1
     event_flush_interval_ms: 10
@@ -282,6 +286,24 @@ gateway:
       queue: 0.7
       error_rate: 0.8
       ttft: 0.5
+  # OpenAI HTTP upstream protocol strategy
+  # OpenAI HTTP 上游协议策略
+  openai_http2:
+    # Enable OpenAI HTTP/2 preference (default on)
+    # 启用 OpenAI HTTP/2 优先策略（默认开启）
+    enabled: true
+    # Allow fallback to HTTP/1.1 for incompatible HTTP proxies
+    # 当 HTTP 代理不兼容时允许回退到 HTTP/1.1
+    allow_proxy_fallback_to_http1: true
+    # Fallback triggers after N HTTP/2 compatibility errors within window
+    # 在窗口期内累计 N 次 HTTP/2 兼容错误后触发回退
+    fallback_error_threshold: 2
+    # Error counting window (seconds)
+    # 错误计数窗口（秒）
+    fallback_window_seconds: 60
+    # How long to stay in HTTP/1.1 fallback mode (seconds)
+    # 进入 HTTP/1.1 回退态后的持续时间（秒）
+    fallback_ttl_seconds: 600
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts
