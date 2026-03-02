@@ -1887,16 +1887,27 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					"client_preempted", errOpenAIWSClientPreempted,
 					wroteDownstream, buildPartialResult("client_preempted"))
 			case readErr := <-clientReadErrCh:
-				// 客户端断连（与 writeClientMessage 失败路径对齐）
+				// 客户端断连：立即取消上游 pump 并释放连接。
+				// Codex CLI 在 ESC 取消后会关闭旧 WebSocket 并新建连接发送下一条消息，
+				// 继续排水只会延迟新连接获取上游 lease，因此这里直接终止。
 				if isOpenAIWSClientDisconnectError(readErr) {
-					clientDisconnected = true
-					if clientDisconnectDrainDeadline.IsZero() {
-						clientDisconnectDrainDeadline = time.Now().Add(openAIWSIngressClientDisconnectDrainTimeout)
-						drainTimer = time.AfterFunc(openAIWSIngressClientDisconnectDrainTimeout, func() {
-							lease.MarkBroken()
-							pumpCancel()
-						})
-					}
+					closeStatus, closeReason := summarizeOpenAIWSReadCloseError(readErr)
+					logOpenAIWSModeInfo(
+						"ingress_ws_client_disconnected_immediate_cancel account_id=%d turn=%d conn_id=%s close_status=%s close_reason=%s",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+						closeStatus,
+						truncateOpenAIWSLogValue(closeReason, openAIWSHeaderValueMaxLen),
+					)
+					pumpCancel()
+					lease.MarkBroken()
+					return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
+						"client_disconnected_immediate",
+						fmt.Errorf("client disconnected (read): %w", readErr),
+						wroteDownstream,
+						buildPartialResult("client_disconnected"),
+					)
 				}
 				clientMsgCh = nil
 				clientReadErrCh = nil
@@ -2100,24 +2111,24 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				if err := writeClientMessage(upstreamMessage); err != nil {
 					if isOpenAIWSClientDisconnectError(err) {
-						clientDisconnected = true
-						if clientDisconnectDrainDeadline.IsZero() {
-							clientDisconnectDrainDeadline = time.Now().Add(openAIWSIngressClientDisconnectDrainTimeout)
-							// 排水定时器到期后取消读取泵，确保不会无限等待上游。
-							drainTimer = time.AfterFunc(openAIWSIngressClientDisconnectDrainTimeout, func() {
-								lease.MarkBroken()
-								pumpCancel()
-							})
-						}
+						// 客户端断连：立即取消上游 pump 并释放连接。
+						// 不再排水等待，以便新连接能尽快获取上游 lease。
 						closeStatus, closeReason := summarizeOpenAIWSReadCloseError(err)
 						logOpenAIWSModeInfo(
-							"ingress_ws_client_disconnected_drain account_id=%d turn=%d conn_id=%s close_status=%s close_reason=%s drain_timeout_ms=%d",
+							"ingress_ws_client_disconnected_immediate_cancel account_id=%d turn=%d conn_id=%s close_status=%s close_reason=%s",
 							account.ID,
 							turn,
 							truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
 							closeStatus,
 							truncateOpenAIWSLogValue(closeReason, openAIWSHeaderValueMaxLen),
-							openAIWSIngressClientDisconnectDrainTimeout.Milliseconds(),
+						)
+						pumpCancel()
+						lease.MarkBroken()
+						return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
+							"client_disconnected_immediate",
+							fmt.Errorf("client disconnected (write): %w", err),
+							wroteDownstream,
+							buildPartialResult("client_disconnected"),
 						)
 					} else {
 						return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
