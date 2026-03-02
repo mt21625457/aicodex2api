@@ -538,6 +538,11 @@ type GatewayOpenAIWSConfig struct {
 	// PayloadLogSampleRate: payload_schema 日志采样率（0-1）
 	PayloadLogSampleRate float64 `mapstructure:"payload_log_sample_rate"`
 
+	// UpstreamConnMaxAgeSeconds: 上游 WebSocket 连接最大存活时间（秒）。
+	// OpenAI 在 60 分钟后强制断开连接，此参数控制主动轮换阈值。
+	// 默认 3300（55 分钟）；设为 0 则禁用超龄轮换。
+	UpstreamConnMaxAgeSeconds int `mapstructure:"upstream_conn_max_age_seconds"`
+
 	// 账号调度与粘连参数
 	LBTopK int `mapstructure:"lb_top_k"`
 	// StickySessionTTLSeconds: session_hash -> account_id 粘连 TTL
@@ -1338,6 +1343,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.retry_jitter_ratio", 0.2)
 	viper.SetDefault("gateway.openai_ws.retry_total_budget_ms", 5000)
 	viper.SetDefault("gateway.openai_ws.payload_log_sample_rate", 0.2)
+	viper.SetDefault("gateway.openai_ws.upstream_conn_max_age_seconds", 3300)
 	viper.SetDefault("gateway.openai_ws.lb_top_k", 7)
 	viper.SetDefault("gateway.openai_ws.sticky_session_ttl_seconds", 3600)
 	viper.SetDefault("gateway.openai_ws.session_hash_read_old_fallback", true)
@@ -2044,6 +2050,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.PayloadLogSampleRate < 0 || c.Gateway.OpenAIWS.PayloadLogSampleRate > 1 {
 		return fmt.Errorf("gateway.openai_ws.payload_log_sample_rate must be within [0,1]")
+	}
+	if c.Gateway.OpenAIWS.UpstreamConnMaxAgeSeconds < 0 {
+		return fmt.Errorf("gateway.openai_ws.upstream_conn_max_age_seconds must be non-negative")
 	}
 	if c.Gateway.OpenAIWS.LBTopK <= 0 {
 		return fmt.Errorf("gateway.openai_ws.lb_top_k must be positive")

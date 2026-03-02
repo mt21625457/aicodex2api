@@ -438,7 +438,7 @@ func TestOpenAIWSIngressContextPool_Yield_ReleasesOwnerKeepsUpstream(t *testing.
 	require.True(t, closedAfterRelease, "release 仍需关闭上游连接")
 }
 
-func TestOpenAIWSIngressContextPool_CleanupAccountExpiredLocked_ClosesUpstream(t *testing.T) {
+func TestOpenAIWSIngressContextPool_EvictExpiredIdleLocked_ClosesUpstream(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
 
@@ -458,14 +458,14 @@ func TestOpenAIWSIngressContextPool_CleanupAccountExpiredLocked_ClosesUpstream(t
 		sessionKey:       openAIWSIngressContextSessionKey(21, "session_expired"),
 		upstream:         upstreamConn,
 		upstreamConnID:   "ctxws_1201_1",
-		handshakeHeaders: map[string][]string{"x-test": []string{"ok"}},
+		handshakeHeaders: map[string][]string{"x-test": {"ok"}},
 	}
 	expiredCtx.setExpiresAt(time.Now().Add(-2 * time.Second))
 	ap.contexts[expiredCtx.id] = expiredCtx
 	ap.bySession[expiredCtx.sessionKey] = expiredCtx.id
 
 	ap.mu.Lock()
-	toClose := pool.cleanupAccountExpiredLocked(ap, time.Now())
+	toClose := pool.evictExpiredIdleLocked(ap, time.Now())
 	ap.mu.Unlock()
 	closeOpenAIWSClientConns(toClose)
 
@@ -1386,4 +1386,1111 @@ func TestOpenAIWSIngressContextPool_MigrationBlockedByCircuitBreaker(t *testing.
 	})
 	require.ErrorIs(t, err, errOpenAIWSConnQueueFull,
 		"migration to a circuit-open account should be blocked")
+}
+
+// ---------- 连接生命周期管理（超龄轮换）测试 ----------
+
+func TestOpenAIWSIngressContext_UpstreamConnAge_ZeroValue(t *testing.T) {
+	ctx := &openAIWSIngressContext{}
+	// 未设置 createdAt 时，connAge 应返回 0
+	require.Equal(t, time.Duration(0), ctx.upstreamConnAge(time.Now()))
+}
+
+func TestOpenAIWSIngressContext_UpstreamConnAge_Normal(t *testing.T) {
+	ctx := &openAIWSIngressContext{}
+	past := time.Now().Add(-10 * time.Minute)
+	ctx.upstreamConnCreatedAt.Store(past.UnixNano())
+	age := ctx.upstreamConnAge(time.Now())
+	require.True(t, age >= 10*time.Minute-time.Second, "connAge 应约为 10 分钟，实际=%v", age)
+	require.True(t, age < 11*time.Minute, "connAge 不应过大，实际=%v", age)
+}
+
+func TestOpenAIWSIngressContext_UpstreamConnAge_NilSafe(t *testing.T) {
+	var ctx *openAIWSIngressContext
+	require.Equal(t, time.Duration(0), ctx.upstreamConnAge(time.Now()))
+}
+
+func TestOpenAIWSIngressContext_UpstreamConnAge_ClockSkew(t *testing.T) {
+	ctx := &openAIWSIngressContext{}
+	future := time.Now().Add(10 * time.Minute)
+	ctx.upstreamConnCreatedAt.Store(future.UnixNano())
+	// now 早于 createdAt（时钟回拨），应返回 0
+	require.Equal(t, time.Duration(0), ctx.upstreamConnAge(time.Now()))
+}
+
+func TestNewOpenAIWSIngressContextPool_UpstreamMaxAge_ZeroDisablesRotation(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.UpstreamConnMaxAgeSeconds = 0
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	require.Equal(t, time.Duration(0), pool.upstreamMaxAge)
+}
+
+func TestOpenAIWSIngressContextPool_EnsureUpstream_MaxAgeRotate(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	pool.upstreamMaxAge = 1 * time.Second // 设置极短的 maxAge 以便测试
+	defer pool.Close()
+
+	conn1 := &openAIWSCaptureConn{}
+	conn2 := &openAIWSCaptureConn{}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{conn1, conn2},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 901, Concurrency: 2}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 第一次 Acquire：建连
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     1,
+		SessionHash: "session_age",
+		OwnerID:     "owner_age_1",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease1)
+	require.Equal(t, 1, dialer.DialCount(), "首次 Acquire 应 dial 一次")
+
+	// Yield 保留连接
+	lease1.Yield()
+
+	// 等待超过 maxAge
+	time.Sleep(1200 * time.Millisecond)
+
+	// 第二次 Acquire：应触发超龄轮换
+	lease2, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     1,
+		SessionHash: "session_age",
+		OwnerID:     "owner_age_2",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease2)
+	require.Equal(t, 2, dialer.DialCount(), "超龄轮换应触发重新 dial")
+	require.True(t, conn1.closed, "旧连接应被关闭")
+	lease2.Release()
+}
+
+func TestOpenAIWSIngressContextPool_EnsureUpstream_YoungConnNotRotated(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	pool.upstreamMaxAge = 10 * time.Minute // 远大于测试时间
+	defer pool.Close()
+
+	conn1 := &openAIWSCaptureConn{}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{conn1},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 902, Concurrency: 2}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     1,
+		SessionHash: "session_young",
+		OwnerID:     "owner_young_1",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	lease1.Yield()
+
+	// 立即重新 Acquire：连接年轻，不应轮换
+	lease2, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     1,
+		SessionHash: "session_young",
+		OwnerID:     "owner_young_2",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease2)
+	require.Equal(t, 1, dialer.DialCount(), "年轻连接不应触发重新 dial")
+	require.True(t, lease2.Reused(), "年轻连接应复用")
+	require.False(t, conn1.closed, "年轻连接不应被关闭")
+	lease2.Release()
+}
+
+func TestOpenAIWSIngressContextPool_CloseAgedIdleUpstreams_ClosesAgedIdle(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	pool.upstreamMaxAge = 1 * time.Second
+	defer pool.Close()
+
+	conn1 := &openAIWSCaptureConn{}
+	ap := &openAIWSIngressAccountPool{
+		contexts:  make(map[string]*openAIWSIngressContext),
+		bySession: make(map[string]string),
+	}
+
+	ctx := &openAIWSIngressContext{
+		id:        "ctx_aged_1",
+		accountID: 903,
+		upstream:  conn1,
+	}
+	// 设 createdAt 为 2 秒前
+	ctx.upstreamConnCreatedAt.Store(time.Now().Add(-2 * time.Second).UnixNano())
+	ctx.touchLease(time.Now(), pool.idleTTL)
+	ap.contexts["ctx_aged_1"] = ctx
+
+	now := time.Now()
+	ap.mu.Lock()
+	toClose := pool.closeAgedIdleUpstreamsLocked(ap, now)
+	ap.mu.Unlock()
+
+	require.Len(t, toClose, 1, "应关闭超龄空闲连接")
+	closeOpenAIWSClientConns(toClose)
+	require.True(t, conn1.closed)
+
+	// upstream 应已清空
+	ctx.mu.Lock()
+	require.Nil(t, ctx.upstream)
+	require.Equal(t, int64(0), ctx.upstreamConnCreatedAt.Load())
+	ctx.mu.Unlock()
+}
+
+func TestOpenAIWSIngressContextPool_CloseAgedIdleUpstreams_SkipsOwnedContext(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	pool.upstreamMaxAge = 1 * time.Second
+	defer pool.Close()
+
+	conn1 := &openAIWSCaptureConn{}
+	ap := &openAIWSIngressAccountPool{
+		contexts:  make(map[string]*openAIWSIngressContext),
+		bySession: make(map[string]string),
+	}
+
+	ctx := &openAIWSIngressContext{
+		id:        "ctx_owned_1",
+		accountID: 904,
+		ownerID:   "active_owner",
+		upstream:  conn1,
+	}
+	ctx.upstreamConnCreatedAt.Store(time.Now().Add(-2 * time.Second).UnixNano())
+	ap.contexts["ctx_owned_1"] = ctx
+
+	now := time.Now()
+	ap.mu.Lock()
+	toClose := pool.closeAgedIdleUpstreamsLocked(ap, now)
+	ap.mu.Unlock()
+
+	require.Len(t, toClose, 0, "有 owner 的超龄连接不应被关闭")
+	require.False(t, conn1.closed)
+}
+
+func TestOpenAIWSIngressContextPool_CloseAgedIdleUpstreams_SkipsYoungConn(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	pool.upstreamMaxAge = 10 * time.Minute
+	defer pool.Close()
+
+	conn1 := &openAIWSCaptureConn{}
+	ap := &openAIWSIngressAccountPool{
+		contexts:  make(map[string]*openAIWSIngressContext),
+		bySession: make(map[string]string),
+	}
+
+	ctx := &openAIWSIngressContext{
+		id:        "ctx_young_1",
+		accountID: 905,
+		upstream:  conn1,
+	}
+	ctx.upstreamConnCreatedAt.Store(time.Now().UnixNano())
+	ctx.touchLease(time.Now(), pool.idleTTL)
+	ap.contexts["ctx_young_1"] = ctx
+
+	now := time.Now()
+	ap.mu.Lock()
+	toClose := pool.closeAgedIdleUpstreamsLocked(ap, now)
+	ap.mu.Unlock()
+
+	require.Len(t, toClose, 0, "年轻连接不应被关闭")
+	require.False(t, conn1.closed)
+}
+
+func TestOpenAIWSIngressContextPool_E2E_AcquireYieldAgedReconnect(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	pool.upstreamMaxAge = 55 * time.Minute // 使用实际默认值
+	defer pool.Close()
+
+	conn1 := &openAIWSCaptureConn{}
+	conn2 := &openAIWSCaptureConn{}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{conn1, conn2},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 906, Concurrency: 2}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Acquire → Yield
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     1,
+		SessionHash: "session_e2e",
+		OwnerID:     "owner_e2e_1",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease1)
+	lease1.Yield()
+
+	// 手动设置 createdAt 为 56 分钟前以模拟超龄
+	pool.mu.Lock()
+	ap := pool.accounts[account.ID]
+	pool.mu.Unlock()
+	require.NotNil(t, ap)
+
+	ap.mu.Lock()
+	for _, c := range ap.contexts {
+		c.upstreamConnCreatedAt.Store(time.Now().Add(-56 * time.Minute).UnixNano())
+	}
+	ap.mu.Unlock()
+
+	// 重新 Acquire：应检测到超龄并重连
+	lease2, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     1,
+		SessionHash: "session_e2e",
+		OwnerID:     "owner_e2e_2",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease2)
+	require.Equal(t, 2, dialer.DialCount(), "超龄 56 分钟的连接应触发重连")
+	require.True(t, conn1.closed, "旧的超龄连接应被关闭")
+	lease2.Release()
+}
+
+// 回归测试：容量满 + 存在过期 context 时，Acquire 仍能通过 evict 腾出空间后正常分配。
+func TestOpenAIWSIngressContextPool_Acquire_EvictsExpiredWhenFull(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	conn1 := &openAIWSCaptureConn{}
+	conn2 := &openAIWSCaptureConn{}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{conn1, conn2},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 901, Concurrency: 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// 获取一个 lease 占满容量
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     3,
+		SessionHash: "session_old",
+		OwnerID:     "owner_old",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease1)
+	lease1.Release()
+
+	// 手动令该 context 过期
+	pool.mu.Lock()
+	ap := pool.accounts[account.ID]
+	pool.mu.Unlock()
+	ap.mu.Lock()
+	for _, c := range ap.contexts {
+		c.setExpiresAt(time.Now().Add(-2 * time.Second))
+	}
+	ap.mu.Unlock()
+
+	// 容量满（1个过期 context），新 session 的 Acquire 应通过 evict 成功
+	lease2, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     3,
+		SessionHash: "session_new",
+		OwnerID:     "owner_new",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err, "容量满但有过期 context 时 Acquire 应成功")
+	require.NotNil(t, lease2)
+	lease2.Release()
+}
+
+// 回归测试：Acquire 找到已过期但仍在 bySession 映射中的 context 时，能正确取得所有权并刷新租约。
+func TestOpenAIWSIngressContextPool_Acquire_ReusesExpiredContextBySession(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 60
+
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	conn1 := &openAIWSCaptureConn{}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{conn1},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 902, Concurrency: 2}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// 第一次获取 context
+	lease1, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     4,
+		SessionHash: "session_reuse",
+		OwnerID:     "owner_1",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease1)
+	lease1.Release()
+
+	// 令 context 过期（但不清理，模拟热路径不再清理的行为）
+	pool.mu.Lock()
+	ap := pool.accounts[account.ID]
+	pool.mu.Unlock()
+	ap.mu.Lock()
+	for _, c := range ap.contexts {
+		c.setExpiresAt(time.Now().Add(-1 * time.Second))
+	}
+	ap.mu.Unlock()
+
+	// 同 session 再次 Acquire，应能复用过期但未清理的 context
+	lease2, err := pool.Acquire(ctx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     4,
+		SessionHash: "session_reuse",
+		OwnerID:     "owner_2",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err, "过期但未清理的 context 应被同 session 的 Acquire 复用")
+	require.NotNil(t, lease2)
+
+	// 验证租约已刷新（expiresAt 应在未来）
+	pool.mu.Lock()
+	ap2 := pool.accounts[account.ID]
+	pool.mu.Unlock()
+	ap2.mu.Lock()
+	for _, c := range ap2.contexts {
+		c.mu.Lock()
+		ea := c.expiresAt()
+		c.mu.Unlock()
+		require.True(t, ea.After(time.Now()), "复用后租约应被刷新到未来")
+	}
+	ap2.mu.Unlock()
+
+	lease2.Release()
+}
+
+// === P3: 后台主动 Ping 检测测试 ===
+
+func TestOpenAIWSIngressContextPool_PingIdleUpstreams_MarksBrokenOnPingFailure(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	ap := &openAIWSIngressAccountPool{
+		contexts:  make(map[string]*openAIWSIngressContext),
+		bySession: make(map[string]string),
+	}
+	ctx := &openAIWSIngressContext{
+		id:        "ctx_ping_fail_1",
+		accountID: 2001,
+		upstream:  failConn,
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+	ap.contexts["ctx_ping_fail_1"] = ctx
+
+	pool.pingIdleUpstreams(ap)
+
+	ctx.mu.Lock()
+	broken := ctx.broken
+	streak := ctx.failureStreak
+	ctx.mu.Unlock()
+	require.True(t, broken, "Ping 失败应标记 context 为 broken")
+	require.Equal(t, 1, streak, "Ping 失败应增加 failureStreak")
+}
+
+func TestOpenAIWSIngressContextPool_PingIdleUpstreams_SkipsOwnedContext(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	ap := &openAIWSIngressAccountPool{
+		contexts:  make(map[string]*openAIWSIngressContext),
+		bySession: make(map[string]string),
+	}
+	ctx := &openAIWSIngressContext{
+		id:        "ctx_ping_owned_1",
+		accountID: 2002,
+		ownerID:   "active_owner",
+		upstream:  failConn,
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+	ap.contexts["ctx_ping_owned_1"] = ctx
+
+	pool.pingIdleUpstreams(ap)
+
+	ctx.mu.Lock()
+	broken := ctx.broken
+	ctx.mu.Unlock()
+	require.False(t, broken, "有 owner 的 context 不应被 Ping 探测")
+}
+
+func TestOpenAIWSIngressContextPool_PingIdleUpstreams_SkipsBrokenContext(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	ap := &openAIWSIngressAccountPool{
+		contexts:  make(map[string]*openAIWSIngressContext),
+		bySession: make(map[string]string),
+	}
+	ctx := &openAIWSIngressContext{
+		id:        "ctx_ping_broken_1",
+		accountID: 2003,
+		upstream:  failConn,
+		broken:    true,
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+	ap.contexts["ctx_ping_broken_1"] = ctx
+
+	pool.pingIdleUpstreams(ap)
+
+	ctx.mu.Lock()
+	streak := ctx.failureStreak
+	ctx.mu.Unlock()
+	require.Equal(t, 0, streak, "已 broken 的 context 不应被再次 Ping")
+}
+
+func TestOpenAIWSIngressContextPool_PingIdleUpstreams_HealthyConnStaysHealthy(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	healthyConn := &openAIWSCaptureConn{}
+	ap := &openAIWSIngressAccountPool{
+		contexts:  make(map[string]*openAIWSIngressContext),
+		bySession: make(map[string]string),
+	}
+	ctx := &openAIWSIngressContext{
+		id:        "ctx_ping_healthy_1",
+		accountID: 2004,
+		upstream:  healthyConn,
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+	ap.contexts["ctx_ping_healthy_1"] = ctx
+
+	pool.pingIdleUpstreams(ap)
+
+	ctx.mu.Lock()
+	broken := ctx.broken
+	hasUpstream := ctx.upstream != nil
+	ctx.mu.Unlock()
+	require.False(t, broken, "Ping 成功的 context 不应被标记 broken")
+	require.True(t, hasUpstream, "Ping 成功的 upstream 应保持")
+}
+
+func TestOpenAIWSIngressContextPool_SweepTriggersPingOnIdleContexts(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	healthyConn := &openAIWSCaptureConn{}
+
+	pool.mu.Lock()
+	ap := pool.getOrCreateAccountPoolLocked(3001)
+	pool.mu.Unlock()
+
+	ap.mu.Lock()
+	ctxFail := &openAIWSIngressContext{
+		id:        "ctx_sweep_ping_fail",
+		accountID: 3001,
+		upstream:  failConn,
+	}
+	ctxFail.touchLease(time.Now(), pool.idleTTL)
+	ap.contexts["ctx_sweep_ping_fail"] = ctxFail
+
+	ctxOk := &openAIWSIngressContext{
+		id:        "ctx_sweep_ping_ok",
+		accountID: 3001,
+		upstream:  healthyConn,
+	}
+	ctxOk.touchLease(time.Now(), pool.idleTTL)
+	ap.contexts["ctx_sweep_ping_ok"] = ctxOk
+	ap.dynamicCap.Store(2)
+	ap.mu.Unlock()
+
+	// 手动触发 sweep
+	pool.sweepExpiredIdleContexts()
+
+	ctxFail.mu.Lock()
+	failBroken := ctxFail.broken
+	ctxFail.mu.Unlock()
+	require.True(t, failBroken, "sweep 后 Ping 失败的空闲 context 应被标记 broken")
+
+	ctxOk.mu.Lock()
+	okBroken := ctxOk.broken
+	ctxOk.mu.Unlock()
+	require.False(t, okBroken, "sweep 后 Ping 成功的空闲 context 应保持健康")
+}
+
+func TestOpenAIWSIngressContextPool_YieldSchedulesDelayedPing(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{failConn},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 4001, Concurrency: 2}
+	bCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	lease, err := pool.Acquire(bCtx, openAIWSIngressContextAcquireRequest{
+		Account:     account,
+		GroupID:     1,
+		SessionHash: "session_yield_ping",
+		OwnerID:     "owner_yield_ping",
+		WSURL:       "ws://test-upstream",
+	})
+	require.NoError(t, err)
+
+	ingressCtx := lease.context
+	// Yield 触发延迟 Ping
+	lease.Yield()
+
+	// 等待延迟 Ping 执行完毕（默认 5s + 余量）
+	time.Sleep(6 * time.Second)
+
+	ingressCtx.mu.Lock()
+	broken := ingressCtx.broken
+	ingressCtx.mu.Unlock()
+	require.True(t, broken, "Yield 后延迟 Ping 应检测到 PingFailConn 并标记 broken")
+}
+
+func TestOpenAIWSIngressContextPool_ScheduleDelayedPing_CancelledOnPoolClose(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+
+	failConn := &openAIWSPingFailConn{}
+	ctx := &openAIWSIngressContext{
+		id:        "ctx_delayed_cancel_1",
+		accountID: 5001,
+		upstream:  failConn,
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+
+	// 安排 10s 延迟（远大于测试等待时间）
+	pool.scheduleDelayedPing(ctx, 10*time.Second)
+
+	// 立刻关闭 pool，应取消延迟 Ping
+	pool.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	ctx.mu.Lock()
+	broken := ctx.broken
+	ctx.mu.Unlock()
+	require.False(t, broken, "pool 关闭后延迟 Ping 不应执行")
+}
+
+// === effectiveDynamicCapacity 边界测试 ===
+
+func TestOpenAIWSIngressContextPool_EffectiveDynamicCapacity_NilAccountPool(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{}
+	require.Equal(t, 4, pool.effectiveDynamicCapacity(nil, 4), "ap==nil 时应返回 hardCap")
+	require.Equal(t, 0, pool.effectiveDynamicCapacity(nil, 0), "ap==nil && hardCap==0")
+}
+
+func TestOpenAIWSIngressContextPool_EffectiveDynamicCapacity_ZeroHardCap(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{}
+	ap := &openAIWSIngressAccountPool{}
+	ap.dynamicCap.Store(3)
+	require.Equal(t, 0, pool.effectiveDynamicCapacity(ap, 0), "hardCap<=0 应返回 hardCap")
+	require.Equal(t, -1, pool.effectiveDynamicCapacity(ap, -1), "hardCap<0 应返回 hardCap")
+}
+
+func TestOpenAIWSIngressContextPool_EffectiveDynamicCapacity_DynCapBelowOne(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{}
+	ap := &openAIWSIngressAccountPool{}
+	ap.dynamicCap.Store(0) // 异常值
+	result := pool.effectiveDynamicCapacity(ap, 4)
+	require.Equal(t, 1, result, "dynCap<1 应自动修复为 1")
+	require.Equal(t, int32(1), ap.dynamicCap.Load(), "dynCap 应被修复为 1")
+}
+
+func TestOpenAIWSIngressContextPool_EffectiveDynamicCapacity_DynCapExceedsHardCap(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{}
+	ap := &openAIWSIngressAccountPool{}
+	ap.dynamicCap.Store(10)
+	require.Equal(t, 4, pool.effectiveDynamicCapacity(ap, 4), "dynCap>hardCap 应 clamp 到 hardCap")
+}
+
+func TestOpenAIWSIngressContextPool_EffectiveDynamicCapacity_DynCapEqualsHardCap(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{}
+	ap := &openAIWSIngressAccountPool{}
+	ap.dynamicCap.Store(4)
+	require.Equal(t, 4, pool.effectiveDynamicCapacity(ap, 4), "dynCap==hardCap 应返回 hardCap")
+}
+
+func TestOpenAIWSIngressContextPool_EffectiveDynamicCapacity_NormalPath(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{}
+	ap := &openAIWSIngressAccountPool{}
+	ap.dynamicCap.Store(2)
+	require.Equal(t, 2, pool.effectiveDynamicCapacity(ap, 8), "正常 dynCap<hardCap 应返回 dynCap")
+}
+
+// === 动态容量增长/缩容测试 ===
+
+func TestOpenAIWSIngressContextPool_Acquire_DynamicCapGrows(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{
+			&openAIWSCaptureConn{}, &openAIWSCaptureConn{}, &openAIWSCaptureConn{},
+		},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 6001, Concurrency: 4}
+	bCtx := context.Background()
+
+	// 第一次 Acquire：dynamicCap 初始为 1，创建第一个 context
+	lease1, err := pool.Acquire(bCtx, openAIWSIngressContextAcquireRequest{
+		Account: account, GroupID: 1, SessionHash: "s1", OwnerID: "o1", WSURL: "ws://t",
+	})
+	require.NoError(t, err)
+
+	pool.mu.Lock()
+	ap := pool.accounts[account.ID]
+	pool.mu.Unlock()
+	require.Equal(t, int32(1), ap.dynamicCap.Load(), "初始 dynamicCap 应为 1")
+
+	// 第二次 Acquire (不同 session)：dynCap=1 < capacity=4，应增长
+	lease2, err := pool.Acquire(bCtx, openAIWSIngressContextAcquireRequest{
+		Account: account, GroupID: 1, SessionHash: "s2", OwnerID: "o2", WSURL: "ws://t",
+	})
+	require.NoError(t, err)
+	require.True(t, ap.dynamicCap.Load() >= 2, "第二次 Acquire 应触发 dynamicCap 增长")
+
+	lease1.Release()
+	lease2.Release()
+}
+
+func TestOpenAIWSIngressContextPool_Sweeper_ShrinksDynamicCap(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 1 // 1 秒 TTL 让 context 快速过期
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	dialer := &openAIWSQueueDialer{
+		conns: []openAIWSClientConn{
+			&openAIWSCaptureConn{}, &openAIWSCaptureConn{}, &openAIWSCaptureConn{},
+		},
+	}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 6002, Concurrency: 4}
+	bCtx := context.Background()
+
+	// 创建两个 context
+	lease1, _ := pool.Acquire(bCtx, openAIWSIngressContextAcquireRequest{
+		Account: account, GroupID: 1, SessionHash: "s1", OwnerID: "o1", WSURL: "ws://t",
+	})
+	lease2, _ := pool.Acquire(bCtx, openAIWSIngressContextAcquireRequest{
+		Account: account, GroupID: 1, SessionHash: "s2", OwnerID: "o2", WSURL: "ws://t",
+	})
+	lease1.Release()
+	lease2.Release()
+
+	pool.mu.Lock()
+	ap := pool.accounts[account.ID]
+	pool.mu.Unlock()
+	require.True(t, ap.dynamicCap.Load() >= 2)
+
+	// 等待 context 过期
+	time.Sleep(2 * time.Second)
+
+	// 手动 sweep
+	pool.sweepExpiredIdleContexts()
+
+	// sweep 后 dynamicCap 应缩减
+	ap.mu.Lock()
+	ctxCount := len(ap.contexts)
+	ap.mu.Unlock()
+	dynCap := ap.dynamicCap.Load()
+	// 如果所有 context 都被 evict，dynamicCap 应缩到 1（min）
+	if ctxCount == 0 {
+		require.Equal(t, int32(1), dynCap, "context 全部 evict 后 dynamicCap 应缩至 1")
+	} else {
+		require.LessOrEqual(t, dynCap, int32(ctxCount), "dynamicCap 应缩至当前 context 数")
+	}
+}
+
+// === Ping 额外边界测试 ===
+
+func TestOpenAIWSIngressContextPool_PingContextUpstream_NilPoolOrContext(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{stopCh: make(chan struct{})}
+	// nil context 不应 panic
+	pool.pingContextUpstream(nil)
+	// nil pool 不应 panic
+	var nilPool *openAIWSIngressContextPool
+	nilPool.pingContextUpstream(&openAIWSIngressContext{})
+}
+
+func TestOpenAIWSIngressContextPool_PingContextUpstream_SkipsDialingContext(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	ctx := &openAIWSIngressContext{
+		id: "ctx_dialing_1", accountID: 7001,
+		upstream: failConn, dialing: true,
+	}
+	pool.pingContextUpstream(ctx)
+	ctx.mu.Lock()
+	require.False(t, ctx.broken, "dialing 中的 context 不应被 Ping")
+	ctx.mu.Unlock()
+}
+
+func TestOpenAIWSIngressContextPool_PingContextUpstream_SkipsNoUpstream(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	ctx := &openAIWSIngressContext{
+		id: "ctx_no_upstream", accountID: 7002, upstream: nil,
+	}
+	pool.pingContextUpstream(ctx)
+	ctx.mu.Lock()
+	require.False(t, ctx.broken, "无 upstream 的 context 不应被 Ping")
+	ctx.mu.Unlock()
+}
+
+func TestOpenAIWSIngressContextPool_PingIdleUpstreams_NilPoolOrAP(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{stopCh: make(chan struct{})}
+	pool.pingIdleUpstreams(nil)
+	var nilPool *openAIWSIngressContextPool
+	nilPool.pingIdleUpstreams(&openAIWSIngressAccountPool{})
+}
+
+func TestOpenAIWSIngressContextPool_PingIdleUpstreams_SkipsNilContext(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	ap := &openAIWSIngressAccountPool{
+		contexts:  map[string]*openAIWSIngressContext{"nil_ctx": nil},
+		bySession: make(map[string]string),
+	}
+	// 不应 panic
+	pool.pingIdleUpstreams(ap)
+}
+
+func TestOpenAIWSIngressContextPool_ScheduleDelayedPing_ZeroDelay(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	ctx := &openAIWSIngressContext{
+		id: "ctx_zero_delay", accountID: 8001, upstream: failConn,
+	}
+	// delay <= 0 应为 no-op
+	pool.scheduleDelayedPing(ctx, 0)
+	pool.scheduleDelayedPing(ctx, -1*time.Second)
+	time.Sleep(100 * time.Millisecond)
+	ctx.mu.Lock()
+	require.False(t, ctx.broken, "delay<=0 不应触发 Ping")
+	ctx.mu.Unlock()
+}
+
+func TestOpenAIWSIngressContextPool_ScheduleDelayedPing_NilParams(t *testing.T) {
+	t.Parallel()
+	pool := &openAIWSIngressContextPool{stopCh: make(chan struct{})}
+	// nil context
+	pool.scheduleDelayedPing(nil, 5*time.Second)
+	// nil pool
+	var nilPool *openAIWSIngressContextPool
+	nilPool.scheduleDelayedPing(&openAIWSIngressContext{}, 5*time.Second)
+}
+
+// === P1 并发回归：旧连接 Ping 失败不应误杀新连接 ===
+
+func TestOpenAIWSIngressContextPool_PingFailDoesNotKillNewConn(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	// 旧连接：Ping 带 200ms 延迟后失败
+	oldConn := newOpenAIWSDelayedPingFailConn(200 * time.Millisecond)
+	// 新连接：正常的 Ping
+	newConn := &openAIWSCaptureConn{}
+
+	ctx := &openAIWSIngressContext{
+		id:             "ctx_race_test",
+		accountID:      9001,
+		upstream:       oldConn,
+		upstreamConnID: "old_conn_1",
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+
+	// 在后台对旧连接发起 Ping 探测
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pool.pingContextUpstream(ctx)
+	}()
+
+	// 等待 Ping 开始执行
+	<-oldConn.pingDone
+
+	// 模拟连接重建：在 Ping 执行期间将 upstream 替换为新连接
+	ctx.mu.Lock()
+	ctx.upstream = newConn
+	ctx.upstreamConnID = "new_conn_2"
+	ctx.broken = false
+	ctx.failureStreak = 0
+	ctx.mu.Unlock()
+
+	// 等待 Ping goroutine 完成
+	wg.Wait()
+
+	// 验证：新连接不应被标记为 broken
+	ctx.mu.Lock()
+	broken := ctx.broken
+	streak := ctx.failureStreak
+	upstream := ctx.upstream
+	connID := ctx.upstreamConnID
+	ctx.mu.Unlock()
+
+	require.False(t, broken, "新连接不应被旧 Ping 失败标记为 broken")
+	require.Equal(t, 0, streak, "failureStreak 不应增加")
+	require.Equal(t, newConn, upstream, "upstream 应仍是新连接")
+	require.Equal(t, "new_conn_2", connID, "upstreamConnID 应仍是新连接的 ID")
+	require.False(t, newConn.Closed(), "新连接不应被关闭")
+}
+
+func TestOpenAIWSIngressContextPool_PingFailKillsSameConn(t *testing.T) {
+	// 对照测试：connID 未变时应正常标记 broken
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	ctx := &openAIWSIngressContext{
+		id:             "ctx_same_conn",
+		accountID:      9002,
+		upstream:       failConn,
+		upstreamConnID: "conn_1",
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+
+	pool.pingContextUpstream(ctx)
+
+	ctx.mu.Lock()
+	broken := ctx.broken
+	streak := ctx.failureStreak
+	connID := ctx.upstreamConnID
+	ctx.mu.Unlock()
+
+	require.True(t, broken, "同一连接 Ping 失败应标记 broken")
+	require.Equal(t, 1, streak, "failureStreak 应为 1")
+	require.Empty(t, connID, "upstreamConnID 应被清空")
+}
+
+func TestOpenAIWSIngressContextPool_PingFailDoesNotKillBusyConn(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := newOpenAIWSDelayedPingFailConn(200 * time.Millisecond)
+	ctx := &openAIWSIngressContext{
+		id:             "ctx_busy_conn",
+		accountID:      9005,
+		upstream:       failConn,
+		upstreamConnID: "conn_busy_1",
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pool.pingContextUpstream(ctx)
+	}()
+
+	<-failConn.pingDone
+
+	ctx.mu.Lock()
+	ctx.ownerID = "active_owner"
+	ctx.mu.Unlock()
+
+	wg.Wait()
+
+	ctx.mu.Lock()
+	broken := ctx.broken
+	streak := ctx.failureStreak
+	upstream := ctx.upstream
+	connID := ctx.upstreamConnID
+	ownerID := ctx.ownerID
+	ctx.mu.Unlock()
+
+	require.False(t, broken, "busy context 不应被后台 Ping 标记 broken")
+	require.Equal(t, 0, streak, "failureStreak 不应增加")
+	require.Equal(t, failConn, upstream, "busy context 的 upstream 不应被替换")
+	require.Equal(t, "conn_busy_1", connID, "busy context 的 connID 不应变化")
+	require.Equal(t, "active_owner", ownerID, "owner 应保持不变")
+	require.False(t, failConn.Closed(), "busy context 的连接不应被后台 Ping 关闭")
+}
+
+// === P2a 去重：连续多次 Yield 仅触发一次延迟 Ping ===
+
+func TestOpenAIWSIngressContextPool_ConsecutiveYieldsOnlyOnePing(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 600
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	// 使用 Ping 失败连接以便观察是否被标记 broken
+	failConn := &openAIWSPingFailConn{}
+	ctx := &openAIWSIngressContext{
+		id:             "ctx_yield_dedup",
+		accountID:      9003,
+		upstream:       failConn,
+		upstreamConnID: "conn_dedup_1",
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+
+	// 连续调用 5 次 scheduleDelayedPing
+	for i := 0; i < 5; i++ {
+		pool.scheduleDelayedPing(ctx, 100*time.Millisecond)
+	}
+
+	// 验证：只有一个 pendingPingTimer（不应堆积多个 goroutine）
+	ctx.mu.Lock()
+	hasPending := ctx.pendingPingTimer != nil
+	ctx.mu.Unlock()
+	require.True(t, hasPending, "应有一个 pendingPingTimer")
+
+	// 等待 timer 到期并执行 Ping
+	time.Sleep(300 * time.Millisecond)
+
+	// Ping 失败应标记 broken（证明延迟 Ping 确实执行了）
+	ctx.mu.Lock()
+	broken := ctx.broken
+	pendingTimer := ctx.pendingPingTimer
+	ctx.mu.Unlock()
+
+	require.True(t, broken, "延迟 Ping 应已执行并标记 broken")
+	require.Nil(t, pendingTimer, "Ping 执行后 pendingPingTimer 应被清理")
+}
+
+func TestOpenAIWSIngressContextPool_ScheduleDelayedPing_ResetExtendsDelay(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	pool := newOpenAIWSIngressContextPool(cfg)
+	defer pool.Close()
+
+	failConn := &openAIWSPingFailConn{}
+	ctx := &openAIWSIngressContext{
+		id:             "ctx_reset_delay",
+		accountID:      9004,
+		upstream:       failConn,
+		upstreamConnID: "conn_reset_1",
+	}
+	ctx.touchLease(time.Now(), pool.idleTTL)
+
+	// 第一次调度 200ms 延迟
+	pool.scheduleDelayedPing(ctx, 200*time.Millisecond)
+
+	// 100ms 后再次调度 200ms（应 Reset timer，从此刻起再等 200ms）
+	time.Sleep(100 * time.Millisecond)
+	pool.scheduleDelayedPing(ctx, 200*time.Millisecond)
+
+	// 150ms 后（距第一次 250ms，距 Reset 150ms）应未执行
+	time.Sleep(150 * time.Millisecond)
+	ctx.mu.Lock()
+	broken := ctx.broken
+	ctx.mu.Unlock()
+	require.False(t, broken, "Reset 后 150ms 不应触发 Ping")
+
+	// 再等 100ms（距 Reset 250ms）应已执行
+	time.Sleep(100 * time.Millisecond)
+	ctx.mu.Lock()
+	broken = ctx.broken
+	ctx.mu.Unlock()
+	require.True(t, broken, "Reset 后 250ms 应已触发 Ping")
 }

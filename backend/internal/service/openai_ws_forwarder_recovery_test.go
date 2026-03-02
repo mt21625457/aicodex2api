@@ -662,10 +662,10 @@ func TestIsOpenAIWSIngressTurnRetryable_WroteDownstreamBlocksRetry(t *testing.T)
 // normalizeOpenAIWSIngressPayloadBeforeSend 与恢复的集成测试
 // ---------------------------------------------------------------------------
 
-func TestNormalizePayload_FunctionCallOutputPreservesBindingWithPreviousResponseID(t *testing.T) {
+func TestNormalizePayload_FunctionCallOutputPassthrough(t *testing.T) {
 	t.Parallel()
 
-	// 验证 normalizer 在处理 function_call_output 时会保持 previous_response_id 绑定
+	// 透传模式：normalizer 不再注入 previous_response_id，原样传递
 	payload := []byte(`{
 		"type":"response.create",
 		"model":"gpt-5.1",
@@ -676,7 +676,6 @@ func TestNormalizePayload_FunctionCallOutputPreservesBindingWithPreviousResponse
 		accountID:                 1,
 		turn:                      2,
 		connID:                    "conn_test",
-		storeDisabled:             true,
 		currentPayload:            payload,
 		currentPayloadBytes:       len(payload),
 		currentPreviousResponseID: "",
@@ -684,10 +683,9 @@ func TestNormalizePayload_FunctionCallOutputPreservesBindingWithPreviousResponse
 		pendingExpectedCallIDs:    []string{"call_1"},
 	})
 
-	// normalizer 应该注入 previous_response_id
-	require.Equal(t, "resp_expected", out.currentPreviousResponseID,
-		"normalizer 应为 function_call_output 注入 previous_response_id")
-	require.Equal(t, "resp_expected",
-		gjson.GetBytes(out.currentPayload, "previous_response_id").String(),
-		"payload 中应包含注入的 previous_response_id")
+	// 透传模式：previous_response_id 保持客户端原值（空），由下游 recovery 处理
+	require.Empty(t, out.currentPreviousResponseID,
+		"透传模式不应注入 previous_response_id")
+	require.True(t, out.hasFunctionCallOutputCallID)
+	require.Equal(t, []string{"call_1"}, out.functionCallOutputCallIDs)
 }

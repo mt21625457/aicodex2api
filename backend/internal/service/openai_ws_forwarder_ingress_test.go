@@ -37,6 +37,8 @@ func TestIsOpenAIWSClientDisconnectError(t *testing.T) {
 		{name: "wrapped_eof_message", err: errors.New("failed to get reader: failed to read frame header: EOF"), want: true},
 		{name: "connection_reset_by_peer", err: errors.New("failed to read frame header: read tcp 127.0.0.1:1234->127.0.0.1:5678: read: connection reset by peer"), want: true},
 		{name: "broken_pipe", err: errors.New("write tcp 127.0.0.1:1234->127.0.0.1:5678: write: broken pipe"), want: true},
+		{name: "blank_message", err: errors.New("   "), want: false},
+		{name: "unmatched_message", err: errors.New("tls handshake timeout"), want: false},
 	}
 
 	for _, tt := range tests {
@@ -109,6 +111,12 @@ func TestClassifyOpenAIWSIngressTurnAbortReason(t *testing.T) {
 			wantExpected: true,
 		},
 		{
+			name:         "client close by eof",
+			err:          io.EOF,
+			wantReason:   openAIWSIngressTurnAbortReasonClientClosed,
+			wantExpected: true,
+		},
+		{
 			name: "previous response not found",
 			err: wrapOpenAIWSIngressTurnError(
 				openAIWSIngressStagePreviousResponseNotFound,
@@ -149,6 +157,36 @@ func TestClassifyOpenAIWSIngressTurnAbortReason(t *testing.T) {
 			wantExpected: false,
 		},
 		{
+			name: "read upstream",
+			err: wrapOpenAIWSIngressTurnError(
+				"read_upstream",
+				errors.New("read upstream fail"),
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonReadUpstream,
+			wantExpected: false,
+		},
+		{
+			name: "write client",
+			err: wrapOpenAIWSIngressTurnError(
+				"write_client",
+				errors.New("write client fail"),
+				true,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonWriteClient,
+			wantExpected: false,
+		},
+		{
+			name: "unknown turn stage",
+			err: wrapOpenAIWSIngressTurnError(
+				"some_unknown_stage",
+				errors.New("unknown stage fail"),
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonUnknown,
+			wantExpected: false,
+		},
+		{
 			name: "continuation unavailable close",
 			err: NewOpenAIWSClientCloseError(
 				coderws.StatusPolicyViolation,
@@ -183,6 +221,72 @@ func TestClassifyOpenAIWSIngressTurnAbortReason_ClientDisconnectedDrainTimeout(t
 	require.Equal(t, openAIWSIngressTurnAbortReasonContextCanceled, reason)
 	require.True(t, expected)
 	require.Equal(t, openAIWSIngressTurnAbortDispositionCloseGracefully, openAIWSIngressTurnAbortDispositionForReason(reason))
+}
+
+func TestOpenAIWSIngressPumpClosedTurnError_ClientDisconnected(t *testing.T) {
+	t.Parallel()
+
+	partial := &OpenAIForwardResult{
+		RequestID: "resp_partial",
+		Usage: OpenAIUsage{
+			InputTokens: 12,
+		},
+	}
+	err := openAIWSIngressPumpClosedTurnError(true, true, partial)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+
+	var turnErr *openAIWSIngressTurnError
+	require.ErrorAs(t, err, &turnErr)
+	require.Equal(t, "client_disconnected_drain_timeout", turnErr.stage)
+	require.True(t, turnErr.wroteDownstream)
+	require.NotNil(t, turnErr.partialResult)
+	require.Equal(t, partial.RequestID, turnErr.partialResult.RequestID)
+}
+
+func TestOpenAIWSIngressPumpClosedTurnError_ReadUpstream(t *testing.T) {
+	t.Parallel()
+
+	err := openAIWSIngressPumpClosedTurnError(false, false, nil)
+	require.Error(t, err)
+
+	var turnErr *openAIWSIngressTurnError
+	require.ErrorAs(t, err, &turnErr)
+	require.Equal(t, "read_upstream", turnErr.stage)
+	require.False(t, turnErr.wroteDownstream)
+	require.Nil(t, turnErr.partialResult)
+	reason, expected := classifyOpenAIWSIngressTurnAbortReason(err)
+	require.Equal(t, openAIWSIngressTurnAbortReasonReadUpstream, reason)
+	require.False(t, expected)
+}
+
+func TestOpenAIWSIngressPumpClosedTurnError_ClonesPartialResult(t *testing.T) {
+	t.Parallel()
+
+	partial := &OpenAIForwardResult{
+		RequestID:              "resp_original",
+		PendingFunctionCallIDs: []string{"call_a"},
+	}
+	err := openAIWSIngressPumpClosedTurnError(true, true, partial)
+	require.Error(t, err)
+
+	partial.RequestID = "resp_mutated"
+	partial.PendingFunctionCallIDs[0] = "call_b"
+
+	var turnErr *openAIWSIngressTurnError
+	require.ErrorAs(t, err, &turnErr)
+	require.NotNil(t, turnErr.partialResult)
+	require.Equal(t, "resp_original", turnErr.partialResult.RequestID)
+	require.Equal(t, []string{"call_a"}, turnErr.partialResult.PendingFunctionCallIDs)
+}
+
+func TestOpenAIWSIngressClientDisconnectedDrainTimeoutError_DefaultTimeout(t *testing.T) {
+	t.Parallel()
+
+	err := openAIWSIngressClientDisconnectedDrainTimeoutError(0)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), openAIWSIngressClientDisconnectDrainTimeout.String())
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestOpenAIWSIngressResolveDrainReadTimeout(t *testing.T) {
@@ -285,6 +389,16 @@ func TestOpenAIWSIngressTurnAbortDispositionForReason(t *testing.T) {
 		{
 			name: "default fail request on write upstream reason",
 			in:   openAIWSIngressTurnAbortReasonWriteUpstream,
+			want: openAIWSIngressTurnAbortDispositionFailRequest,
+		},
+		{
+			name: "default fail request on read upstream reason",
+			in:   openAIWSIngressTurnAbortReasonReadUpstream,
+			want: openAIWSIngressTurnAbortDispositionFailRequest,
+		},
+		{
+			name: "default fail request on write client reason",
+			in:   openAIWSIngressTurnAbortReasonWriteClient,
 			want: openAIWSIngressTurnAbortDispositionFailRequest,
 		},
 	}

@@ -40,6 +40,7 @@ type pumpTestConn struct {
 	readCount  int
 	closed     bool
 	closedCh   chan struct{}
+	ignoreCtx  bool
 	pingErr    error
 	writeErr   error
 	writeCount int
@@ -76,6 +77,10 @@ func (c *pumpTestConn) ReadMessage(ctx context.Context) ([]byte, error) {
 	}
 	if len(c.events) == 0 {
 		c.mu.Unlock()
+		if c.ignoreCtx {
+			<-c.closedCh
+			return nil, io.EOF
+		}
 		// 阻塞直到上下文取消，模拟上游无更多事件
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -124,7 +129,12 @@ func (l *pumpTestLease) ReadMessageWithContextTimeout(ctx context.Context, timeo
 	return l.conn.ReadMessage(readCtx)
 }
 
-func (l *pumpTestLease) MarkBroken() { l.broken.Store(true) }
+func (l *pumpTestLease) MarkBroken() {
+	l.broken.Store(true)
+	if l.conn != nil {
+		_ = l.conn.Close()
+	}
+}
 
 func (l *pumpTestLease) IsBroken() bool { return l.broken.Load() }
 
@@ -734,7 +744,6 @@ func TestPump_ResponseDoneStopsPump(t *testing.T) {
 
 func TestPump_ErrorEventStopsReading(t *testing.T) {
 	t.Parallel()
-	readCount := atomic.Int32{}
 	conn := newPumpTestConn(
 		pumpTestConnEvent{data: pumpTestEvent("error")},
 		pumpTestConnEvent{data: pumpTestEvent("response.output_text.delta")}, // 不应被读取
@@ -751,7 +760,6 @@ func TestPump_ErrorEventStopsReading(t *testing.T) {
 	defer cancel()
 
 	events := collectAll(ch)
-	_ = readCount
 	require.Len(t, events, 1, "error 事件后不应再读取更多事件")
 	evtType, _ := parseOpenAIWSEventType(events[0].message)
 	assert.Equal(t, "error", evtType)
@@ -1660,6 +1668,42 @@ func TestPump_ConcurrentDrainTimerAndExternalCancel(t *testing.T) {
 	}
 }
 
+func TestPump_DrainTimerMarkBrokenUnblocksIgnoreContextRead(t *testing.T) {
+	t.Parallel()
+
+	conn := newPumpTestConn(
+		pumpTestConnEvent{data: pumpTestEvent("response.created")},
+	)
+	conn.ignoreCtx = true
+	lease := &pumpTestLease{conn: conn}
+	ch, pumpCancel := startPump(context.Background(), lease, 30*time.Second)
+	defer pumpCancel()
+
+	first := <-ch
+	require.NoError(t, first.err)
+	require.NotEmpty(t, first.message)
+
+	done := make(chan struct{})
+	drainTimer := time.AfterFunc(30*time.Millisecond, func() {
+		lease.MarkBroken()
+		pumpCancel()
+	})
+	defer drainTimer.Stop()
+
+	go func() {
+		_ = collectAll(ch)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("pump should stop quickly when drain timer marks lease broken")
+	}
+
+	assert.True(t, lease.IsBroken(), "lease should be marked broken by drain timer")
+}
+
 // ---------------------------------------------------------------------------
 // 测试：快速连续事件（突发模式）
 // ---------------------------------------------------------------------------
@@ -1698,11 +1742,11 @@ func TestPump_EventTypeParsingEdgeCases(t *testing.T) {
 	t.Parallel()
 	// 各种边缘 JSON 格式
 	conn := newPumpTestConn(
-		pumpTestConnEvent{data: []byte(`{"type": "  response.created  "}`)},        // 带空格
-		pumpTestConnEvent{data: []byte(`{"type":"response.output_text.delta"}`)},    // 无空格
-		pumpTestConnEvent{data: []byte(`{"type":"","other":"field"}`)},              // 空类型
-		pumpTestConnEvent{data: []byte(`{"no_type_field": true}`)},                  // 无 type 字段
-		pumpTestConnEvent{data: []byte(`{"type":"response.completed"}`)},            // 终端
+		pumpTestConnEvent{data: []byte(`{"type": "  response.created  "}`)},      // 带空格
+		pumpTestConnEvent{data: []byte(`{"type":"response.output_text.delta"}`)}, // 无空格
+		pumpTestConnEvent{data: []byte(`{"type":"","other":"field"}`)},           // 空类型
+		pumpTestConnEvent{data: []byte(`{"no_type_field": true}`)},               // 无 type 字段
+		pumpTestConnEvent{data: []byte(`{"type":"response.completed"}`)},         // 终端
 	)
 	lease := &pumpTestLease{conn: conn}
 	ch, cancel := startPump(context.Background(), lease, 5*time.Second)
