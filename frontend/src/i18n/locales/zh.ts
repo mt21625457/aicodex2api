@@ -409,12 +409,9 @@ export default {
     day: '按天',
     hour: '按小时',
     modelDistribution: '模型分布',
-    groupDistribution: '分组使用分布',
     tokenUsageTrend: 'Token 使用趋势',
     noDataAvailable: '暂无数据',
     model: '模型',
-    group: '分组',
-    noGroup: '无分组',
     requests: '请求',
     tokens: 'Token',
     actual: '实际',
@@ -506,7 +503,6 @@ export default {
         claudeCode: 'Claude Code',
         geminiCli: 'Gemini CLI',
         codexCli: 'Codex CLI',
-        codexCliWs: 'Codex CLI (WebSocket)',
         opencode: 'OpenCode'
       },
       antigravity: {
@@ -849,12 +845,9 @@ export default {
       day: '按天',
       hour: '按小时',
       modelDistribution: '模型分布',
-      groupDistribution: '分组使用分布',
       tokenUsageTrend: 'Token 使用趋势',
       noDataAvailable: '暂无数据',
       model: '模型',
-      group: '分组',
-      noGroup: '无分组',
       requests: '请求',
       tokens: 'Token',
       cache: '缓存',
@@ -1111,9 +1104,6 @@ export default {
       noApiKeys: '此用户暂无 API 密钥',
       group: '分组',
       none: '无',
-      groupChangedSuccess: '分组修改成功',
-      groupChangedWithGrant: '分组修改成功，已自动为用户添加「{group}」分组权限',
-      groupChangeFailed: '分组修改失败',
       noUsersYet: '暂无用户',
       createFirstUser: '创建您的第一个用户以开始使用系统',
       userCreated: '用户创建成功',
@@ -1674,19 +1664,7 @@ export default {
         sessions: {
           full: '活跃会话已满，新会话需等待（空闲超时：{idle}分钟）',
           normal: '活跃会话正常（空闲超时：{idle}分钟）'
-        },
-        rpm: {
-          full: '已达 RPM 上限',
-          warning: 'RPM 接近上限',
-          normal: 'RPM 正常',
-          tieredNormal: 'RPM 限制 (三区模型) - 正常',
-          tieredWarning: 'RPM 限制 (三区模型) - 接近阈值',
-          tieredStickyOnly: 'RPM 限制 (三区模型) - 仅粘性会话 | 缓冲区: {buffer}',
-          tieredBlocked: 'RPM 限制 (三区模型) - 已阻塞 | 缓冲区: {buffer}',
-          stickyExemptNormal: 'RPM 限制 (粘性豁免) - 正常',
-          stickyExemptWarning: 'RPM 限制 (粘性豁免) - 接近阈值',
-          stickyExemptOver: 'RPM 限制 (粘性豁免) - 超限，仅粘性会话'
-        },
+        }
       },
       clearRateLimit: '清除速率限制',
       testConnection: '测试连接',
@@ -2043,22 +2021,6 @@ export default {
           idleTimeout: '空闲超时',
           idleTimeoutPlaceholder: '5',
           idleTimeoutHint: '会话空闲超时后自动释放'
-        },
-        rpmLimit: {
-          label: 'RPM 限制',
-          hint: '限制每分钟请求数量，保护上游账号',
-          baseRpm: '基础 RPM',
-          baseRpmPlaceholder: '15',
-          baseRpmHint: '每分钟最大请求数，0 或留空表示不限制',
-          strategy: 'RPM 策略',
-          strategyTiered: '三区模型',
-          strategyStickyExempt: '粘性豁免',
-          strategyTieredHint: '绿区→黄区→仅粘性→阻塞，逐步限流',
-          strategyStickyExemptHint: '超限后仅允许粘性会话',
-          strategyHint: '三区模型: 超限后逐步限制; 粘性豁免: 已有会话不受限',
-          stickyBuffer: '粘性缓冲区',
-          stickyBufferPlaceholder: '默认: base RPM 的 20%',
-          stickyBufferHint: '超过 base RPM 后，粘性会话额外允许的请求数。为空则使用默认值（base RPM 的 20%，最小为 1）'
         },
         tlsFingerprint: {
           label: 'TLS 指纹模拟',
@@ -2510,7 +2472,6 @@ export default {
         name: '名称',
         protocol: '协议',
         address: '地址',
-        auth: '认证',
         location: '地理位置',
         status: '状态',
         accounts: '账号数',
@@ -2538,8 +2499,6 @@ export default {
         allStatuses: '全部状态'
       },
       // Additional keys used in ProxiesView
-      copyProxyUrl: '复制代理 URL',
-      urlCopied: '代理 URL 已复制',
       allProtocols: '全部协议',
       allStatus: '全部状态',
       searchProxies: '搜索代理...',
@@ -3776,21 +3735,7 @@ export default {
         defaultBalance: '默认余额',
         defaultBalanceHint: '新用户的初始余额',
         defaultConcurrency: '默认并发数',
-        defaultConcurrencyHint: '新用户的最大并发请求数',
-        defaultSubscriptions: '默认订阅列表',
-        defaultSubscriptionsHint: '新用户创建或注册时自动分配这些订阅',
-        addDefaultSubscription: '添加默认订阅',
-        defaultSubscriptionsEmpty: '未配置默认订阅。新用户不会自动获得订阅套餐。',
-        defaultSubscriptionsDuplicate: '默认订阅存在重复分组：{groupId}。每个分组只能出现一次。',
-        subscriptionGroup: '订阅分组',
-        subscriptionValidityDays: '有效期（天）'
-      },
-      claudeCode: {
-        title: 'Claude Code 设置',
-        description: '控制 Claude Code 客户端访问要求',
-        minVersion: '最低版本号',
-        minVersionPlaceholder: '例如 2.1.63',
-        minVersionHint: '拒绝低于此版本的 Claude Code 客户端请求（semver 格式）。留空则不检查版本。'
+        defaultConcurrencyHint: '新用户的最大并发请求数'
       },
       site: {
         title: '站点设置',
@@ -3832,7 +3777,7 @@ export default {
         description: '在侧边栏展示”购买订阅”入口，并在页面内通过 iframe 打开指定链接',
         enabled: '显示购买订阅入口',
         enabledHint: '仅在标准模式（非简单模式）下展示',
-        url: '充值/订阅页面 URL',
+        url: '购买页面 URL',
         urlPlaceholder: 'https://example.com/purchase',
         urlHint: '必须是完整的 http(s) 链接',
         iframeWarning:
@@ -4119,15 +4064,15 @@ export default {
     retry: '重试'
   },
 
-  // Recharge / Subscription Page
+  // Purchase Subscription Page
   purchase: {
-    title: '充值/订阅',
-    description: '通过内嵌页面完成充值/订阅',
+    title: '购买订阅',
+    description: '通过内嵌页面完成订阅购买',
     openInNewTab: '新窗口打开',
     notEnabledTitle: '该功能未开启',
-    notEnabledDesc: '管理员暂未开启充值/订阅入口，请联系管理员。',
-    notConfiguredTitle: '充值/订阅链接未配置',
-    notConfiguredDesc: '管理员已开启入口，但尚未配置充值/订阅链接，请联系管理员。'
+    notEnabledDesc: '管理员暂未开启购买订阅入口，请联系管理员。',
+    notConfiguredTitle: '购买链接未配置',
+    notConfiguredDesc: '管理员已开启入口，但尚未配置购买订阅链接，请联系管理员。'
   },
 
   // Announcements Page

@@ -607,13 +607,10 @@ func TestPreemptedPayload_NilFallsBackToChannel(t *testing.T) {
 	var nextClientMessage []byte
 	if nextPreempted != nil {
 		nextClientMessage = nextPreempted
-		nextPreempted = nil
 	} else {
-		select {
-		case msg, ok := <-clientMsgCh:
-			require.True(t, ok)
-			nextClientMessage = msg
-		}
+		msg, ok := <-clientMsgCh
+		require.True(t, ok)
+		nextClientMessage = msg
 	}
 
 	require.Equal(t, `{"type":"response.create","model":"gpt-5.1"}`, string(nextClientMessage))

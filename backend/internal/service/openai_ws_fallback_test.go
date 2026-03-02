@@ -349,7 +349,7 @@ func TestOpenAIWSRetryTotalBudget(t *testing.T) {
 }
 
 func TestOpenAIWSRetryContextError(t *testing.T) {
-	require.NoError(t, openAIWSRetryContextError(nil))
+	require.NoError(t, openAIWSRetryContextError(context.TODO()))
 	require.NoError(t, openAIWSRetryContextError(context.Background()))
 
 	canceledCtx, cancel := context.WithCancel(context.Background())

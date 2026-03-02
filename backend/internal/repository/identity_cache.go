@@ -12,7 +12,7 @@ import (
 
 const (
 	fingerprintKeyPrefix   = "fingerprint:"
-	fingerprintTTL         = 7 * 24 * time.Hour // 7天，配合每24小时懒续期可保持活跃账号永不过期
+	fingerprintTTL         = 24 * time.Hour
 	maskedSessionKeyPrefix = "masked_session:"
 	maskedSessionTTL       = 15 * time.Minute
 )

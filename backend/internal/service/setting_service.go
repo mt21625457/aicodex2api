@@ -7,14 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -34,32 +32,6 @@ type SettingRepository interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// cachedMinVersion 缓存最低 Claude Code 版本号（进程内缓存，60s TTL）
-type cachedMinVersion struct {
-	value     string // 空字符串 = 不检查
-	expiresAt int64  // unix nano
-}
-
-// minVersionCache 最低版本号进程内缓存
-var minVersionCache atomic.Value // *cachedMinVersion
-
-// minVersionSF 防止缓存过期时 thundering herd
-var minVersionSF singleflight.Group
-
-// minVersionCacheTTL 缓存有效期
-const minVersionCacheTTL = 60 * time.Second
-
-// minVersionErrorTTL DB 错误时的短缓存，快速重试
-const minVersionErrorTTL = 5 * time.Second
-
-// minVersionDBTimeout singleflight 内 DB 查询超时，独立于请求 context
-const minVersionDBTimeout = 5 * time.Second
-
-// DefaultSubscriptionGroupReader validates group references used by default subscriptions.
-type DefaultSubscriptionGroupReader interface {
-	GetByID(ctx context.Context, id int64) (*Group, error)
-}
-
 // SettingService 系统设置服务
 type SettingService struct {
 	settingRepo SettingRepository
@@ -75,11 +47,6 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 		settingRepo: settingRepo,
 		cfg:         cfg,
 	}
-}
-
-// SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.
-func (s *SettingService) SetDefaultSubscriptionGroupReader(reader DefaultSubscriptionGroupReader) {
-	s.defaultSubGroupReader = reader
 }
 
 // GetAllSettings 获取所有系统设置
@@ -231,10 +198,6 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 
 // UpdateSettings 更新系统设置
 func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSettings) error {
-	if err := s.validateDefaultSubscriptionGroups(ctx, settings.DefaultSubscriptions); err != nil {
-		return err
-	}
-
 	updates := make(map[string]string)
 
 	// 注册设置
@@ -287,11 +250,6 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	// 默认配置
 	updates[SettingKeyDefaultConcurrency] = strconv.Itoa(settings.DefaultConcurrency)
 	updates[SettingKeyDefaultBalance] = strconv.FormatFloat(settings.DefaultBalance, 'f', 8, 64)
-	defaultSubsJSON, err := json.Marshal(settings.DefaultSubscriptions)
-	if err != nil {
-		return fmt.Errorf("marshal default subscriptions: %w", err)
-	}
-	updates[SettingKeyDefaultSubscriptions] = string(defaultSubsJSON)
 
 	// Model fallback configuration
 	updates[SettingKeyEnableModelFallback] = strconv.FormatBool(settings.EnableModelFallback)
@@ -312,61 +270,11 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 		updates[SettingKeyOpsMetricsIntervalSeconds] = strconv.Itoa(settings.OpsMetricsIntervalSeconds)
 	}
 
-	// Claude Code version check
-	updates[SettingKeyMinClaudeCodeVersion] = settings.MinClaudeCodeVersion
-
-	err = s.settingRepo.SetMultiple(ctx, updates)
-	if err == nil {
-		// 先使 inflight singleflight 失效，再刷新缓存，缩小旧值覆盖新值的竞态窗口
-		minVersionSF.Forget("min_version")
-		minVersionCache.Store(&cachedMinVersion{
-			value:     settings.MinClaudeCodeVersion,
-			expiresAt: time.Now().Add(minVersionCacheTTL).UnixNano(),
-		})
-		if s.onUpdate != nil {
-			s.onUpdate() // Invalidate cache after settings update
-		}
+	err := s.settingRepo.SetMultiple(ctx, updates)
+	if err == nil && s.onUpdate != nil {
+		s.onUpdate() // Invalidate cache after settings update
 	}
 	return err
-}
-
-func (s *SettingService) validateDefaultSubscriptionGroups(ctx context.Context, items []DefaultSubscriptionSetting) error {
-	if len(items) == 0 {
-		return nil
-	}
-
-	checked := make(map[int64]struct{}, len(items))
-	for _, item := range items {
-		if item.GroupID <= 0 {
-			continue
-		}
-		if _, ok := checked[item.GroupID]; ok {
-			return ErrDefaultSubGroupDuplicate.WithMetadata(map[string]string{
-				"group_id": strconv.FormatInt(item.GroupID, 10),
-			})
-		}
-		checked[item.GroupID] = struct{}{}
-		if s.defaultSubGroupReader == nil {
-			continue
-		}
-
-		group, err := s.defaultSubGroupReader.GetByID(ctx, item.GroupID)
-		if err != nil {
-			if errors.Is(err, ErrGroupNotFound) {
-				return ErrDefaultSubGroupInvalid.WithMetadata(map[string]string{
-					"group_id": strconv.FormatInt(item.GroupID, 10),
-				})
-			}
-			return fmt.Errorf("get default subscription group %d: %w", item.GroupID, err)
-		}
-		if !group.IsSubscriptionType() {
-			return ErrDefaultSubGroupInvalid.WithMetadata(map[string]string{
-				"group_id": strconv.FormatInt(item.GroupID, 10),
-			})
-		}
-	}
-
-	return nil
 }
 
 // IsRegistrationEnabled 检查是否开放注册
@@ -468,15 +376,6 @@ func (s *SettingService) GetDefaultBalance(ctx context.Context) float64 {
 	return s.cfg.Default.UserBalance
 }
 
-// GetDefaultSubscriptions 获取新用户默认订阅配置列表。
-func (s *SettingService) GetDefaultSubscriptions(ctx context.Context) []DefaultSubscriptionSetting {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyDefaultSubscriptions)
-	if err != nil {
-		return nil
-	}
-	return parseDefaultSubscriptions(value)
-}
-
 // InitializeDefaultSettings 初始化默认设置
 func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 	// 检查是否已有设置
@@ -501,7 +400,6 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeySoraClientEnabled:           "false",
 		SettingKeyDefaultConcurrency:          strconv.Itoa(s.cfg.Default.UserConcurrency),
 		SettingKeyDefaultBalance:              strconv.FormatFloat(s.cfg.Default.UserBalance, 'f', 8, 64),
-		SettingKeyDefaultSubscriptions:        "[]",
 		SettingKeySMTPPort:                    "587",
 		SettingKeySMTPUseTLS:                  "false",
 		// Model fallback defaults
@@ -519,9 +417,6 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpsRealtimeMonitoringEnabled: "true",
 		SettingKeyOpsQueryModeDefault:          "auto",
 		SettingKeyOpsMetricsIntervalSeconds:    "60",
-
-		// Claude Code version check (default: empty = disabled)
-		SettingKeyMinClaudeCodeVersion: "",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -578,7 +473,6 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	} else {
 		result.DefaultBalance = s.cfg.Default.UserBalance
 	}
-	result.DefaultSubscriptions = parseDefaultSubscriptions(settings[SettingKeyDefaultSubscriptions])
 
 	// 敏感信息直接返回，方便测试连接时使用
 	result.SMTPPassword = settings[SettingKeySMTPPassword]
@@ -648,9 +542,6 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		}
 	}
 
-	// Claude Code version check
-	result.MinClaudeCodeVersion = settings[SettingKeyMinClaudeCodeVersion]
-
 	return result
 }
 
@@ -661,31 +552,6 @@ func isFalseSettingValue(value string) bool {
 	default:
 		return false
 	}
-}
-
-func parseDefaultSubscriptions(raw string) []DefaultSubscriptionSetting {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-
-	var items []DefaultSubscriptionSetting
-	if err := json.Unmarshal([]byte(raw), &items); err != nil {
-		return nil
-	}
-
-	normalized := make([]DefaultSubscriptionSetting, 0, len(items))
-	for _, item := range items {
-		if item.GroupID <= 0 || item.ValidityDays <= 0 {
-			continue
-		}
-		if item.ValidityDays > MaxValidityDays {
-			item.ValidityDays = MaxValidityDays
-		}
-		normalized = append(normalized, item)
-	}
-
-	return normalized
 }
 
 // getStringOrDefault 获取字符串值或默认值
@@ -971,49 +837,6 @@ func (s *SettingService) GetStreamTimeoutSettings(ctx context.Context) (*StreamT
 	}
 
 	return &settings, nil
-}
-
-// GetMinClaudeCodeVersion 获取最低 Claude Code 版本号要求
-// 使用进程内 atomic.Value 缓存，60 秒 TTL，热路径零锁开销
-// singleflight 防止缓存过期时 thundering herd
-// 返回空字符串表示不做版本检查
-func (s *SettingService) GetMinClaudeCodeVersion(ctx context.Context) string {
-	if cached, ok := minVersionCache.Load().(*cachedMinVersion); ok {
-		if time.Now().UnixNano() < cached.expiresAt {
-			return cached.value
-		}
-	}
-	// singleflight: 同一时刻只有一个 goroutine 查询 DB，其余复用结果
-	result, _, _ := minVersionSF.Do("min_version", func() (any, error) {
-		// 二次检查，避免排队的 goroutine 重复查询
-		if cached, ok := minVersionCache.Load().(*cachedMinVersion); ok {
-			if time.Now().UnixNano() < cached.expiresAt {
-				return cached.value, nil
-			}
-		}
-		// 使用独立 context：断开请求取消链，避免客户端断连导致空值被长期缓存
-		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), minVersionDBTimeout)
-		defer cancel()
-		value, err := s.settingRepo.GetValue(dbCtx, SettingKeyMinClaudeCodeVersion)
-		if err != nil {
-			// fail-open: DB 错误时不阻塞请求，但记录日志并使用短 TTL 快速重试
-			slog.Warn("failed to get min claude code version setting, skipping version check", "error", err)
-			minVersionCache.Store(&cachedMinVersion{
-				value:     "",
-				expiresAt: time.Now().Add(minVersionErrorTTL).UnixNano(),
-			})
-			return "", nil
-		}
-		minVersionCache.Store(&cachedMinVersion{
-			value:     value,
-			expiresAt: time.Now().Add(minVersionCacheTTL).UnixNano(),
-		})
-		return value, nil
-	})
-	if s, ok := result.(string); ok {
-		return s
-	}
-	return ""
 }
 
 // SetStreamTimeoutSettings 设置流超时处理配置

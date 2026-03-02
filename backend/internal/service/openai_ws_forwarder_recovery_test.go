@@ -322,7 +322,8 @@ func TestContinueTurnAbort_ErrorEventWithSpecialChars(t *testing.T) {
 			err := json.Unmarshal(errorEvent, &parsed)
 			require.NoError(t, err, "error event with special chars should be valid JSON: %q", msg)
 
-			errorObj := parsed["error"].(map[string]any)
+			errorObj, ok := parsed["error"].(map[string]any)
+			require.True(t, ok)
 			require.Equal(t, msg, errorObj["message"])
 		})
 	}
@@ -333,18 +334,18 @@ func TestContinueTurnAbort_WroteDownstreamDeterminesNotification(t *testing.T) {
 
 	// 验证 wroteDownstream 标志如何影响错误通知策略
 	tests := []struct {
-		name                   string
-		wroteDownstream        bool
+		name                    string
+		wroteDownstream         bool
 		shouldSendErrorToClient bool
 	}{
 		{
-			name:                   "not_wrote_downstream_should_send_error",
-			wroteDownstream:        false,
+			name:                    "not_wrote_downstream_should_send_error",
+			wroteDownstream:         false,
 			shouldSendErrorToClient: true,
 		},
 		{
-			name:                   "wrote_downstream_should_not_send_error",
-			wroteDownstream:        true,
+			name:                    "wrote_downstream_should_not_send_error",
+			wroteDownstream:         true,
 			shouldSendErrorToClient: false,
 		},
 	}
@@ -593,7 +594,7 @@ func TestShouldKeepIngressPreviousResponseID_FunctionCallOutputCallIDMatch(t *te
 		previousPayload,
 		currentPayload,
 		"resp_1",
-		true,                    // hasFunctionCallOutput
+		true,                   // hasFunctionCallOutput
 		[]string{"call_match"}, // pendingCallIDs
 		[]string{"call_match"}, // requestCallIDs
 	)

@@ -24,12 +24,19 @@ func (c *openAIWSNoopConn) Ping(context.Context) error                  { return
 func (c *openAIWSNoopConn) Close() error                                { return nil }
 
 // openAIWSIdentityConn is a distinct conn instance used to verify pointer identity.
-type openAIWSIdentityConn struct{ tag string }
+type openAIWSIdentityConn struct{}
 
 func (c *openAIWSIdentityConn) WriteJSON(context.Context, any) error        { return nil }
 func (c *openAIWSIdentityConn) ReadMessage(context.Context) ([]byte, error) { return nil, nil }
 func (c *openAIWSIdentityConn) Ping(context.Context) error                  { return nil }
 func (c *openAIWSIdentityConn) Close() error                                { return nil }
+
+func mustDefaultOpenAIWSStateStore(t *testing.T, raw OpenAIWSStateStore) *defaultOpenAIWSStateStore {
+	t.Helper()
+	store, ok := raw.(*defaultOpenAIWSStateStore)
+	require.True(t, ok)
+	return store
+}
 
 // ===================================================================
 // 1. maybeTouchLease throttle
@@ -150,7 +157,7 @@ func TestActiveConn_ReleasedLeaseReturnsError(t *testing.T) {
 }
 
 func TestActiveConn_FirstCallPopulatesCachedConn(t *testing.T) {
-	upstream := &openAIWSIdentityConn{tag: "primary"}
+	upstream := &openAIWSIdentityConn{}
 	ctx := &openAIWSIngressContext{
 		ownerID:  "owner_1",
 		upstream: upstream,
@@ -169,7 +176,7 @@ func TestActiveConn_FirstCallPopulatesCachedConn(t *testing.T) {
 }
 
 func TestActiveConn_SecondCallReturnsCachedDirectly(t *testing.T) {
-	upstream1 := &openAIWSIdentityConn{tag: "first"}
+	upstream1 := &openAIWSIdentityConn{}
 	ctx := &openAIWSIngressContext{
 		ownerID:  "owner_cache",
 		upstream: upstream1,
@@ -185,7 +192,7 @@ func TestActiveConn_SecondCallReturnsCachedDirectly(t *testing.T) {
 	require.Equal(t, upstream1, conn1)
 
 	// Swap the upstream -- cached path should NOT see the swap
-	upstream2 := &openAIWSIdentityConn{tag: "second"}
+	upstream2 := &openAIWSIdentityConn{}
 	ctx.mu.Lock()
 	ctx.upstream = upstream2
 	ctx.mu.Unlock()
@@ -276,7 +283,7 @@ func TestActiveConn_ReleaseClearsCachedConn(t *testing.T) {
 }
 
 func TestActiveConn_AfterClearCachedConn_ReacquiresViaMutex(t *testing.T) {
-	upstream1 := &openAIWSIdentityConn{tag: "v1"}
+	upstream1 := &openAIWSIdentityConn{}
 	ctx := &openAIWSIngressContext{
 		ownerID:  "owner_reacq",
 		upstream: upstream1,
@@ -295,7 +302,7 @@ func TestActiveConn_AfterClearCachedConn_ReacquiresViaMutex(t *testing.T) {
 	lease.cachedConn = nil
 
 	// Swap upstream
-	upstream2 := &openAIWSIdentityConn{tag: "v2"}
+	upstream2 := &openAIWSIdentityConn{}
 	ctx.mu.Lock()
 	ctx.upstream = upstream2
 	ctx.mu.Unlock()
@@ -665,7 +672,7 @@ func TestDeriveOpenAISessionHash_DifferentFromLegacy(t *testing.T) {
 // ===================================================================
 
 func TestConnShard_DistributesAcrossShards(t *testing.T) {
-	store := NewOpenAIWSStateStore(nil).(*defaultOpenAIWSStateStore)
+	store := mustDefaultOpenAIWSStateStore(t, NewOpenAIWSStateStore(nil))
 
 	shardHits := make(map[int]int)
 	for i := 0; i < 256; i++ {
@@ -746,7 +753,7 @@ func TestStateStore_ShardedConcurrentAccessNoRace(t *testing.T) {
 
 func TestStateStore_GetPaths_DoNotTriggerCleanup(t *testing.T) {
 	raw := NewOpenAIWSStateStore(nil)
-	store := raw.(*defaultOpenAIWSStateStore)
+	store := mustDefaultOpenAIWSStateStore(t, raw)
 
 	// Seed some data so Get paths have something to read
 	store.BindResponseConn("resp_get_noclean", "conn_1", time.Minute)
@@ -783,7 +790,7 @@ func TestStateStore_MaybeCleanup_NilReceiverDoesNotPanic(t *testing.T) {
 
 func TestStateStore_BindPaths_MayTriggerCleanup(t *testing.T) {
 	raw := NewOpenAIWSStateStore(nil)
-	store := raw.(*defaultOpenAIWSStateStore)
+	store := mustDefaultOpenAIWSStateStore(t, raw)
 
 	// Set lastCleanup to long ago to ensure cleanup triggers on next Bind
 	pastNano := time.Now().Add(-2 * openAIWSStateStoreCleanupInterval).UnixNano()
@@ -802,7 +809,7 @@ func TestStateStore_BindPaths_MayTriggerCleanup(t *testing.T) {
 
 func TestGetResponsePendingToolCalls_ReturnsInternalSlice(t *testing.T) {
 	raw := NewOpenAIWSStateStore(nil)
-	store := raw.(*defaultOpenAIWSStateStore)
+	store := mustDefaultOpenAIWSStateStore(t, raw)
 
 	store.BindResponsePendingToolCalls(0, "resp_slice_identity", []string{"call_x", "call_y"}, time.Minute)
 
@@ -846,7 +853,7 @@ func TestOpenAIWSResponseAccountCacheKey_EmptyInput(t *testing.T) {
 }
 
 func TestConnShard_SameKeyAlwaysSameShard(t *testing.T) {
-	store := NewOpenAIWSStateStore(nil).(*defaultOpenAIWSStateStore)
+	store := mustDefaultOpenAIWSStateStore(t, NewOpenAIWSStateStore(nil))
 	shard1 := store.connShard("resp_stable_key")
 	shard2 := store.connShard("resp_stable_key")
 	require.Equal(t, shard1, shard2, "same key must always map to the same shard")

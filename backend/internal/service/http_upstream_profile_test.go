@@ -13,8 +13,8 @@ func TestWithHTTPUpstreamProfile_DefaultKeepsContext(t *testing.T) {
 	}
 }
 
-func TestWithHTTPUpstreamProfile_NilContextCreatesBackground(t *testing.T) {
-	ctx := WithHTTPUpstreamProfile(nil, HTTPUpstreamProfileOpenAI)
+func TestWithHTTPUpstreamProfile_TODOContextSetsProfile(t *testing.T) {
+	ctx := WithHTTPUpstreamProfile(context.TODO(), HTTPUpstreamProfileOpenAI)
 	if ctx == nil {
 		t.Fatalf("expected non-nil context")
 	}
@@ -28,12 +28,6 @@ func TestHTTPUpstreamProfileFromContext_UnknownValueFallsBackDefault(t *testing.
 	ctx := context.WithValue(context.Background(), httpUpstreamProfileContextKey{}, HTTPUpstreamProfile("unknown"))
 	ctx = context.WithValue(ctx, badKey{}, "x")
 	if profile := HTTPUpstreamProfileFromContext(ctx); profile != HTTPUpstreamProfileDefault {
-		t.Fatalf("expected default profile, got %q", profile)
-	}
-}
-
-func TestHTTPUpstreamProfileFromContext_NilContext(t *testing.T) {
-	if profile := HTTPUpstreamProfileFromContext(nil); profile != HTTPUpstreamProfileDefault {
 		t.Fatalf("expected default profile, got %q", profile)
 	}
 }

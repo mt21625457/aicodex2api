@@ -22,7 +22,7 @@ describe('admin settings bulk-edit templates api', () => {
   })
 
   it('requests template list with expected query params', async () => {
-    ;(apiClient.get as any).mockResolvedValue({
+    (apiClient.get as any).mockResolvedValue({
       data: {
         items: [
           {
@@ -60,13 +60,13 @@ describe('admin settings bulk-edit templates api', () => {
   })
 
   it('returns empty list when response items is invalid', async () => {
-    ;(apiClient.get as any).mockResolvedValue({ data: { items: null } })
+    (apiClient.get as any).mockResolvedValue({ data: { items: null } })
     const items = await getBulkEditTemplates({})
     expect(items).toEqual([])
   })
 
   it('posts upsert payload and returns saved template', async () => {
-    ;(apiClient.post as any).mockResolvedValue({
+    (apiClient.post as any).mockResolvedValue({
       data: {
         id: 'tpl-2',
         name: 'Shared',
@@ -105,7 +105,7 @@ describe('admin settings bulk-edit templates api', () => {
   })
 
   it('requests template versions with scope group params', async () => {
-    ;(apiClient.get as any).mockResolvedValue({
+    (apiClient.get as any).mockResolvedValue({
       data: {
         items: [
           {
@@ -132,7 +132,7 @@ describe('admin settings bulk-edit templates api', () => {
   })
 
   it('returns empty versions list when payload is invalid', async () => {
-    ;(apiClient.get as any).mockResolvedValue({ data: { items: undefined } })
+    (apiClient.get as any).mockResolvedValue({ data: { items: undefined } })
 
     const items = await getBulkEditTemplateVersions('tpl-any')
 
@@ -143,7 +143,7 @@ describe('admin settings bulk-edit templates api', () => {
   })
 
   it('posts rollback request with optional query params', async () => {
-    ;(apiClient.post as any).mockResolvedValue({
+    (apiClient.post as any).mockResolvedValue({
       data: {
         id: 'tpl-3',
         name: 'Rollbacked',
@@ -174,7 +174,7 @@ describe('admin settings bulk-edit templates api', () => {
   })
 
   it('calls delete endpoint for template removal', async () => {
-    ;(apiClient.delete as any).mockResolvedValue({ data: { deleted: true } })
+    (apiClient.delete as any).mockResolvedValue({ data: { deleted: true } })
 
     const result = await deleteBulkEditTemplate('tpl-9')
 

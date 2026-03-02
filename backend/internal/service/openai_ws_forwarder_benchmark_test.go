@@ -234,7 +234,11 @@ func BenchmarkIsOpenAIWSTokenEvent(b *testing.B) {
 }
 
 func BenchmarkStateStore_ShardedBindGet(b *testing.B) {
-	store := NewOpenAIWSStateStore(nil).(*defaultOpenAIWSStateStore)
+	storeAny := NewOpenAIWSStateStore(nil)
+	store, ok := storeAny.(*defaultOpenAIWSStateStore)
+	if !ok {
+		b.Fatal("expected *defaultOpenAIWSStateStore")
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -263,6 +267,6 @@ func BenchmarkDeriveOpenAILegacySessionHash(b *testing.B) {
 type benchmarkOpenAIWSNoopConn struct{}
 
 func (c *benchmarkOpenAIWSNoopConn) WriteJSON(_ context.Context, _ any) error      { return nil }
-func (c *benchmarkOpenAIWSNoopConn) ReadMessage(_ context.Context) ([]byte, error)  { return nil, nil }
-func (c *benchmarkOpenAIWSNoopConn) Ping(_ context.Context) error                   { return nil }
-func (c *benchmarkOpenAIWSNoopConn) Close() error                                   { return nil }
+func (c *benchmarkOpenAIWSNoopConn) ReadMessage(_ context.Context) ([]byte, error) { return nil, nil }
+func (c *benchmarkOpenAIWSNoopConn) Ping(_ context.Context) error                  { return nil }
+func (c *benchmarkOpenAIWSNoopConn) Close() error                                  { return nil }

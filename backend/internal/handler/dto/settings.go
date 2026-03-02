@@ -39,9 +39,8 @@ type SystemSettings struct {
 	PurchaseSubscriptionURL     string `json:"purchase_subscription_url"`
 	SoraClientEnabled           bool   `json:"sora_client_enabled"`
 
-	DefaultConcurrency   int                          `json:"default_concurrency"`
-	DefaultBalance       float64                      `json:"default_balance"`
-	DefaultSubscriptions []DefaultSubscriptionSetting `json:"default_subscriptions"`
+	DefaultConcurrency int     `json:"default_concurrency"`
+	DefaultBalance     float64 `json:"default_balance"`
 
 	// Model fallback configuration
 	EnableModelFallback      bool   `json:"enable_model_fallback"`
@@ -59,13 +58,6 @@ type SystemSettings struct {
 	OpsRealtimeMonitoringEnabled bool   `json:"ops_realtime_monitoring_enabled"`
 	OpsQueryModeDefault          string `json:"ops_query_mode_default"`
 	OpsMetricsIntervalSeconds    int    `json:"ops_metrics_interval_seconds"`
-
-	MinClaudeCodeVersion string `json:"min_claude_code_version"`
-}
-
-type DefaultSubscriptionSetting struct {
-	GroupID      int64 `json:"group_id"`
-	ValidityDays int   `json:"validity_days"`
 }
 
 type PublicSettings struct {

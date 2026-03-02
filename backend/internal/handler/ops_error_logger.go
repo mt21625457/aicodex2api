@@ -662,10 +662,8 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			requestID = c.Writer.Header().Get("x-request-id")
 		}
 
-		normalizedType := normalizeOpsErrorType(parsed.ErrorType, parsed.Code)
-
-		phase := classifyOpsPhase(normalizedType, parsed.Message, parsed.Code)
-		isBusinessLimited := classifyOpsIsBusinessLimited(normalizedType, phase, parsed.Code, status, parsed.Message)
+		phase := classifyOpsPhase(parsed.ErrorType, parsed.Message, parsed.Code)
+		isBusinessLimited := classifyOpsIsBusinessLimited(parsed.ErrorType, phase, parsed.Code, status, parsed.Message)
 
 		errorOwner := classifyOpsErrorOwner(phase, parsed.Message)
 		errorSource := classifyOpsErrorSource(phase, parsed.Message)
@@ -687,8 +685,8 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			UserAgent: c.GetHeader("User-Agent"),
 
 			ErrorPhase:        phase,
-			ErrorType:         normalizedType,
-			Severity:          classifyOpsSeverity(normalizedType, status),
+			ErrorType:         normalizeOpsErrorType(parsed.ErrorType, parsed.Code),
+			Severity:          classifyOpsSeverity(parsed.ErrorType, status),
 			StatusCode:        status,
 			IsBusinessLimited: isBusinessLimited,
 			IsCountTokens:     isCountTokensRequest(c),
@@ -700,7 +698,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			ErrorSource: errorSource,
 			ErrorOwner:  errorOwner,
 
-			IsRetryable: classifyOpsIsRetryable(normalizedType, status),
+			IsRetryable: classifyOpsIsRetryable(parsed.ErrorType, status),
 			RetryCount:  0,
 			CreatedAt:   time.Now(),
 		}
@@ -941,29 +939,8 @@ func guessPlatformFromPath(path string) string {
 	}
 }
 
-// isKnownOpsErrorType returns true if t is a recognized error type used by the
-// ops classification pipeline.  Upstream proxies sometimes return garbage values
-// (e.g. the Go-serialized literal "<nil>") which would pollute phase/severity
-// classification if accepted blindly.
-func isKnownOpsErrorType(t string) bool {
-	switch t {
-	case "invalid_request_error",
-		"authentication_error",
-		"rate_limit_error",
-		"billing_error",
-		"subscription_error",
-		"upstream_error",
-		"overloaded_error",
-		"api_error",
-		"not_found_error",
-		"forbidden_error":
-		return true
-	}
-	return false
-}
-
 func normalizeOpsErrorType(errType string, code string) string {
-	if errType != "" && isKnownOpsErrorType(errType) {
+	if errType != "" {
 		return errType
 	}
 	switch strings.TrimSpace(code) {

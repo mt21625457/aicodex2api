@@ -230,7 +230,8 @@ func TestSettingHandlerBulkEditTemplate_VersionsAndRollback(t *testing.T) {
 	router.ServeHTTP(createRec, createReq)
 	require.Equal(t, http.StatusOK, createRec.Code)
 	createData := decodeResponseDataMap(t, createRec.Body.Bytes())
-	templateID := createData["id"].(string)
+	templateID, ok := createData["id"].(string)
+	require.True(t, ok)
 
 	updateBody := map[string]any{
 		"id":             templateID,
@@ -267,9 +268,13 @@ func TestSettingHandlerBulkEditTemplate_VersionsAndRollback(t *testing.T) {
 	router.ServeHTTP(versionsRec, versionsReq)
 	require.Equal(t, http.StatusOK, versionsRec.Code)
 	versionsData := decodeResponseDataMap(t, versionsRec.Body.Bytes())
-	versions := versionsData["items"].([]any)
+	versions, ok := versionsData["items"].([]any)
+	require.True(t, ok)
 	require.Len(t, versions, 1)
-	versionID := versions[0].(map[string]any)["version_id"].(string)
+	versionData, ok := versions[0].(map[string]any)
+	require.True(t, ok)
+	versionID, ok := versionData["version_id"].(string)
+	require.True(t, ok)
 
 	rollbackBody := map[string]any{"version_id": versionID}
 	rollbackRaw, err := json.Marshal(rollbackBody)
@@ -287,9 +292,11 @@ func TestSettingHandlerBulkEditTemplate_VersionsAndRollback(t *testing.T) {
 	require.Equal(t, http.StatusOK, rollbackRec.Code)
 	rollbackData := decodeResponseDataMap(t, rollbackRec.Body.Bytes())
 	require.Equal(t, "groups", rollbackData["share_scope"])
-	groupIDs := rollbackData["group_ids"].([]any)
+	groupIDs, ok := rollbackData["group_ids"].([]any)
+	require.True(t, ok)
 	require.Equal(t, []any{float64(2)}, groupIDs)
-	state := rollbackData["state"].(map[string]any)
+	state, ok := rollbackData["state"].(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, true, state["enableOpenAIWSMode"])
 
 	versionsAfterRollbackRec := httptest.NewRecorder()
@@ -302,7 +309,8 @@ func TestSettingHandlerBulkEditTemplate_VersionsAndRollback(t *testing.T) {
 	router.ServeHTTP(versionsAfterRollbackRec, versionsAfterRollbackReq)
 	require.Equal(t, http.StatusOK, versionsAfterRollbackRec.Code)
 	versionsAfterRollbackData := decodeResponseDataMap(t, versionsAfterRollbackRec.Body.Bytes())
-	versionsAfterRollback := versionsAfterRollbackData["items"].([]any)
+	versionsAfterRollback, ok := versionsAfterRollbackData["items"].([]any)
+	require.True(t, ok)
 	require.Len(t, versionsAfterRollback, 2)
 }
 
@@ -359,7 +367,8 @@ func TestSettingHandlerBulkEditTemplate_PrivateVisibilityAndDeletePermission(t *
 	require.Equal(t, http.StatusOK, createRec.Code)
 
 	createData := decodeResponseDataMap(t, createRec.Body.Bytes())
-	templateID := createData["id"].(string)
+	templateID, ok := createData["id"].(string)
+	require.True(t, ok)
 
 	listByOtherRec := httptest.NewRecorder()
 	listByOtherReq := httptest.NewRequest(
@@ -428,7 +437,8 @@ func TestSettingHandlerBulkEditTemplate_GroupsVisibilityByScopeGroupIDs(t *testi
 	router.ServeHTTP(invisibleRec, invisibleReq)
 	require.Equal(t, http.StatusOK, invisibleRec.Code)
 	invisibleData := decodeResponseDataMap(t, invisibleRec.Body.Bytes())
-	invisibleItems := invisibleData["items"].([]any)
+	invisibleItems, ok := invisibleData["items"].([]any)
+	require.True(t, ok)
 	require.Len(t, invisibleItems, 0)
 
 	visibleRec := httptest.NewRecorder()
@@ -441,7 +451,8 @@ func TestSettingHandlerBulkEditTemplate_GroupsVisibilityByScopeGroupIDs(t *testi
 	router.ServeHTTP(visibleRec, visibleReq)
 	require.Equal(t, http.StatusOK, visibleRec.Code)
 	visibleData := decodeResponseDataMap(t, visibleRec.Body.Bytes())
-	visibleItems := visibleData["items"].([]any)
+	visibleItems, ok := visibleData["items"].([]any)
+	require.True(t, ok)
 	require.Len(t, visibleItems, 1)
 }
 

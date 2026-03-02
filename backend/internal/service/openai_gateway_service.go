@@ -3720,42 +3720,42 @@ func buildOpenAIUsageFallbackRequestID(input *OpenAIRecordUsageInput) string {
 
 	seed := strings.Builder{}
 	seed.Grow(192)
-	seed.WriteString(strings.TrimSpace(input.FallbackRequestID))
-	seed.WriteByte('|')
+	_, _ = seed.WriteString(strings.TrimSpace(input.FallbackRequestID))
+	_ = seed.WriteByte('|')
 	if input.APIKey != nil {
-		seed.WriteString(strconv.FormatInt(input.APIKey.ID, 10))
+		_, _ = seed.WriteString(strconv.FormatInt(input.APIKey.ID, 10))
 	}
-	seed.WriteByte('|')
+	_ = seed.WriteByte('|')
 	if input.Account != nil {
-		seed.WriteString(strconv.FormatInt(input.Account.ID, 10))
+		_, _ = seed.WriteString(strconv.FormatInt(input.Account.ID, 10))
 	}
-	seed.WriteByte('|')
-	seed.WriteString(strings.TrimSpace(result.Model))
-	seed.WriteByte('|')
-	seed.WriteString(strings.TrimSpace(result.TerminalEventType))
-	seed.WriteByte('|')
-	seed.WriteString(strconv.FormatBool(result.Stream))
-	seed.WriteByte('|')
-	seed.WriteString(strconv.FormatBool(result.OpenAIWSMode))
-	seed.WriteByte('|')
-	seed.WriteString(strconv.Itoa(usage.InputTokens))
-	seed.WriteByte('|')
-	seed.WriteString(strconv.Itoa(usage.OutputTokens))
-	seed.WriteByte('|')
-	seed.WriteString(strconv.Itoa(usage.CacheCreationInputTokens))
-	seed.WriteByte('|')
-	seed.WriteString(strconv.Itoa(usage.CacheReadInputTokens))
-	seed.WriteByte('|')
-	seed.WriteString(strconv.FormatInt(result.Duration.Milliseconds(), 10))
-	seed.WriteByte('|')
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strings.TrimSpace(result.Model))
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strings.TrimSpace(result.TerminalEventType))
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strconv.FormatBool(result.Stream))
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strconv.FormatBool(result.OpenAIWSMode))
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strconv.Itoa(usage.InputTokens))
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strconv.Itoa(usage.OutputTokens))
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strconv.Itoa(usage.CacheCreationInputTokens))
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strconv.Itoa(usage.CacheReadInputTokens))
+	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(strconv.FormatInt(result.Duration.Milliseconds(), 10))
+	_ = seed.WriteByte('|')
 	firstTokenMs := -1
 	if result.FirstTokenMs != nil {
 		firstTokenMs = *result.FirstTokenMs
 	}
-	seed.WriteString(strconv.Itoa(firstTokenMs))
-	seed.WriteByte('|')
+	_, _ = seed.WriteString(strconv.Itoa(firstTokenMs))
+	_ = seed.WriteByte('|')
 	if result.ReasoningEffort != nil {
-		seed.WriteString(strings.TrimSpace(*result.ReasoningEffort))
+		_, _ = seed.WriteString(strings.TrimSpace(*result.ReasoningEffort))
 	}
 
 	sum := sha256.Sum256([]byte(seed.String()))
