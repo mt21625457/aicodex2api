@@ -59,6 +59,31 @@ func (r stubOpenAIAccountRepo) ListSchedulableByPlatform(ctx context.Context, pl
 	return result, nil
 }
 
+func (r stubOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return r.ListSchedulableByPlatform(ctx, platform)
+}
+
+func (r stubOpenAIAccountRepo) ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]Account, error) {
+	if len(platforms) == 0 {
+		return nil, nil
+	}
+	platformSet := make(map[string]struct{}, len(platforms))
+	for _, p := range platforms {
+		platformSet[p] = struct{}{}
+	}
+	result := make([]Account, 0, len(r.accounts))
+	for _, acc := range r.accounts {
+		if _, ok := platformSet[acc.Platform]; ok {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
+func (r stubOpenAIAccountRepo) ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]Account, error) {
+	return r.ListSchedulableByPlatforms(ctx, platforms)
+}
+
 type codexUsageUpdateAccountRepoStub struct {
 	stubOpenAIAccountRepo
 

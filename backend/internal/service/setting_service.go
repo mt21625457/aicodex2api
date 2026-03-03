@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/tidwall/gjson"
 )
 
 var (
@@ -194,6 +197,58 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		LinuxDoOAuthEnabled:         settings.LinuxDoOAuthEnabled,
 		Version:                     s.version,
 	}, nil
+}
+
+// GetFrameSrcOrigins 提取需要注入 CSP frame-src 的外部域名来源。
+func (s *SettingService) GetFrameSrcOrigins(ctx context.Context) ([]string, error) {
+	keys := []string{
+		SettingKeyPurchaseSubscriptionURL,
+		SettingKeyHomeContent,
+		SettingKeyCustomMenuItems,
+	}
+	settings, err := s.settingRepo.GetMultiple(ctx, keys)
+	if err != nil {
+		return nil, fmt.Errorf("get frame src settings: %w", err)
+	}
+
+	originsSet := make(map[string]struct{}, 8)
+	addOrigin := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		u, parseErr := url.Parse(raw)
+		if parseErr != nil || u == nil {
+			return
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return
+		}
+		if u.Host == "" {
+			return
+		}
+		originsSet[u.Scheme+"://"+u.Host] = struct{}{}
+	}
+
+	addOrigin(settings[SettingKeyPurchaseSubscriptionURL])
+	addOrigin(settings[SettingKeyHomeContent])
+
+	customMenuRaw := strings.TrimSpace(settings[SettingKeyCustomMenuItems])
+	if customMenuRaw != "" {
+		menuItems := gjson.Parse(customMenuRaw)
+		if menuItems.IsArray() {
+			for _, item := range menuItems.Array() {
+				addOrigin(item.Get("url").String())
+			}
+		}
+	}
+
+	origins := make([]string, 0, len(originsSet))
+	for origin := range originsSet {
+		origins = append(origins, origin)
+	}
+	sort.Strings(origins)
+	return origins, nil
 }
 
 // UpdateSettings 更新系统设置
