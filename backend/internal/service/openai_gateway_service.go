@@ -1607,8 +1607,19 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 	}
 }
 
-func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+func (s *OpenAIGatewayService) handleFailoverSideEffects(
+	ctx context.Context,
+	resp *http.Response,
+	account *Account,
+	respBody []byte,
+) {
+	if s == nil || s.rateLimitService == nil || resp == nil || account == nil {
+		return
+	}
+	body := respBody
+	if len(body) == 0 && resp.Body != nil {
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	}
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 }
 
@@ -2138,7 +2149,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				Detail:             upstreamDetail,
 			})
 
-			s.handleFailoverSideEffects(ctx, resp, account)
+				s.handleFailoverSideEffects(ctx, resp, account, respBody)
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, body)

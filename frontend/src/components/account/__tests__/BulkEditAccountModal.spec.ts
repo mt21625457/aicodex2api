@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import BulkEditAccountModal from '../BulkEditAccountModal.vue'
+
+const { bulkUpdateMock } = vi.hoisted(() => ({
+  bulkUpdateMock: vi.fn()
+}))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
@@ -13,7 +17,7 @@ vi.mock('@/stores/app', () => ({
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
-      bulkEdit: vi.fn()
+      bulkUpdate: bulkUpdateMock
     }
   }
 }))
@@ -57,6 +61,51 @@ function mountModal(
 }
 
 describe('BulkEditAccountModal', () => {
+  beforeEach(() => {
+    bulkUpdateMock.mockReset()
+  })
+
+  it('OpenAI OAuth 选择 WS mode 后会写入 bulkUpdate payload', async () => {
+    bulkUpdateMock.mockResolvedValue({ success: 2, failed: 0 })
+    const wrapper = mountModal(
+      { scopePlatform: 'openai', scopeType: 'oauth' },
+      {
+        props: ['options', 'modelValue'],
+        template: `
+          <select
+            data-testid="select-stub"
+            :value="modelValue"
+            @change="$emit('update:modelValue', $event.target.value)"
+          >
+            <option v-for="option in options" :key="option.value" :value="option.value">
+              {{ option.value }}
+            </option>
+          </select>
+        `
+      }
+    )
+
+    await wrapper.get('#bulk-edit-openai-ws-mode-enabled').setValue(true)
+    const selects = wrapper.findAll('[data-testid="select-stub"]')
+    const wsModeSelect = selects.find(
+      (select) => select.text().includes('off') && select.text().includes('ctx_pool') && select.text().includes('passthrough')
+    )
+    expect(wsModeSelect).toBeTruthy()
+    await wsModeSelect!.setValue('passthrough')
+
+    await wrapper.get('form#bulk-edit-account-form').trigger('submit.prevent')
+
+    expect(bulkUpdateMock).toHaveBeenCalledTimes(1)
+    expect(bulkUpdateMock).toHaveBeenCalledWith(
+      [1, 2],
+      expect.objectContaining({
+        extra: expect.objectContaining({
+          openai_oauth_responses_websockets_v2_mode: 'passthrough'
+        })
+      })
+    )
+  })
+
   it('Gemini 范围白名单包含图片模型并过滤 GPT 模型', () => {
     const wrapper = mountModal()
 
