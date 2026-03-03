@@ -511,8 +511,7 @@ func TestAPIContracts(t *testing.T) {
 						"home_content": "",
 					"hide_ccs_import_button": false,
 					"purchase_subscription_enabled": false,
-					"purchase_subscription_url": "",
-					"custom_menu_items": null
+					"purchase_subscription_url": ""
 				}
 			}`,
 		},
@@ -1488,18 +1487,6 @@ func (r *stubApiKeyRepo) ListKeysByGroupID(ctx context.Context, groupID int64) (
 
 func (r *stubApiKeyRepo) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) (float64, error) {
 	return 0, errors.New("not implemented")
-}
-
-func (r *stubApiKeyRepo) IncrementRateLimitUsage(ctx context.Context, id int64, cost float64) error {
-	return errors.New("not implemented")
-}
-
-func (r *stubApiKeyRepo) ResetRateLimitWindows(ctx context.Context, id int64) error {
-	return errors.New("not implemented")
-}
-
-func (r *stubApiKeyRepo) GetRateLimitData(ctx context.Context, id int64) (*service.APIKeyRateLimitData, error) {
-	return nil, errors.New("not implemented")
 }
 
 func (r *stubApiKeyRepo) UpdateLastUsed(ctx context.Context, id int64, usedAt time.Time) error {

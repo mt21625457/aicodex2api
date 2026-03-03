@@ -25,6 +25,8 @@ var (
 	ErrSoraS3ProfileExists   = infraerrors.Conflict("SORA_S3_PROFILE_EXISTS", "sora s3 profile already exists")
 )
 
+const settingKeyCustomMenuItems = "custom_menu_items"
+
 type SettingRepository interface {
 	Get(ctx context.Context, key string) (*Setting, error)
 	GetValue(ctx context.Context, key string) (string, error)
@@ -204,7 +206,7 @@ func (s *SettingService) GetFrameSrcOrigins(ctx context.Context) ([]string, erro
 	keys := []string{
 		SettingKeyPurchaseSubscriptionURL,
 		SettingKeyHomeContent,
-		SettingKeyCustomMenuItems,
+		settingKeyCustomMenuItems,
 	}
 	settings, err := s.settingRepo.GetMultiple(ctx, keys)
 	if err != nil {
@@ -233,7 +235,7 @@ func (s *SettingService) GetFrameSrcOrigins(ctx context.Context) ([]string, erro
 	addOrigin(settings[SettingKeyPurchaseSubscriptionURL])
 	addOrigin(settings[SettingKeyHomeContent])
 
-	customMenuRaw := strings.TrimSpace(settings[SettingKeyCustomMenuItems])
+	customMenuRaw := strings.TrimSpace(settings[settingKeyCustomMenuItems])
 	if customMenuRaw != "" {
 		menuItems := gjson.Parse(customMenuRaw)
 		if menuItems.IsArray() {
