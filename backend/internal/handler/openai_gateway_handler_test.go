@@ -702,7 +702,7 @@ func TestOpenAIResponsesWebSocket_PassthroughAndCtxPoolShareSchedulerInputsAndSt
 		cfg := &config.Config{RunMode: config.RunModeSimple}
 		cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
 		cfg.Gateway.OpenAIWS.IngressModeDefault = mode
-		billingSvc := service.NewBillingCacheService(nil, nil, nil, cfg)
+		billingSvc := service.NewBillingCacheService(nil, nil, nil, nil, cfg)
 		t.Cleanup(func() {
 			billingSvc.Stop()
 		})
