@@ -467,7 +467,7 @@ func TestProxyResponsesWebSocketV2Passthrough_NilContext(t *testing.T) {
 		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 		ginCtx.Request = r
 		serverErrCh <- svc.proxyResponsesWebSocketV2Passthrough(
-			nil,
+			context.TODO(),
 			ginCtx,
 			conn,
 			account,

@@ -2148,8 +2148,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-
-				s.handleFailoverSideEffects(ctx, resp, account, respBody)
+			s.handleFailoverSideEffects(ctx, resp, account, respBody)
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, body)
