@@ -1421,6 +1421,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		account.Credentials = input.Credentials
 	}
 	if len(input.Extra) > 0 {
+		if err := validateOpenAIWSModeExtraValues(input.Extra); err != nil {
+			return nil, err
+		}
 		account.Extra = input.Extra
 	}
 	if input.ProxyID != nil {
@@ -1528,6 +1531,40 @@ func hasOpenAIBulkScopedExtraField(extra map[string]any) bool {
 	return false
 }
 
+// openaiWSModeExtraKeys 列出所有控制 OpenAI WS v2 mode 的 extra 键名。
+var openaiWSModeExtraKeys = []string{
+	"openai_oauth_responses_websockets_v2_mode",
+	"openai_apikey_responses_websockets_v2_mode",
+}
+
+// validateOpenAIWSModeExtraValues 校验 extra 中 WS v2 mode 字段的值域，
+// 只允许 off / ctx_pool / passthrough。
+func validateOpenAIWSModeExtraValues(extra map[string]any) error {
+	for _, key := range openaiWSModeExtraKeys {
+		raw, exists := extra[key]
+		if !exists {
+			continue
+		}
+		val, ok := raw.(string)
+		if !ok {
+			return infraerrors.BadRequest(
+				"INVALID_OPENAI_WS_MODE",
+				fmt.Sprintf("%s must be a string, got %T", key, raw),
+			)
+		}
+		switch strings.TrimSpace(strings.ToLower(val)) {
+		case OpenAIWSIngressModeOff, OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough:
+			// valid
+		default:
+			return infraerrors.BadRequest(
+				"INVALID_OPENAI_WS_MODE",
+				fmt.Sprintf("%s must be one of off, ctx_pool, passthrough; got %q", key, val),
+			)
+		}
+	}
+	return nil
+}
+
 func validateOpenAIBulkScopedAccounts(accountsByID map[int64]*Account, accountIDs []int64) error {
 	var expectedType string
 
@@ -1613,6 +1650,13 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	if needOpenAIScopeCheck {
 		if err := validateOpenAIBulkScopedAccounts(accountByID, input.AccountIDs); err != nil {
+			return nil, err
+		}
+	}
+
+	// 校验 WS v2 mode 字段值域
+	if len(input.Extra) > 0 {
+		if err := validateOpenAIWSModeExtraValues(input.Extra); err != nil {
 			return nil, err
 		}
 	}

@@ -516,6 +516,8 @@ func TestOpenAIWSPerformanceMetricsSnapshot_ContainsAbortMetrics(t *testing.T) {
 
 	snapshot := svc.SnapshotOpenAIWSPerformanceMetrics()
 	require.Equal(t, int64(1), snapshot.Abort.TurnAbortRecoveredTotal)
+	require.Equal(t, int64(0), snapshot.Passthrough.SemanticMutationTotal)
+	require.GreaterOrEqual(t, snapshot.Passthrough.UsageParseFailureTotal, int64(0))
 
 	found := false
 	for _, point := range snapshot.Abort.TurnAbortTotal {

@@ -1,0 +1,597 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	coderws "github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+)
+
+func TestOpenAIWSClientFrameConn_NilGuards(t *testing.T) {
+	t.Parallel()
+
+	var nilReceiver *openAIWSClientFrameConn
+	msgType, payload, err := nilReceiver.ReadFrame(context.Background())
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	require.Equal(t, coderws.MessageText, msgType)
+	require.Nil(t, payload)
+
+	err = nilReceiver.WriteFrame(context.Background(), coderws.MessageText, []byte("x"))
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	require.NoError(t, nilReceiver.Close())
+
+	empty := &openAIWSClientFrameConn{}
+	var nilCtx context.Context
+	_, _, err = empty.ReadFrame(nilCtx)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	err = empty.WriteFrame(nilCtx, coderws.MessageText, []byte("x"))
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	require.NoError(t, empty.Close())
+}
+
+func TestOpenAIWSClientFrameConn_NilContextWithLiveConn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	serverErrCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		require.NoError(t, err)
+		defer func() {
+			_ = conn.CloseNow()
+		}()
+
+		readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
+		msgType, payload, err := conn.Read(readCtx)
+		cancelRead()
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
+		err = conn.Write(writeCtx, msgType, payload)
+		cancelWrite()
+		serverErrCh <- err
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(
+		dialCtx,
+		"ws"+strings.TrimPrefix(wsServer.URL, "http"),
+		nil,
+	)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	frameConn := &openAIWSClientFrameConn{conn: clientConn}
+	payload := []byte(`{"type":"response.create","model":"gpt-5.3-codex"}`)
+	var nilCtx context.Context
+
+	require.NoError(t, frameConn.WriteFrame(nilCtx, coderws.MessageText, payload))
+	msgType, gotPayload, err := frameConn.ReadFrame(nilCtx)
+	require.NoError(t, err)
+	require.Equal(t, coderws.MessageText, msgType)
+	require.Equal(t, payload, gotPayload)
+	require.NoError(t, <-serverErrCh)
+}
+
+func TestOpenAIWSV2PassthroughHelpers(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "text", openaiwsv2RelayMessageTypeName(coderws.MessageText))
+	require.Equal(t, "binary", openaiwsv2RelayMessageTypeName(coderws.MessageBinary))
+	require.Contains(t, openaiwsv2RelayMessageTypeName(coderws.MessageType(99)), "unknown(")
+
+	require.Equal(t, "", relayErrorText(nil))
+	require.Equal(t, "boom", relayErrorText(errors.New("boom")))
+
+	require.NotPanics(t, func() {
+		logOpenAIWSV2Passthrough("helper_test account_id=%d", 1)
+	})
+}
+
+func TestProxyResponsesWebSocketV2Passthrough_InvalidInputs(t *testing.T) {
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+	firstMessage := []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`)
+	var nilSvc *OpenAIGatewayService
+	err := nilSvc.proxyResponsesWebSocketV2Passthrough(
+		context.Background(),
+		nil,
+		nil,
+		account,
+		"sk-test",
+		coderws.MessageText,
+		firstMessage,
+		nil,
+		OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "service is nil")
+
+	cfg := buildIngressPolicyTestConfig()
+	svc := buildIngressPolicyTestService(cfg)
+	dummyClient := &coderws.Conn{}
+
+	err = svc.proxyResponsesWebSocketV2Passthrough(
+		context.Background(),
+		nil,
+		nil,
+		account,
+		"sk-test",
+		coderws.MessageText,
+		firstMessage,
+		nil,
+		OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "client websocket is nil")
+
+	err = svc.proxyResponsesWebSocketV2Passthrough(
+		context.Background(),
+		nil,
+		dummyClient,
+		nil,
+		"sk-test",
+		coderws.MessageText,
+		firstMessage,
+		nil,
+		OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "account is nil")
+
+	err = svc.proxyResponsesWebSocketV2Passthrough(
+		context.Background(),
+		nil,
+		dummyClient,
+		account,
+		" ",
+		coderws.MessageText,
+		firstMessage,
+		nil,
+		OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "token is empty")
+}
+
+func TestProxyResponsesWebSocketV2Passthrough_DialFailure(t *testing.T) {
+	cfg := buildIngressPolicyTestConfig()
+	svc := buildIngressPolicyTestService(cfg)
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+	dummyClient := &coderws.Conn{}
+	firstMessage := []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`)
+
+	svc.openaiWSPassthroughDialer = &passthroughDialerStub{
+		err:        errors.New("dial failed"),
+		statusCode: 503,
+	}
+	err := svc.proxyResponsesWebSocketV2Passthrough(
+		context.Background(),
+		nil,
+		dummyClient,
+		account,
+		"sk-test",
+		coderws.MessageText,
+		firstMessage,
+		nil,
+		OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "openai ws passthrough dial")
+}
+
+type passthroughDialerStub struct {
+	conn       openAIWSClientConn
+	statusCode int
+	headers    http.Header
+	err        error
+	dialCount  atomic.Int32
+}
+
+func (d *passthroughDialerStub) Dial(
+	_ context.Context,
+	_ string,
+	_ http.Header,
+	_ string,
+) (openAIWSClientConn, int, http.Header, error) {
+	d.dialCount.Add(1)
+	return d.conn, d.statusCode, d.headers, d.err
+}
+
+type passthroughUpstreamConn struct {
+	mu    sync.Mutex
+	reads []struct {
+		msgType coderws.MessageType
+		payload []byte
+	}
+	writes [][]byte
+	closed bool
+}
+
+func (c *passthroughUpstreamConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return coderws.MessageText, nil, io.EOF
+	}
+	if len(c.reads) == 0 {
+		return coderws.MessageText, nil, io.EOF
+	}
+	item := c.reads[0]
+	c.reads = c.reads[1:]
+	return item.msgType, append([]byte(nil), item.payload...), nil
+}
+
+func (c *passthroughUpstreamConn) WriteFrame(_ context.Context, _ coderws.MessageType, payload []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writes = append(c.writes, append([]byte(nil), payload...))
+	return nil
+}
+
+func (c *passthroughUpstreamConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (c *passthroughUpstreamConn) WriteJSON(context.Context, any) error { return nil }
+func (c *passthroughUpstreamConn) ReadMessage(context.Context) ([]byte, error) {
+	return nil, io.EOF
+}
+func (c *passthroughUpstreamConn) Ping(context.Context) error { return nil }
+
+type passthroughBlockingUpstreamConn struct{}
+
+func (c *passthroughBlockingUpstreamConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	<-ctx.Done()
+	return coderws.MessageText, nil, ctx.Err()
+}
+func (c *passthroughBlockingUpstreamConn) WriteFrame(context.Context, coderws.MessageType, []byte) error {
+	return nil
+}
+func (c *passthroughBlockingUpstreamConn) Close() error { return nil }
+func (c *passthroughBlockingUpstreamConn) WriteJSON(context.Context, any) error {
+	return nil
+}
+func (c *passthroughBlockingUpstreamConn) ReadMessage(context.Context) ([]byte, error) {
+	return nil, io.EOF
+}
+func (c *passthroughBlockingUpstreamConn) Ping(context.Context) error { return nil }
+
+func TestProxyResponsesWebSocketV2Passthrough_Success(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &passthroughUpstreamConn{
+		reads: []struct {
+			msgType coderws.MessageType
+			payload []byte
+		}{
+			{
+				msgType: coderws.MessageText,
+				payload: []byte(`{"type":"response.completed","response":{"id":"resp_passthrough","usage":{"input_tokens":3,"output_tokens":2}}}`),
+			},
+		},
+	}
+	cfg := buildIngressPolicyTestConfig()
+	svc := buildIngressPolicyTestService(cfg)
+	svc.openaiWSPassthroughDialer = &passthroughDialerStub{
+		conn:       upstream,
+		statusCode: 101,
+		headers: http.Header{
+			"X-Request-ID": []string{"req-passthrough"},
+		},
+	}
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	var (
+		afterTurnCalled bool
+		afterTurnErr    error
+		afterTurnResult *OpenAIForwardResult
+	)
+	hooks := &OpenAIWSIngressHooks{
+		AfterTurn: func(_ int, result *OpenAIForwardResult, turnErr error) {
+			afterTurnCalled = true
+			afterTurnErr = turnErr
+			afterTurnResult = result
+		},
+	}
+
+	serverErrCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		require.NoError(t, err)
+		defer func() {
+			_ = conn.CloseNow()
+		}()
+
+		readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
+		msgType, firstMessage, err := conn.Read(readCtx)
+		cancelRead()
+		require.NoError(t, err)
+
+		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ginCtx.Request = r
+		serverErrCh <- svc.proxyResponsesWebSocketV2Passthrough(
+			r.Context(),
+			ginCtx,
+			conn,
+			account,
+			"sk-test",
+			msgType,
+			firstMessage,
+			hooks,
+			OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+		)
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(
+		dialCtx,
+		"ws"+strings.TrimPrefix(wsServer.URL, "http"),
+		nil,
+	)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, payload, err := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"response.completed","response":{"id":"resp_passthrough","usage":{"input_tokens":3,"output_tokens":2}}}`, string(payload))
+
+	require.NoError(t, <-serverErrCh)
+	require.True(t, afterTurnCalled)
+	require.NoError(t, afterTurnErr)
+	require.NotNil(t, afterTurnResult)
+	require.Equal(t, "resp_passthrough", afterTurnResult.RequestID)
+}
+
+func TestProxyResponsesWebSocketV2Passthrough_UpstreamWithoutFrameConn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	svc := buildIngressPolicyTestService(cfg)
+	svc.openaiWSPassthroughDialer = &passthroughDialerStub{
+		conn: &openAIWSFakeConn{},
+	}
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		require.NoError(t, err)
+		defer func() {
+			_ = conn.CloseNow()
+		}()
+		readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
+		msgType, firstMessage, err := conn.Read(readCtx)
+		cancelRead()
+		require.NoError(t, err)
+
+		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ginCtx.Request = r
+		err = svc.proxyResponsesWebSocketV2Passthrough(
+			r.Context(),
+			ginCtx,
+			conn,
+			account,
+			"sk-test",
+			msgType,
+			firstMessage,
+			nil,
+			OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "does not support frame relay")
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(
+		dialCtx,
+		"ws"+strings.TrimPrefix(wsServer.URL, "http"),
+		nil,
+	)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	cancelWrite()
+	require.NoError(t, err)
+}
+
+func TestProxyResponsesWebSocketV2Passthrough_BuildWSURLError(t *testing.T) {
+	cfg := buildIngressPolicyTestConfig()
+	svc := buildIngressPolicyTestService(cfg)
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+	account.Credentials["base_url"] = "http://[::1"
+	err := svc.proxyResponsesWebSocketV2Passthrough(
+		context.Background(),
+		nil,
+		&coderws.Conn{},
+		account,
+		"sk-test",
+		coderws.MessageText,
+		[]byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`),
+		nil,
+		OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "build ws url")
+}
+
+func TestProxyResponsesWebSocketV2Passthrough_IdleTimeoutErrorPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	cfg.Gateway.OpenAIWS.ClientReadIdleTimeoutSeconds = 1
+	svc := buildIngressPolicyTestService(cfg)
+	svc.openaiWSPassthroughDialer = &passthroughDialerStub{
+		conn: &passthroughBlockingUpstreamConn{},
+	}
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	var (
+		afterTurnCalled bool
+		afterTurnErr    error
+	)
+	hooks := &OpenAIWSIngressHooks{
+		AfterTurn: func(_ int, _ *OpenAIForwardResult, turnErr error) {
+			afterTurnCalled = true
+			afterTurnErr = turnErr
+		},
+	}
+
+	serverErrCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		require.NoError(t, err)
+		defer func() {
+			_ = conn.CloseNow()
+		}()
+
+		readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
+		msgType, firstMessage, err := conn.Read(readCtx)
+		cancelRead()
+		require.NoError(t, err)
+
+		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ginCtx.Request = r
+		serverErrCh <- svc.proxyResponsesWebSocketV2Passthrough(
+			r.Context(),
+			ginCtx,
+			conn,
+			account,
+			"sk-test",
+			msgType,
+			firstMessage,
+			hooks,
+			OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+		)
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(
+		dialCtx,
+		"ws"+strings.TrimPrefix(wsServer.URL, "http"),
+		nil,
+	)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	cancelWrite()
+	require.NoError(t, err)
+
+	serverErr := <-serverErrCh
+	require.Error(t, serverErr)
+	require.Contains(t, serverErr.Error(), "idle timeout")
+	require.True(t, afterTurnCalled)
+	require.Error(t, afterTurnErr)
+}
+
+func TestMapOpenAIWSPassthroughDialError_StatusMapping(t *testing.T) {
+	t.Parallel()
+
+	svc := &OpenAIGatewayService{}
+
+	t.Run("nil error returns nil", func(t *testing.T) {
+		err := svc.mapOpenAIWSPassthroughDialError(nil, 0, nil)
+		require.NoError(t, err)
+	})
+
+	t.Run("401 maps to policy violation", func(t *testing.T) {
+		err := svc.mapOpenAIWSPassthroughDialError(errors.New("unauthorized"), 401, nil)
+		var closeErr *OpenAIWSClientCloseError
+		require.ErrorAs(t, err, &closeErr)
+		require.Equal(t, coderws.StatusPolicyViolation, closeErr.StatusCode())
+	})
+
+	t.Run("403 maps to policy violation", func(t *testing.T) {
+		err := svc.mapOpenAIWSPassthroughDialError(errors.New("forbidden"), 403, nil)
+		var closeErr *OpenAIWSClientCloseError
+		require.ErrorAs(t, err, &closeErr)
+		require.Equal(t, coderws.StatusPolicyViolation, closeErr.StatusCode())
+	})
+
+	t.Run("429 maps to try again later", func(t *testing.T) {
+		err := svc.mapOpenAIWSPassthroughDialError(errors.New("rate limited"), 429, nil)
+		var closeErr *OpenAIWSClientCloseError
+		require.ErrorAs(t, err, &closeErr)
+		require.Equal(t, coderws.StatusTryAgainLater, closeErr.StatusCode())
+	})
+
+	t.Run("4xx generic maps to policy violation", func(t *testing.T) {
+		err := svc.mapOpenAIWSPassthroughDialError(errors.New("bad request"), 400, nil)
+		var closeErr *OpenAIWSClientCloseError
+		require.ErrorAs(t, err, &closeErr)
+		require.Equal(t, coderws.StatusPolicyViolation, closeErr.StatusCode())
+	})
+
+	t.Run("5xx wraps as generic error without CloseError", func(t *testing.T) {
+		err := svc.mapOpenAIWSPassthroughDialError(errors.New("server error"), 500, nil)
+		require.Error(t, err)
+		var closeErr *OpenAIWSClientCloseError
+		require.False(t, errors.As(err, &closeErr), "5xx 不应封装为 CloseError")
+		require.Contains(t, err.Error(), "openai ws passthrough dial")
+	})
+
+	t.Run("deadline exceeded maps to try again later", func(t *testing.T) {
+		err := svc.mapOpenAIWSPassthroughDialError(context.DeadlineExceeded, 0, nil)
+		var closeErr *OpenAIWSClientCloseError
+		require.ErrorAs(t, err, &closeErr)
+		require.Equal(t, coderws.StatusTryAgainLater, closeErr.StatusCode())
+	})
+
+	t.Run("context canceled returns original error", func(t *testing.T) {
+		err := svc.mapOpenAIWSPassthroughDialError(context.Canceled, 0, nil)
+		require.ErrorIs(t, err, context.Canceled)
+		var closeErr *OpenAIWSClientCloseError
+		require.False(t, errors.As(err, &closeErr), "context.Canceled 不应封装为 CloseError")
+	})
+}

@@ -89,6 +89,7 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		ops.GET("/user-concurrency", h.Admin.Ops.GetUserConcurrencyStats)
 		ops.GET("/account-availability", h.Admin.Ops.GetAccountAvailability)
 		ops.GET("/realtime-traffic", h.Admin.Ops.GetRealtimeTrafficSummary)
+		ops.GET("/openai-ws-v2/passthrough-metrics", h.Admin.Ops.GetOpenAIWSV2PassthroughMetrics)
 
 		// Alerts (rules + events)
 		ops.GET("/alert-rules", h.Admin.Ops.ListAlertRules)

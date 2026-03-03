@@ -1,13 +1,16 @@
 export const OPENAI_WS_MODE_OFF = 'off'
 export const OPENAI_WS_MODE_CTX_POOL = 'ctx_pool'
+export const OPENAI_WS_MODE_PASSTHROUGH = 'passthrough'
 
 export type OpenAIWSMode =
   | typeof OPENAI_WS_MODE_OFF
   | typeof OPENAI_WS_MODE_CTX_POOL
+  | typeof OPENAI_WS_MODE_PASSTHROUGH
 
 const OPENAI_WS_MODES = new Set<OpenAIWSMode>([
   OPENAI_WS_MODE_OFF,
-  OPENAI_WS_MODE_CTX_POOL
+  OPENAI_WS_MODE_CTX_POOL,
+  OPENAI_WS_MODE_PASSTHROUGH
 ])
 
 export interface ResolveOpenAIWSModeOptions {

@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -489,10 +491,15 @@ func TestOpenAIResponsesWebSocket_InvalidUpgradeDoesNotSetTransport(t *testing.T
 	require.Equal(t, service.OpenAIClientTransportUnknown, service.GetOpenAIClientTransport(c))
 }
 
-func TestOpenAIResponsesWebSocket_RejectsMessageIDAsPreviousResponseID(t *testing.T) {
+func TestOpenAIResponsesWebSocket_DoesNotEarlyRejectMessageIDPreviousResponseID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+			return false, nil
+		},
+	}
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, cache)
 	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
 	defer wsServer.Close()
 
@@ -517,8 +524,239 @@ func TestOpenAIResponsesWebSocket_RejectsMessageIDAsPreviousResponseID(t *testin
 	require.Error(t, err)
 	var closeErr coderws.CloseError
 	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusTryAgainLater, closeErr.Code)
+	require.Contains(t, strings.ToLower(closeErr.Reason), "too many concurrent requests")
+}
+
+func TestOpenAIResponsesWebSocket_RejectsEmptyModelInFirstPayload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","stream":false,"input":[]}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, err = clientConn.Read(readCtx)
+	cancelRead()
+	require.Error(t, err)
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, err, &closeErr)
 	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
-	require.Contains(t, strings.ToLower(closeErr.Reason), "previous_response_id")
+	require.Contains(t, strings.ToLower(closeErr.Reason), "model is required")
+}
+
+func TestOpenAIResponsesWebSocket_RejectsEmptyModelWithoutCallingProxy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	var proxyCalls atomic.Int32
+	h.wsProxyResponsesWSFn = func(
+		ctx context.Context,
+		c *gin.Context,
+		clientConn *coderws.Conn,
+		account *service.Account,
+		token string,
+		firstClientMessageType coderws.MessageType,
+		firstClientMessage []byte,
+		hooks *service.OpenAIWSIngressHooks,
+	) error {
+		proxyCalls.Add(1)
+		return nil
+	}
+
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","stream":false,"input":[]}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, err = clientConn.Read(readCtx)
+	cancelRead()
+	require.Error(t, err)
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+	require.Contains(t, strings.ToLower(closeErr.Reason), "model is required")
+	require.Equal(t, int32(0), proxyCalls.Load())
+}
+
+func TestOpenAIResponsesWebSocket_PassthroughAndCtxPoolShareSchedulerInputsAndStickyBind(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	type wsScheduleCapture struct {
+		groupID            int64
+		previousResponseID string
+		sessionHash        string
+		model              string
+		transport          service.OpenAIUpstreamTransport
+		stickyBindCount    int
+		stickyGroupID      int64
+		stickySessionHash  string
+		stickyAccountID    int64
+	}
+	runCase := func(t *testing.T, mode string) wsScheduleCapture {
+		t.Helper()
+
+		cfg := &config.Config{RunMode: config.RunModeSimple}
+		cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+		cfg.Gateway.OpenAIWS.IngressModeDefault = mode
+		billingSvc := service.NewBillingCacheService(nil, nil, nil, cfg)
+		t.Cleanup(func() {
+			billingSvc.Stop()
+		})
+
+		cache := &concurrencyCacheMock{
+			acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+				return true, nil
+			},
+			acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+				return true, nil
+			},
+		}
+		h := &OpenAIGatewayHandler{
+			gatewayService:      &service.OpenAIGatewayService{},
+			billingCacheService: billingSvc,
+			apiKeyService:       &service.APIKeyService{},
+			concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+			cfg:                 cfg,
+		}
+
+		account := &service.Account{
+			ID:          901,
+			Name:        "ws-mode-test",
+			Platform:    service.PlatformOpenAI,
+			Type:        service.AccountTypeAPIKey,
+			Status:      service.StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Credentials: map[string]any{"api_key": "sk-test"},
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_mode": mode,
+			},
+		}
+
+		var capture wsScheduleCapture
+		h.wsSelectAccountWithSchedulerFn = func(
+			ctx context.Context,
+			groupID *int64,
+			previousResponseID string,
+			sessionHash string,
+			requestedModel string,
+			excludedIDs map[int64]struct{},
+			requiredTransport service.OpenAIUpstreamTransport,
+		) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error) {
+			if groupID != nil {
+				capture.groupID = *groupID
+			}
+			capture.previousResponseID = previousResponseID
+			capture.sessionHash = sessionHash
+			capture.model = requestedModel
+			capture.transport = requiredTransport
+			return &service.AccountSelectionResult{
+				Account:     account,
+				Acquired:    true,
+				ReleaseFunc: func() {},
+			}, service.OpenAIAccountScheduleDecision{Layer: "unit"}, nil
+		}
+		h.wsBindStickySessionFn = func(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
+			capture.stickyBindCount++
+			if groupID != nil {
+				capture.stickyGroupID = *groupID
+			}
+			capture.stickySessionHash = sessionHash
+			capture.stickyAccountID = accountID
+			return nil
+		}
+		h.wsGetAccessTokenFn = func(ctx context.Context, account *service.Account) (string, string, error) {
+			return "sk-test", "apikey", nil
+		}
+		h.wsProxyResponsesWSFn = func(
+			ctx context.Context,
+			c *gin.Context,
+			clientConn *coderws.Conn,
+			account *service.Account,
+			token string,
+			firstClientMessageType coderws.MessageType,
+			firstClientMessage []byte,
+			hooks *service.OpenAIWSIngressHooks,
+		) error {
+			if hooks != nil && hooks.AfterTurn != nil {
+				hooks.AfterTurn(1, nil, nil)
+			}
+			return nil
+		}
+
+		wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+		t.Cleanup(wsServer.Close)
+
+		dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+		clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", &coderws.DialOptions{
+			HTTPHeader: http.Header{
+				"Session_ID": []string{"session-fixed-123"},
+			},
+		})
+		cancelDial()
+		require.NoError(t, err)
+		defer func() {
+			_ = clientConn.CloseNow()
+		}()
+
+		writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+		err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+			`{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"resp_prev_fixed"}`,
+		))
+		cancelWrite()
+		require.NoError(t, err)
+
+		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _, _ = clientConn.Read(readCtx)
+		cancelRead()
+		return capture
+	}
+
+	passthroughCapture := runCase(t, service.OpenAIWSIngressModePassthrough)
+	ctxPoolCapture := runCase(t, service.OpenAIWSIngressModeCtxPool)
+
+	require.Equal(t, passthroughCapture.groupID, ctxPoolCapture.groupID)
+	require.Equal(t, passthroughCapture.previousResponseID, ctxPoolCapture.previousResponseID)
+	require.Equal(t, passthroughCapture.sessionHash, ctxPoolCapture.sessionHash)
+	require.Equal(t, passthroughCapture.model, ctxPoolCapture.model)
+	require.Equal(t, service.OpenAIUpstreamTransportResponsesWebsocketV2, passthroughCapture.transport)
+	require.Equal(t, passthroughCapture.transport, ctxPoolCapture.transport)
+
+	require.Equal(t, 1, passthroughCapture.stickyBindCount)
+	require.Equal(t, 1, ctxPoolCapture.stickyBindCount)
+	require.Equal(t, passthroughCapture.stickyGroupID, ctxPoolCapture.stickyGroupID)
+	require.Equal(t, passthroughCapture.stickySessionHash, ctxPoolCapture.stickySessionHash)
+	require.Equal(t, passthroughCapture.stickyAccountID, ctxPoolCapture.stickyAccountID)
 }
 
 func TestOpenAIResponsesWebSocket_PreviousResponseIDKindLoggedBeforeAcquireFailure(t *testing.T) {

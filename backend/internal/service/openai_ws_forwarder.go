@@ -17,6 +17,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -133,16 +134,18 @@ func (s *OpenAIGatewayService) getOpenAIWSIngressContextPool() *openAIWSIngressC
 }
 
 type OpenAIWSPerformanceMetricsSnapshot struct {
-	Retry     OpenAIWSRetryMetricsSnapshot     `json:"retry"`
-	Abort     OpenAIWSAbortMetricsSnapshot     `json:"abort"`
-	Transport OpenAIWSTransportMetricsSnapshot `json:"transport"`
+	Retry       OpenAIWSRetryMetricsSnapshot     `json:"retry"`
+	Abort       OpenAIWSAbortMetricsSnapshot     `json:"abort"`
+	Transport   OpenAIWSTransportMetricsSnapshot `json:"transport"`
+	Passthrough openaiwsv2.MetricsSnapshot       `json:"passthrough"`
 }
 
 func (s *OpenAIGatewayService) SnapshotOpenAIWSPerformanceMetrics() OpenAIWSPerformanceMetricsSnapshot {
 	ingressPool := s.getOpenAIWSIngressContextPool()
 	snapshot := OpenAIWSPerformanceMetricsSnapshot{
-		Retry: s.SnapshotOpenAIWSRetryMetrics(),
-		Abort: s.SnapshotOpenAIWSAbortMetrics(),
+		Retry:       s.SnapshotOpenAIWSRetryMetrics(),
+		Abort:       s.SnapshotOpenAIWSAbortMetrics(),
+		Passthrough: openaiwsv2.SnapshotMetrics(),
 	}
 	if ingressPool == nil {
 		return snapshot
@@ -161,6 +164,18 @@ func (s *OpenAIGatewayService) getOpenAIWSStateStore() OpenAIWSStateStore {
 		}
 	})
 	return s.openaiWSStateStore
+}
+
+func (s *OpenAIGatewayService) getOpenAIWSPassthroughDialer() openAIWSClientDialer {
+	if s == nil {
+		return nil
+	}
+	s.openaiWSPassthroughDialerOnce.Do(func() {
+		if s.openaiWSPassthroughDialer == nil {
+			s.openaiWSPassthroughDialer = newDefaultOpenAIWSClientDialer()
+		}
+	})
+	return s.openaiWSPassthroughDialer
 }
 
 func (s *OpenAIGatewayService) openAIWSResponseStickyTTL() time.Duration {
@@ -1243,6 +1258,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	clientConn *coderws.Conn,
 	account *Account,
 	token string,
+	firstClientMessageType coderws.MessageType,
 	firstClientMessage []byte,
 	hooks *OpenAIWSIngressHooks,
 ) (err error) {
@@ -1284,7 +1300,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if !modeRouterV2Enabled {
 		return NewOpenAIWSClientCloseError(
 			coderws.StatusPolicyViolation,
-			"websocket mode requires mode_router_v2 with ctx_pool",
+			"websocket mode requires mode_router_v2 with ctx_pool/passthrough",
 			nil,
 		)
 	}
@@ -1302,21 +1318,43 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			nil,
 		)
 	}
-	if ingressMode != OpenAIWSIngressModeCtxPool {
+	if ingressMode != OpenAIWSIngressModeCtxPool && ingressMode != OpenAIWSIngressModePassthrough {
 		return NewOpenAIWSClientCloseError(
 			coderws.StatusPolicyViolation,
-			"websocket mode only supports ctx_pool",
+			"websocket mode only supports ctx_pool/passthrough",
 			nil,
 		)
+	}
+	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+		return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
+	}
+	firstModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
+	if firstModel == "" {
+		return NewOpenAIWSClientCloseError(
+			coderws.StatusPolicyViolation,
+			"model is required in first response.create payload",
+			nil,
+		)
+	}
+	firstPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
+	firstPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(firstPreviousResponseID)
+	if ingressMode == OpenAIWSIngressModeCtxPool &&
+		firstPreviousResponseID != "" &&
+		firstPreviousResponseIDKind == OpenAIPreviousResponseIDKindMessageID {
+		return NewOpenAIWSClientCloseError(
+			coderws.StatusPolicyViolation,
+			"previous_response_id must be a response.id (resp_*), not a message id",
+			nil,
+		)
+	}
+	if ingressMode == OpenAIWSIngressModePassthrough {
+		return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessageType, firstClientMessage, hooks, wsDecision)
 	}
 	// Ingress ws_v2 请求天然是 Codex 会话语义，ctx_pool 是否启用仅由账号 mode 决定。
 	ctxPoolMode := ingressMode == OpenAIWSIngressModeCtxPool
 	ctxPoolSessionScope := ""
 	if ctxPoolMode {
 		ctxPoolSessionScope = openAIWSIngressSessionScopeFromContext(c)
-	}
-	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
-		return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
 	}
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 	if err != nil {

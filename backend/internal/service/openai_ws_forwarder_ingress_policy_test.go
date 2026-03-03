@@ -55,7 +55,7 @@ func runIngressProxyWithFirstPayload(
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", message, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", msgType, message, nil)
 	}))
 	defer wsServer.Close()
 
@@ -119,6 +119,10 @@ func buildIngressPolicyTestAccount(extra map[string]any) *Account {
 	}
 }
 
+type openAIWSPassthroughPanicStateStore struct {
+	OpenAIWSStateStore
+}
+
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ModeOffReturnsPolicyViolation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -150,5 +154,125 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ModeRouterDisabl
 	var closeErr *OpenAIWSClientCloseError
 	require.ErrorAs(t, serverErr, &closeErr)
 	require.Equal(t, coderws.StatusPolicyViolation, closeErr.StatusCode())
-	require.Equal(t, "websocket mode requires mode_router_v2 with ctx_pool", closeErr.Reason())
+	require.Equal(t, "websocket mode requires mode_router_v2 with ctx_pool/passthrough", closeErr.Reason())
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CtxPoolRejectsMessageIDPreviousResponseID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	svc := buildIngressPolicyTestService(cfg)
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModeCtxPool,
+	})
+
+	serverErr := runIngressProxyWithFirstPayload(
+		t,
+		svc,
+		account,
+		`{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"msg_abc123"}`,
+	)
+	var closeErr *OpenAIWSClientCloseError
+	require.ErrorAs(t, serverErr, &closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, closeErr.StatusCode())
+	require.Contains(t, closeErr.Reason(), "previous_response_id must be a response.id")
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughDoesNotRejectMessageIDPreviousResponseID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	svc := buildIngressPolicyTestService(cfg)
+	dialer := &openAIWSAlwaysFailDialer{}
+	svc.openaiWSPassthroughDialer = dialer
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	serverErr := runIngressProxyWithFirstPayload(
+		t,
+		svc,
+		account,
+		`{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"msg_abc123"}`,
+	)
+	require.Error(t, serverErr)
+	require.Contains(t, serverErr.Error(), "openai ws passthrough dial")
+	require.NotContains(t, serverErr.Error(), "previous_response_id must be a response.id")
+	require.Equal(t, 1, dialer.DialCount())
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughEmptyModelFailsBeforeDial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	svc := buildIngressPolicyTestService(cfg)
+	dialer := &openAIWSAlwaysFailDialer{}
+	svc.openaiWSPassthroughDialer = dialer
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	serverErr := runIngressProxyWithFirstPayload(
+		t,
+		svc,
+		account,
+		`{"type":"response.create","stream":false,"input":[]}`,
+	)
+	var closeErr *OpenAIWSClientCloseError
+	require.ErrorAs(t, serverErr, &closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, closeErr.StatusCode())
+	require.Contains(t, closeErr.Reason(), "model is required")
+	require.Equal(t, 0, dialer.DialCount())
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughFunctionCallOutputNoRecoveryReject(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	svc := buildIngressPolicyTestService(cfg)
+	dialer := &openAIWSAlwaysFailDialer{}
+	svc.openaiWSPassthroughDialer = dialer
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	serverErr := runIngressProxyWithFirstPayload(
+		t,
+		svc,
+		account,
+		`{"type":"response.create","model":"gpt-5.1","stream":false,"input":[{"type":"function_call_output","call_id":"call_abc","output":"ok"}]}`,
+	)
+	require.Error(t, serverErr)
+	require.Contains(t, serverErr.Error(), "openai ws passthrough dial")
+	require.NotContains(t, serverErr.Error(), "tool_output_not_found")
+	require.NotContains(t, serverErr.Error(), "previous_response_not_found")
+	require.Equal(t, 1, dialer.DialCount())
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughDoesNotTouchStateStore(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	svc := buildIngressPolicyTestService(cfg)
+	dialer := &openAIWSAlwaysFailDialer{}
+	svc.openaiWSPassthroughDialer = dialer
+	svc.openaiWSStateStore = &openAIWSPassthroughPanicStateStore{}
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	serverErr := runIngressProxyWithFirstPayload(
+		t,
+		svc,
+		account,
+		`{"type":"response.create","model":"gpt-5.1","stream":false}`,
+	)
+	require.Error(t, serverErr)
+	require.Contains(t, serverErr.Error(), "openai ws passthrough dial")
+	require.Equal(t, 1, dialer.DialCount())
 }

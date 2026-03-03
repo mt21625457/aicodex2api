@@ -240,6 +240,17 @@ func TestAccount_ResolveOpenAIResponsesWebSocketV2Mode(t *testing.T) {
 		require.Equal(t, OpenAIWSIngressModeCtxPool, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeOff))
 	})
 
+	t.Run("passthrough mode field is recognized", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+			},
+		}
+		require.Equal(t, OpenAIWSIngressModePassthrough, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeOff))
+	})
+
 	t.Run("legacy enabled maps to ctx_pool when default is off", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,

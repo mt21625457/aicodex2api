@@ -788,7 +788,7 @@ func TestToolOutputRecovery_OldCodeWouldFail_Regression(t *testing.T) {
 	require.False(t, removed, "payload 中无 previous_response_id 时 drop 返回 removed=false")
 
 	// 旧代码：!removed → return false（恢复失败）
-	oldCodeResult := !(dropErr != nil || !removed) // 旧条件：dropErr != nil || !removed
+	oldCodeResult := dropErr == nil && removed // 旧条件：dropErr != nil || !removed
 	require.False(t, oldCodeResult, "旧代码在此场景会失败（return false）")
 
 	// 新代码行为：先检查 currentPreviousResponseID，为空时跳过 drop

@@ -35,6 +35,29 @@ type OpenAIGatewayHandler struct {
 	concurrencyHelper       *ConcurrencyHelper
 	cfg                     *config.Config
 	maxAccountSwitches      int
+
+	// Test hooks for websocket ingress path. Production keeps them nil.
+	wsSelectAccountWithSchedulerFn func(
+		ctx context.Context,
+		groupID *int64,
+		previousResponseID string,
+		sessionHash string,
+		requestedModel string,
+		excludedIDs map[int64]struct{},
+		requiredTransport service.OpenAIUpstreamTransport,
+	) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error)
+	wsBindStickySessionFn func(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error
+	wsGetAccessTokenFn    func(ctx context.Context, account *service.Account) (string, string, error)
+	wsProxyResponsesWSFn  func(
+		ctx context.Context,
+		c *gin.Context,
+		clientConn *coderws.Conn,
+		account *service.Account,
+		token string,
+		firstClientMessageType coderws.MessageType,
+		firstClientMessage []byte,
+		hooks *service.OpenAIWSIngressHooks,
+	) error
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -621,10 +644,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
 	previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
-	if previousResponseID != "" && previousResponseIDKind == service.OpenAIPreviousResponseIDKindMessageID {
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "previous_response_id must be a response.id (resp_*), not a message id")
-		return
-	}
 	reqLog = reqLog.With(
 		zap.Bool("ws_ingress", true),
 		zap.String("model", reqModel),
@@ -672,7 +691,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		firstMessage,
 		openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID),
 	)
-	selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+	selection, scheduleDecision, err := h.wsSelectAccountWithScheduler(
 		ctx,
 		apiKey.GroupID,
 		previousResponseID,
@@ -724,11 +743,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		accountReleaseFunc = fastReleaseFunc
 	}
 	currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
-	if err := h.gatewayService.BindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
+	if err := h.wsBindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.websocket_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
 
-	token, _, err := h.gatewayService.GetAccessToken(ctx, account)
+	token, _, err := h.wsGetAccessToken(ctx, account)
 	if err != nil {
 		reqLog.Warn("openai.websocket_get_access_token_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		closeOpenAIClientWS(wsConn, coderws.StatusInternalError, "failed to get access token")
@@ -745,43 +764,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	)
 
 	var turnScheduleReported atomic.Bool
-	hooks := &service.OpenAIWSIngressHooks{
-		BeforeTurn: func(turn int) error {
-			if turn == 1 {
-				return nil
+	afterTurn := func(releaseSlots bool) func(turn int, result *service.OpenAIForwardResult, turnErr error) {
+		return func(turn int, result *service.OpenAIForwardResult, turnErr error) {
+			if releaseSlots {
+				releaseTurnSlots()
 			}
-			if err := h.billingCacheService.CheckBillingEligibility(ctx, apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
-				return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "billing check failed", err)
-			}
-			// 防御式清理：避免异常路径下旧槽位覆盖导致泄漏。
-			releaseTurnSlots()
-			// 非首轮 turn 需要重新抢占并发槽位，避免长连接空闲占槽。
-			userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlot(ctx, subject.UserID, subject.Concurrency)
-			if err != nil {
-				return service.NewOpenAIWSClientCloseError(coderws.StatusInternalError, "failed to acquire user concurrency slot", err)
-			}
-			if !userAcquired {
-				return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "too many concurrent requests, please retry later", nil)
-			}
-			accountReleaseFunc, accountAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(ctx, account.ID, accountMaxConcurrency)
-			if err != nil {
-				if userReleaseFunc != nil {
-					userReleaseFunc()
-				}
-				return service.NewOpenAIWSClientCloseError(coderws.StatusInternalError, "failed to acquire account concurrency slot", err)
-			}
-			if !accountAcquired {
-				if userReleaseFunc != nil {
-					userReleaseFunc()
-				}
-				return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "account is busy, please retry later", nil)
-			}
-			currentUserRelease = wrapReleaseOnDone(ctx, userReleaseFunc)
-			currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
-			return nil
-		},
-		AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
-			releaseTurnSlots()
 			if turnErr != nil {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
 				turnScheduleReported.Store(true)
@@ -838,26 +825,78 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					)
 				}
 			})
-		},
+		}
 	}
-
-	if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, firstMessage, hooks); err != nil {
+	handleProxyError := func(proxyErr error) {
 		if !turnScheduleReported.Load() {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil, reqModel, 0)
 		}
-		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+		closeStatus, closeReason := summarizeWSCloseErrorForLog(proxyErr)
 		reqLog.Warn("openai.websocket_proxy_failed",
 			zap.Int64("account_id", account.ID),
-			zap.Error(err),
+			zap.Error(proxyErr),
 			zap.String("close_status", closeStatus),
 			zap.String("close_reason", closeReason),
 		)
 		var closeErr *service.OpenAIWSClientCloseError
-		if errors.As(err, &closeErr) {
+		if errors.As(proxyErr, &closeErr) {
 			closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
 			return
 		}
 		closeOpenAIClientWS(wsConn, coderws.StatusInternalError, "upstream websocket proxy failed")
+	}
+	if wsIngressMode == service.OpenAIWSIngressModePassthrough {
+		passthroughHooks := &service.OpenAIWSIngressHooks{
+			AfterTurn: afterTurn(false),
+		}
+		if err := h.wsProxyResponses(ctx, c, wsConn, account, token, msgType, firstMessage, passthroughHooks); err != nil {
+			handleProxyError(err)
+			return
+		}
+		reqLog.Info("openai.websocket_ingress_closed", zap.Int64("account_id", account.ID))
+		return
+	}
+
+	hooks := &service.OpenAIWSIngressHooks{
+		BeforeTurn: func(turn int) error {
+			if turn == 1 {
+				return nil
+			}
+			if err := h.billingCacheService.CheckBillingEligibility(ctx, apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
+				return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "billing check failed", err)
+			}
+			// 防御式清理：避免异常路径下旧槽位覆盖导致泄漏。
+			releaseTurnSlots()
+			// 非首轮 turn 需要重新抢占并发槽位，避免长连接空闲占槽。
+			userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlot(ctx, subject.UserID, subject.Concurrency)
+			if err != nil {
+				return service.NewOpenAIWSClientCloseError(coderws.StatusInternalError, "failed to acquire user concurrency slot", err)
+			}
+			if !userAcquired {
+				return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "too many concurrent requests, please retry later", nil)
+			}
+			accountReleaseFunc, accountAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(ctx, account.ID, accountMaxConcurrency)
+			if err != nil {
+				if userReleaseFunc != nil {
+					userReleaseFunc()
+				}
+				return service.NewOpenAIWSClientCloseError(coderws.StatusInternalError, "failed to acquire account concurrency slot", err)
+			}
+			if !accountAcquired {
+				if userReleaseFunc != nil {
+					userReleaseFunc()
+				}
+				return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "account is busy, please retry later", nil)
+			}
+			currentUserRelease = wrapReleaseOnDone(ctx, userReleaseFunc)
+			currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
+			return nil
+		},
+		AfterTurn: afterTurn(true),
+	}
+
+	if err := h.wsProxyResponses(ctx, c, wsConn, account, token, msgType, firstMessage, hooks); err != nil {
+		handleProxyError(err)
 		return
 	}
 	reqLog.Info("openai.websocket_ingress_closed", zap.Int64("account_id", account.ID))
@@ -1080,6 +1119,93 @@ func openAIWSIngressFallbackSessionSeed(userID, apiKeyID int64, groupID *int64) 
 		gid = *groupID
 	}
 	return fmt.Sprintf("openai_ws_ingress:%d:%d:%d", gid, userID, apiKeyID)
+}
+
+func (h *OpenAIGatewayHandler) wsSelectAccountWithScheduler(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport service.OpenAIUpstreamTransport,
+) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error) {
+	if h != nil && h.wsSelectAccountWithSchedulerFn != nil {
+		return h.wsSelectAccountWithSchedulerFn(
+			ctx,
+			groupID,
+			previousResponseID,
+			sessionHash,
+			requestedModel,
+			excludedIDs,
+			requiredTransport,
+		)
+	}
+	return h.gatewayService.SelectAccountWithScheduler(
+		ctx,
+		groupID,
+		previousResponseID,
+		sessionHash,
+		requestedModel,
+		excludedIDs,
+		requiredTransport,
+	)
+}
+
+func (h *OpenAIGatewayHandler) wsBindStickySession(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	accountID int64,
+) error {
+	if h != nil && h.wsBindStickySessionFn != nil {
+		return h.wsBindStickySessionFn(ctx, groupID, sessionHash, accountID)
+	}
+	return h.gatewayService.BindStickySession(ctx, groupID, sessionHash, accountID)
+}
+
+func (h *OpenAIGatewayHandler) wsGetAccessToken(
+	ctx context.Context,
+	account *service.Account,
+) (string, string, error) {
+	if h != nil && h.wsGetAccessTokenFn != nil {
+		return h.wsGetAccessTokenFn(ctx, account)
+	}
+	return h.gatewayService.GetAccessToken(ctx, account)
+}
+
+func (h *OpenAIGatewayHandler) wsProxyResponses(
+	ctx context.Context,
+	c *gin.Context,
+	clientConn *coderws.Conn,
+	account *service.Account,
+	token string,
+	firstClientMessageType coderws.MessageType,
+	firstClientMessage []byte,
+	hooks *service.OpenAIWSIngressHooks,
+) error {
+	if h != nil && h.wsProxyResponsesWSFn != nil {
+		return h.wsProxyResponsesWSFn(
+			ctx,
+			c,
+			clientConn,
+			account,
+			token,
+			firstClientMessageType,
+			firstClientMessage,
+			hooks,
+		)
+	}
+	return h.gatewayService.ProxyResponsesWebSocketFromClient(
+		ctx,
+		c,
+		clientConn,
+		account,
+		token,
+		firstClientMessageType,
+		firstClientMessage,
+		hooks,
+	)
 }
 
 func (h *OpenAIGatewayHandler) resolveOpenAIWSIngressMode(account *service.Account) (mode string, modeRouterV2Enabled bool) {

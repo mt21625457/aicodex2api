@@ -927,6 +927,7 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import Icon from '@/components/icons/Icon.vue'
 import {
+  OPENAI_WS_MODE_PASSTHROUGH,
   OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF
 } from '@/utils/openaiWsMode'
@@ -1259,7 +1260,8 @@ const statusOptions = computed(() => [
 
 const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
-  { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') }
+  { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') },
+  { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
 ])
 
 const scopePlatformLabel = computed(() => {

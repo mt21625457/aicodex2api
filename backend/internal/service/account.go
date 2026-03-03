@@ -852,10 +852,11 @@ func (a *Account) IsOpenAIResponsesWebSocketV2Enabled() bool {
 }
 
 const (
-	OpenAIWSIngressModeOff       = "off"
-	OpenAIWSIngressModeShared    = "shared"
-	OpenAIWSIngressModeDedicated = "dedicated"
-	OpenAIWSIngressModeCtxPool   = "ctx_pool"
+	OpenAIWSIngressModeOff         = "off"
+	OpenAIWSIngressModeShared      = "shared"
+	OpenAIWSIngressModeDedicated   = "dedicated"
+	OpenAIWSIngressModeCtxPool     = "ctx_pool"
+	OpenAIWSIngressModePassthrough = "passthrough"
 )
 
 func normalizeOpenAIWSIngressMode(mode string) string {
@@ -864,6 +865,8 @@ func normalizeOpenAIWSIngressMode(mode string) string {
 		return OpenAIWSIngressModeOff
 	case OpenAIWSIngressModeCtxPool:
 		return OpenAIWSIngressModeCtxPool
+	case OpenAIWSIngressModePassthrough:
+		return OpenAIWSIngressModePassthrough
 	case OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
 		// Deprecated: shared/dedicated 已废弃，平滑迁移到 ctx_pool
 		return OpenAIWSIngressModeCtxPool
@@ -879,7 +882,7 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 	return OpenAIWSIngressModeOff
 }
 
-// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/ctx_pool）。
+// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/ctx_pool/passthrough）。
 //
 // 优先级：
 // 1. 分类型 mode 新字段（string）
