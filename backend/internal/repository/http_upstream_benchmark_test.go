@@ -45,7 +45,7 @@ func BenchmarkHTTPUpstreamProxyClient(b *testing.B) {
 		settings := defaultPoolSettings(cfg)
 		for i := 0; i < b.N; i++ {
 			// 每次迭代都创建新客户端，包含 Transport 分配
-			transport, err := buildUpstreamTransport(settings, parsedProxy)
+			transport, err := buildUpstreamTransport(settings, parsedProxy, upstreamProtocolModeDefault)
 			if err != nil {
 				b.Fatalf("创建 Transport 失败: %v", err)
 			}
@@ -59,10 +59,7 @@ func BenchmarkHTTPUpstreamProxyClient(b *testing.B) {
 	// 模拟优化后的行为，从缓存获取客户端
 	b.Run("复用", func(b *testing.B) {
 		// 预热：确保客户端已缓存
-		entry, err := svc.getOrCreateClient(proxyURL, 1, 1)
-		if err != nil {
-			b.Fatalf("getOrCreateClient: %v", err)
-		}
+		entry := svc.getOrCreateClient(proxyURL, 1, 1)
 		client := entry.client
 		b.ResetTimer() // 重置计时器，排除预热时间
 		for i := 0; i < b.N; i++ {

@@ -43,7 +43,7 @@ type GenerateRedeemCodesRequest struct {
 // CreateAndRedeemCodeRequest represents creating a fixed code and redeeming it for a target user.
 type CreateAndRedeemCodeRequest struct {
 	Code   string  `json:"code" binding:"required,min=3,max=128"`
-	Type   string  `json:"type" binding:"required,oneof=balance concurrency subscription invitation"`
+	Type   string  `json:"type" binding:"required,oneof=balance concurrency"`
 	Value  float64 `json:"value" binding:"required,gt=0"`
 	UserID int64   `json:"user_id" binding:"required,gt=0"`
 	Notes  string  `json:"notes"`
@@ -136,6 +136,10 @@ func (h *RedeemHandler) CreateAndRedeem(c *gin.Context) {
 		return
 	}
 	req.Code = strings.TrimSpace(req.Code)
+	if len(req.Code) < 3 || len(req.Code) > 128 {
+		response.BadRequest(c, "Invalid request: code length must be between 3 and 128")
+		return
+	}
 
 	executeAdminIdempotentJSON(c, "admin.redeem_codes.create_and_redeem", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		existing, err := h.redeemService.GetByCode(ctx, req.Code)

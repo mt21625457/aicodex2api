@@ -6,9 +6,17 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+)
+
+const (
+	tokenRefreshDistributedLockPlatform = "token_refresh"
+	tokenRefreshDistributedLockMinTTL   = 30 * time.Second
+	tokenRefreshDistributedLockMaxTTL   = 10 * time.Minute
+	tokenRefreshDistributedLockTimeout  = 2 * time.Second
 )
 
 // TokenRefreshService OAuth token自动刷新服务
@@ -20,8 +28,9 @@ type TokenRefreshService struct {
 	cacheInvalidator TokenCacheInvalidator
 	schedulerCache   SchedulerCache // 用于同步更新调度器缓存，解决 token 刷新后缓存不一致问题
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // NewTokenRefreshService 创建token刷新服务
@@ -87,7 +96,12 @@ func (s *TokenRefreshService) Start() {
 
 // Stop 停止刷新服务
 func (s *TokenRefreshService) Stop() {
-	close(s.stopCh)
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+	})
 	s.wg.Wait()
 	slog.Info("token_refresh.service_stopped")
 }
@@ -118,9 +132,24 @@ func (s *TokenRefreshService) refreshLoop() {
 	}
 }
 
+// refreshTask 封装一个待刷新的账号及其对应的刷新器
+type refreshTask struct {
+	account   *Account
+	refresher TokenRefresher
+}
+
 // processRefresh 执行一次刷新检查
+// 分两阶段：先串行收集需刷新的账号，再并行执行刷新（信号量限制并发数）
 func (s *TokenRefreshService) processRefresh() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-s.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	// 计算刷新窗口
 	refreshWindow := time.Duration(s.cfg.RefreshBeforeExpiryHours * float64(time.Hour))
@@ -128,68 +157,188 @@ func (s *TokenRefreshService) processRefresh() {
 	// 获取所有active状态的账号
 	accounts, err := s.listActiveAccounts(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			slog.Info("token_refresh.cycle_interrupted_by_stop")
+			return
+		}
 		slog.Error("token_refresh.list_accounts_failed", "error", err)
 		return
 	}
 
 	totalAccounts := len(accounts)
-	oauthAccounts := 0 // 可刷新的OAuth账号数
-	needsRefresh := 0  // 需要刷新的账号数
-	refreshed, failed := 0, 0
+
+	// Phase 1: 收集需要刷新的账号（轻量操作，仍串行）
+	var tasks []refreshTask
+	oauthAccounts := 0
 
 	for i := range accounts {
 		account := &accounts[i]
-
-		// 遍历所有刷新器，找到能处理此账号的
 		for _, refresher := range s.refreshers {
 			if !refresher.CanRefresh(account) {
 				continue
 			}
-
 			oauthAccounts++
-
-			// 检查是否需要刷新
-			if !refresher.NeedsRefresh(account, refreshWindow) {
-				break // 不需要刷新，跳过
+			if refresher.NeedsRefresh(account, refreshWindow) {
+				if !s.tryAcquireDistributedRefreshLock(ctx, account) {
+					break
+				}
+				tasks = append(tasks, refreshTask{account: account, refresher: refresher})
 			}
-
-			needsRefresh++
-
-			// 执行刷新
-			if err := s.refreshWithRetry(ctx, account, refresher); err != nil {
-				slog.Warn("token_refresh.account_refresh_failed",
-					"account_id", account.ID,
-					"account_name", account.Name,
-					"error", err,
-				)
-				failed++
-			} else {
-				slog.Info("token_refresh.account_refreshed",
-					"account_id", account.ID,
-					"account_name", account.Name,
-				)
-				refreshed++
-			}
-
-			// 每个账号只由一个refresher处理
-			break
+			break // 每个账号只由一个refresher处理
 		}
 	}
 
-	// 无刷新活动时降级为 Debug，有实际刷新活动时保持 Info
-	if needsRefresh == 0 && failed == 0 {
+	needsRefresh := len(tasks)
+	if needsRefresh == 0 {
 		slog.Debug("token_refresh.cycle_completed",
 			"total", totalAccounts, "oauth", oauthAccounts,
-			"needs_refresh", needsRefresh, "refreshed", refreshed, "failed", failed)
+			"needs_refresh", 0, "refreshed", 0, "failed", 0)
+		return
+	}
+
+	// Phase 2: 并行刷新（带信号量限制）
+	const maxConcurrency = 10
+	sem := make(chan struct{}, maxConcurrency)
+	var refreshed, failed atomic.Int64
+	var wg sync.WaitGroup
+	interrupted := false
+
+submitLoop:
+	for _, task := range tasks {
+		// 检查停止信号
+		select {
+		case <-s.stopCh:
+			slog.Info("token_refresh.cycle_interrupted_by_stop")
+			interrupted = true
+			break submitLoop
+		default:
+		}
+
+		select {
+		case sem <- struct{}{}: // 获取信号量
+		case <-s.stopCh:
+			slog.Info("token_refresh.cycle_interrupted_by_stop")
+			interrupted = true
+			break submitLoop
+		case <-ctx.Done():
+			interrupted = true
+			break submitLoop
+		}
+
+		wg.Add(1)
+		go func(t refreshTask) {
+			defer func() {
+				<-sem // 释放信号量
+				wg.Done()
+			}()
+
+			if err := s.refreshWithRetry(ctx, t.account, t.refresher); err != nil {
+				slog.Warn("token_refresh.account_refresh_failed",
+					"account_id", t.account.ID,
+					"account_name", t.account.Name,
+					"error", err,
+				)
+				failed.Add(1)
+			} else {
+				slog.Info("token_refresh.account_refreshed",
+					"account_id", t.account.ID,
+					"account_name", t.account.Name,
+				)
+				refreshed.Add(1)
+			}
+		}(task)
+	}
+
+	wg.Wait()
+
+	r, f := int(refreshed.Load()), int(failed.Load())
+	if interrupted {
+		slog.Info("token_refresh.cycle_wait_completed_after_stop",
+			"needs_refresh", needsRefresh, "refreshed", r, "failed", f)
+	}
+	if needsRefresh == 0 && f == 0 {
+		slog.Debug("token_refresh.cycle_completed",
+			"total", totalAccounts, "oauth", oauthAccounts,
+			"needs_refresh", needsRefresh, "refreshed", r, "failed", f)
 	} else {
 		slog.Info("token_refresh.cycle_completed",
-			"total", totalAccounts,
-			"oauth", oauthAccounts,
-			"needs_refresh", needsRefresh,
-			"refreshed", refreshed,
-			"failed", failed,
-		)
+			"total", totalAccounts, "oauth", oauthAccounts,
+			"needs_refresh", needsRefresh, "refreshed", r, "failed", f)
 	}
+}
+
+func (s *TokenRefreshService) tryAcquireDistributedRefreshLock(ctx context.Context, account *Account) bool {
+	if s == nil || account == nil || account.ID <= 0 || s.schedulerCache == nil {
+		return true
+	}
+	lockTTL := s.tokenRefreshDistributedLockTTL()
+	if lockTTL <= 0 {
+		return true
+	}
+	lockCtx := ctx
+	if lockCtx == nil {
+		lockCtx = context.Background()
+	}
+	lockCtx, cancel := context.WithTimeout(lockCtx, tokenRefreshDistributedLockTimeout)
+	defer cancel()
+
+	lockBucket := SchedulerBucket{
+		GroupID:  account.ID,
+		Platform: tokenRefreshDistributedLockPlatform,
+		Mode:     normalizeTokenRefreshLockMode(account.Platform),
+	}
+	locked, err := s.schedulerCache.TryLockBucket(lockCtx, lockBucket, lockTTL)
+	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			slog.Info("token_refresh.distributed_lock_canceled",
+				"account_id", account.ID,
+				"platform", account.Platform,
+				"error", err,
+			)
+			return false
+		}
+		slog.Warn("token_refresh.distributed_lock_failed",
+			"account_id", account.ID,
+			"platform", account.Platform,
+			"error", err,
+			"fail_open", true,
+		)
+		return true
+	}
+	if !locked {
+		slog.Debug("token_refresh.distributed_lock_held",
+			"account_id", account.ID,
+			"platform", account.Platform,
+		)
+		return false
+	}
+	return true
+}
+
+func normalizeTokenRefreshLockMode(platform string) string {
+	mode := strings.TrimSpace(platform)
+	if mode == "" {
+		return "unknown"
+	}
+	return mode
+}
+
+func (s *TokenRefreshService) tokenRefreshDistributedLockTTL() time.Duration {
+	if s == nil || s.cfg == nil {
+		return tokenRefreshDistributedLockMinTTL
+	}
+	checkInterval := time.Duration(s.cfg.CheckIntervalMinutes) * time.Minute
+	if checkInterval <= 0 {
+		return tokenRefreshDistributedLockMinTTL
+	}
+	ttl := checkInterval / 2
+	if ttl < tokenRefreshDistributedLockMinTTL {
+		ttl = tokenRefreshDistributedLockMinTTL
+	}
+	if ttl > tokenRefreshDistributedLockMaxTTL {
+		ttl = tokenRefreshDistributedLockMaxTTL
+	}
+	return ttl
 }
 
 // listActiveAccounts 获取所有active状态的账号
@@ -281,7 +430,9 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 		if attempt < s.cfg.MaxRetries {
 			// 指数退避：2^(attempt-1) * baseSeconds
 			backoff := time.Duration(s.cfg.RetryBackoffSeconds) * time.Second * time.Duration(1<<(attempt-1))
-			time.Sleep(backoff)
+			if err := s.waitRetryBackoff(ctx, backoff); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -304,6 +455,23 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 	}
 
 	return lastErr
+}
+
+func (s *TokenRefreshService) waitRetryBackoff(ctx context.Context, backoff time.Duration) error {
+	if backoff <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-s.stopCh:
+		return context.Canceled
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // isNonRetryableRefreshError 判断是否为不可重试的刷新错误

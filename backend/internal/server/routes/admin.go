@@ -26,6 +26,9 @@ func RegisterAdminRoutes(
 		// 分组管理
 		registerGroupRoutes(admin, h)
 
+		// API Key 管理
+		registerAdminAPIKeyRoutes(admin, h)
+
 		// 账号管理
 		registerAccountRoutes(admin, h)
 
@@ -75,16 +78,6 @@ func RegisterAdminRoutes(
 
 		// 错误透传规则管理
 		registerErrorPassthroughRoutes(admin, h)
-
-		// API Key 管理
-		registerAdminAPIKeyRoutes(admin, h)
-	}
-}
-
-func registerAdminAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
-	apiKeys := admin.Group("/api-keys")
-	{
-		apiKeys.PUT("/:id", h.Admin.APIKey.UpdateGroup)
 	}
 }
 
@@ -96,6 +89,7 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		ops.GET("/user-concurrency", h.Admin.Ops.GetUserConcurrencyStats)
 		ops.GET("/account-availability", h.Admin.Ops.GetAccountAvailability)
 		ops.GET("/realtime-traffic", h.Admin.Ops.GetRealtimeTrafficSummary)
+		ops.GET("/openai-ws-v2/passthrough-metrics", h.Admin.Ops.GetOpenAIWSV2PassthroughMetrics)
 
 		// Alerts (rules + events)
 		ops.GET("/alert-rules", h.Admin.Ops.ListAlertRules)
@@ -224,6 +218,13 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.DELETE("/:id", h.Admin.Group.Delete)
 		groups.GET("/:id/stats", h.Admin.Group.GetStats)
 		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
+	}
+}
+
+func registerAdminAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	apiKeys := admin.Group("/api-keys")
+	{
+		apiKeys.PUT("/:id", h.Admin.APIKey.UpdateGroup)
 	}
 }
 
@@ -386,6 +387,18 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)
+		// 批量编辑模板库（服务端共享）
+		adminSettings.GET("/bulk-edit-templates", h.Admin.Setting.ListBulkEditTemplates)
+		adminSettings.POST("/bulk-edit-templates", h.Admin.Setting.UpsertBulkEditTemplate)
+		adminSettings.DELETE("/bulk-edit-templates/:template_id", h.Admin.Setting.DeleteBulkEditTemplate)
+		adminSettings.GET(
+			"/bulk-edit-templates/:template_id/versions",
+			h.Admin.Setting.ListBulkEditTemplateVersions,
+		)
+		adminSettings.POST(
+			"/bulk-edit-templates/:template_id/rollback",
+			h.Admin.Setting.RollbackBulkEditTemplate,
+		)
 		// Sora S3 存储配置
 		adminSettings.GET("/sora-s3", h.Admin.Setting.GetSoraS3Settings)
 		adminSettings.PUT("/sora-s3", h.Admin.Setting.UpdateSoraS3Settings)

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
 	coderws "github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -77,8 +78,9 @@ func (d *coderOpenAIWSClientDialer) Dial(
 	}
 
 	opts := &coderws.DialOptions{
-		HTTPHeader:      cloneHeader(headers),
-		CompressionMode: coderws.CompressionContextTakeover,
+		HTTPHeader: cloneHeader(headers),
+		// 高频长连接场景优先降低内存/CPU 抖动，避免 context takeover 带来的状态累积。
+		CompressionMode: coderws.CompressionNoContextTakeover,
 	}
 	if proxy := strings.TrimSpace(proxyURL); proxy != "" {
 		proxyClient, err := d.proxyHTTPClient(proxy)
@@ -230,6 +232,9 @@ func (d *coderOpenAIWSClientDialer) SnapshotTransportMetrics() OpenAIWSTransport
 	}
 }
 
+// 编译期断言：coderOpenAIWSClientConn 必须实现 openai_ws_v2.FrameConn 接口（passthrough 路径依赖）。
+var _ openaiwsv2.FrameConn = (*coderOpenAIWSClientConn)(nil)
+
 type coderOpenAIWSClientConn struct {
 	conn *coderws.Conn
 }
@@ -262,6 +267,30 @@ func (c *coderOpenAIWSClientConn) ReadMessage(ctx context.Context) ([]byte, erro
 	default:
 		return nil, errOpenAIWSConnClosed
 	}
+}
+
+func (c *coderOpenAIWSClientConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	if c == nil || c.conn == nil {
+		return coderws.MessageText, nil, errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	msgType, payload, err := c.conn.Read(ctx)
+	if err != nil {
+		return coderws.MessageText, nil, err
+	}
+	return msgType, payload, nil
+}
+
+func (c *coderOpenAIWSClientConn) WriteFrame(ctx context.Context, msgType coderws.MessageType, payload []byte) error {
+	if c == nil || c.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.conn.Write(ctx, msgType, payload)
 }
 
 func (c *coderOpenAIWSClientConn) Ping(ctx context.Context) error {

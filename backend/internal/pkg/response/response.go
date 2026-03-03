@@ -2,6 +2,8 @@
 package response
 
 import (
+	"context"
+	"errors"
 	"log"
 	"math"
 	"net/http"
@@ -75,15 +77,43 @@ func ErrorFrom(c *gin.Context, err error) bool {
 		return false
 	}
 
-	statusCode, status := infraerrors.ToHTTP(err)
+	normalizedErr := normalizeHTTPError(c, err)
+	statusCode, status := infraerrors.ToHTTP(normalizedErr)
 
 	// Log internal errors with full details for debugging
 	if statusCode >= 500 && c.Request != nil {
-		log.Printf("[ERROR] %s %s\n  Error: %s", c.Request.Method, c.Request.URL.Path, logredact.RedactText(err.Error()))
+		log.Printf("[ERROR] %s %s\n  Error: %s", c.Request.Method, c.Request.URL.Path, logredact.RedactText(normalizedErr.Error()))
 	}
 
 	ErrorWithDetails(c, statusCode, status.Message, status.Reason, status.Metadata)
 	return true
+}
+
+func normalizeHTTPError(c *gin.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if c == nil || c.Request == nil {
+		return err
+	}
+	if isClientCanceledError(c.Request.Context(), err) {
+		return infraerrors.ClientClosed("CLIENT_CLOSED", "client closed request").WithCause(err)
+	}
+	return err
+}
+
+func isClientCanceledError(reqCtx context.Context, err error) bool {
+	if reqCtx == nil {
+		return false
+	}
+	// 只有请求上下文本身被取消时，才认为是客户端断开；
+	// 避免将服务端主动 cancel 导致的 context.Canceled 误归为 499。
+	if errors.Is(err, context.Canceled) && errors.Is(reqCtx.Err(), context.Canceled) {
+		return true
+	}
+
+	// Some drivers can surface deadline errors after the request context was already canceled.
+	return errors.Is(err, context.DeadlineExceeded) && errors.Is(reqCtx.Err(), context.Canceled)
 }
 
 // BadRequest 返回400错误

@@ -63,11 +63,11 @@ func NewDataManagementService() *DataManagementService {
 }
 
 func NewDataManagementServiceWithOptions(socketPath string, dialTimeout time.Duration) *DataManagementService {
-	_ = dialTimeout
 	path := strings.TrimSpace(socketPath)
 	if path == "" {
 		path = DefaultDataManagementAgentSocketPath
 	}
+	_ = dialTimeout
 	return &DataManagementService{
 		socketPath: path,
 	}

@@ -15,6 +15,20 @@ const (
 	claudeLockWaitTime     = 200 * time.Millisecond
 )
 
+func waitClaudeLockRetry(ctx context.Context, wait time.Duration) error {
+	if wait <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // ClaudeTokenCache Token 缓存接口（复用 GeminiTokenCache 接口定义）
 type ClaudeTokenCache = GeminiTokenCache
 
@@ -168,7 +182,9 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 			}
 		} else {
 			// 锁获取失败（被其他 worker 持有），等待 200ms 后重试读取缓存
-			time.Sleep(claudeLockWaitTime)
+			if waitErr := waitClaudeLockRetry(ctx, claudeLockWaitTime); waitErr != nil {
+				return "", waitErr
+			}
 			if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
 				slog.Debug("claude_token_cache_hit_after_wait", "account_id", account.ID)
 				return token, nil

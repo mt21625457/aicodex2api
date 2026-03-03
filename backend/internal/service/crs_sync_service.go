@@ -221,7 +221,7 @@ func (s *CRSSyncService) fetchCRSExport(ctx context.Context, baseURL, username, 
 		AllowPrivateHosts:  s.cfg.Security.URLAllowlist.AllowPrivateHosts,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create http client failed: %w", err)
+		client = &http.Client{Timeout: 20 * time.Second}
 	}
 
 	adminToken, err := crsLogin(ctx, client, normalizedURL, username, password)

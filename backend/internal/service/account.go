@@ -853,19 +853,24 @@ func (a *Account) IsOpenAIResponsesWebSocketV2Enabled() bool {
 }
 
 const (
-	OpenAIWSIngressModeOff       = "off"
-	OpenAIWSIngressModeShared    = "shared"
-	OpenAIWSIngressModeDedicated = "dedicated"
+	OpenAIWSIngressModeOff         = "off"
+	OpenAIWSIngressModeShared      = "shared"
+	OpenAIWSIngressModeDedicated   = "dedicated"
+	OpenAIWSIngressModeCtxPool     = "ctx_pool"
+	OpenAIWSIngressModePassthrough = "passthrough"
 )
 
 func normalizeOpenAIWSIngressMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case OpenAIWSIngressModeOff:
 		return OpenAIWSIngressModeOff
-	case OpenAIWSIngressModeShared:
-		return OpenAIWSIngressModeShared
-	case OpenAIWSIngressModeDedicated:
-		return OpenAIWSIngressModeDedicated
+	case OpenAIWSIngressModeCtxPool:
+		return OpenAIWSIngressModeCtxPool
+	case OpenAIWSIngressModePassthrough:
+		return OpenAIWSIngressModePassthrough
+	case OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
+		// Deprecated: shared/dedicated 已废弃，平滑迁移到 ctx_pool
+		return OpenAIWSIngressModeCtxPool
 	default:
 		return ""
 	}
@@ -875,16 +880,16 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 	if normalized := normalizeOpenAIWSIngressMode(mode); normalized != "" {
 		return normalized
 	}
-	return OpenAIWSIngressModeShared
+	return OpenAIWSIngressModeOff
 }
 
-// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/shared/dedicated）。
+// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/ctx_pool/passthrough）。
 //
 // 优先级：
 // 1. 分类型 mode 新字段（string）
 // 2. 分类型 enabled 旧字段（bool）
 // 3. 兼容 enabled 旧字段（bool）
-// 4. defaultMode（非法时回退 shared）
+// 4. defaultMode（非法时回退 off）
 func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
 	resolvedDefault := normalizeOpenAIWSIngressDefaultMode(defaultMode)
 	if a == nil || !a.IsOpenAI() {
@@ -919,7 +924,8 @@ func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) stri
 			return "", false
 		}
 		if enabled {
-			return OpenAIWSIngressModeShared, true
+			// 兼容旧 enabled 字段：开启时至少落到 ctx_pool。
+			return OpenAIWSIngressModeCtxPool, true
 		}
 		return OpenAIWSIngressModeOff, true
 	}
@@ -1295,12 +1301,6 @@ func parseExtraFloat64(value any) float64 {
 }
 
 // parseExtraInt 从 extra 字段解析 int 值
-// ParseExtraInt 从 extra 字段的 any 值解析为 int。
-// 支持 int, int64, float64, json.Number, string 类型，无法解析时返回 0。
-func ParseExtraInt(value any) int {
-	return parseExtraInt(value)
-}
-
 func parseExtraInt(value any) int {
 	switch v := value.(type) {
 	case int:

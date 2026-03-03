@@ -31,7 +31,8 @@ type stubAdminService struct {
 		platform  string
 		groupIDs  []int64
 	}
-	mu sync.Mutex
+	lastBulkUpdateInput *service.BulkUpdateAccountsInput
+	mu                  sync.Mutex
 }
 
 func newStubAdminService() *stubAdminService {
@@ -239,6 +240,9 @@ func (s *stubAdminService) BulkUpdateAccounts(ctx context.Context, input *servic
 	if s.bulkUpdateAccountErr != nil {
 		return nil, s.bulkUpdateAccountErr
 	}
+	s.mu.Lock()
+	s.lastBulkUpdateInput = input
+	s.mu.Unlock()
 	return &service.BulkUpdateAccountsResult{Success: len(input.AccountIDs), Failed: 0, SuccessIDs: input.AccountIDs}, nil
 }
 

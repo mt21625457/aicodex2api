@@ -162,12 +162,12 @@ func (r *stubUserRepoForQuota) ExistsByEmail(context.Context, string) (bool, err
 func (r *stubUserRepoForQuota) RemoveGroupFromAllowedGroups(context.Context, int64) (int64, error) {
 	return 0, nil
 }
-func (r *stubUserRepoForQuota) UpdateTotpSecret(context.Context, int64, *string) error { return nil }
-func (r *stubUserRepoForQuota) EnableTotp(context.Context, int64) error                { return nil }
-func (r *stubUserRepoForQuota) DisableTotp(context.Context, int64) error               { return nil }
 func (r *stubUserRepoForQuota) AddGroupToAllowedGroups(context.Context, int64, int64) error {
 	return nil
 }
+func (r *stubUserRepoForQuota) UpdateTotpSecret(context.Context, int64, *string) error { return nil }
+func (r *stubUserRepoForQuota) EnableTotp(context.Context, int64) error                { return nil }
+func (r *stubUserRepoForQuota) DisableTotp(context.Context, int64) error               { return nil }
 
 // ==================== 辅助函数：构造带 CDN 缓存的 SoraS3Storage ====================
 

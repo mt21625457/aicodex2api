@@ -31,14 +31,15 @@ func (s *BillingCacheSuite) TestUserBalance() {
 			},
 		},
 		{
-			name: "deduct_on_nonexistent_is_noop",
+			name: "deduct_on_nonexistent_returns_not_found",
 			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
 				userID := int64(1)
 				balanceKey := fmt.Sprintf("%s%d", billingBalanceKeyPrefix, userID)
 
-				require.NoError(s.T(), cache.DeductUserBalance(ctx, userID, 1), "DeductUserBalance should not error")
+				err := cache.DeductUserBalance(ctx, userID, 1)
+				require.ErrorIs(s.T(), err, service.ErrBalanceCacheNotFound, "DeductUserBalance on non-existent key should return ErrBalanceCacheNotFound")
 
-				_, err := rdb.Get(ctx, balanceKey).Result()
+				_, err = rdb.Get(ctx, balanceKey).Result()
 				require.ErrorIs(s.T(), err, redis.Nil, "expected missing key after deduct on non-existent")
 			},
 		},
@@ -278,8 +279,8 @@ func (s *BillingCacheSuite) TestSubscriptionCache() {
 	}
 }
 
-// TestDeductUserBalance_ErrorPropagation 验证 P2-12 修复：
-// Redis 真实错误应传播，key 不存在（redis.Nil）应返回 nil。
+// TestDeductUserBalance_ErrorPropagation 验证修复：
+// Redis 真实错误应传播，key 不存在应返回 ErrBalanceCacheNotFound。
 func (s *BillingCacheSuite) TestDeductUserBalance_ErrorPropagation() {
 	tests := []struct {
 		name      string
@@ -287,11 +288,11 @@ func (s *BillingCacheSuite) TestDeductUserBalance_ErrorPropagation() {
 		expectErr bool
 	}{
 		{
-			name: "key_not_exists_returns_nil",
+			name: "key_not_exists_returns_ErrBalanceCacheNotFound",
 			fn: func(ctx context.Context, cache service.BillingCache) {
-				// key 不存在时，Lua 脚本返回 0（redis.Nil），应返回 nil 而非错误
+				// key 不存在时，Lua 脚本返回 2，应返回 ErrBalanceCacheNotFound
 				err := cache.DeductUserBalance(ctx, 99999, 1.0)
-				require.NoError(s.T(), err, "DeductUserBalance on non-existent key should return nil")
+				require.ErrorIs(s.T(), err, service.ErrBalanceCacheNotFound, "DeductUserBalance on non-existent key should return ErrBalanceCacheNotFound")
 			},
 		},
 		{

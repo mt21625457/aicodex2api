@@ -800,6 +800,34 @@ func TestClaudeTokenProvider_Real_LockFailedWait(t *testing.T) {
 	require.NotEmpty(t, token)
 }
 
+func TestClaudeTokenProvider_Real_LockFailedWait_ContextCanceled(t *testing.T) {
+	cache := newClaudeTokenCacheStub()
+	cache.lockAcquired = false
+
+	expiresAt := time.Now().Add(1 * time.Minute).Format(time.RFC3339)
+	account := &Account{
+		ID:       3001,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "fallback-token",
+			"expires_at":   expiresAt,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	provider := NewClaudeTokenProvider(nil, cache, nil)
+	start := time.Now()
+	token, err := provider.GetAccessToken(ctx, account)
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, token)
+	require.Less(t, elapsed, claudeLockWaitTime/2, "context canceled should short-circuit lock wait")
+}
+
 func TestClaudeTokenProvider_Real_CacheHitAfterWait(t *testing.T) {
 	cache := newClaudeTokenCacheStub()
 	cache.lockAcquired = false // Lock acquisition fails

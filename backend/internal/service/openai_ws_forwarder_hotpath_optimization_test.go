@@ -2,9 +2,12 @@ package service
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestParseOpenAIWSEventEnvelope(t *testing.T) {
@@ -31,6 +34,15 @@ func TestParseOpenAIWSResponseUsageFromCompletedEvent(t *testing.T) {
 	require.Equal(t, 3, usage.CacheReadInputTokens)
 }
 
+func TestOpenAIWSEventShouldParseUsage_TerminalEvents(t *testing.T) {
+	require.True(t, openAIWSEventShouldParseUsage("response.completed"))
+	require.True(t, openAIWSEventShouldParseUsage("response.done"))
+	require.True(t, openAIWSEventShouldParseUsage("response.failed"))
+	// After removing TrimSpace, callers must provide pre-trimmed input.
+	require.False(t, openAIWSEventShouldParseUsage(" response.done "))
+	require.False(t, openAIWSEventShouldParseUsage("response.in_progress"))
+}
+
 func TestOpenAIWSErrorEventHelpers_ConsistentWithWrapper(t *testing.T) {
 	message := []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_request","message":"invalid input"}}`)
 	codeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
@@ -53,9 +65,60 @@ func TestOpenAIWSErrorEventHelpers_ConsistentWithWrapper(t *testing.T) {
 }
 
 func TestOpenAIWSMessageLikelyContainsToolCalls(t *testing.T) {
+	require.False(t, openAIWSMessageLikelyContainsToolCalls(nil))
 	require.False(t, openAIWSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_text.delta","delta":"hello"}`)))
 	require.True(t, openAIWSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_item.added","item":{"tool_calls":[{"id":"tc1"}]}}`)))
+	require.True(t, openAIWSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_item.added","item":{"type":"tool_call"}}`)))
 	require.True(t, openAIWSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_item.added","item":{"type":"function_call"}}`)))
+}
+
+func TestOpenAIWSExtractPendingFunctionCallIDsFromEvent(t *testing.T) {
+	callIDs := openAIWSExtractPendingFunctionCallIDsFromEvent([]byte(`{
+		"type":"response.output_item.added",
+		"response":{"id":"resp_1"},
+		"item":{"type":"function_call","call_id":"call_a"}
+	}`))
+	require.Equal(t, []string{"call_a"}, callIDs)
+
+	callIDs = openAIWSExtractPendingFunctionCallIDsFromEvent([]byte(`{
+		"type":"response.completed",
+		"response":{
+			"id":"resp_2",
+			"output":[
+				{"type":"function_call","call_id":"call_b"},
+				{"type":"message","content":[{"type":"output_text","text":"ok"}]},
+				{"type":"function_call","call_id":"call_c"}
+			]
+		}
+	}`))
+	require.Equal(t, []string{"call_b", "call_c"}, callIDs)
+}
+
+func TestOpenAIWSExtractFunctionCallOutputCallIDsFromPayload(t *testing.T) {
+	callIDs := openAIWSExtractFunctionCallOutputCallIDsFromPayload([]byte(`{
+		"input":[
+			{"type":"input_text","text":"hi"},
+			{"type":"function_call_output","call_id":"call_2","output":"ok"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"},
+			{"type":"function_call_output","call_id":"call_2","output":"dup"}
+		]
+	}`))
+	require.Equal(t, []string{"call_1", "call_2"}, callIDs)
+}
+
+func TestOpenAIWSInjectFunctionCallOutputItems(t *testing.T) {
+	updatedPayload, injected, err := openAIWSInjectFunctionCallOutputItems(
+		[]byte(`{"type":"response.create","input":[{"type":"input_text","text":"hello"}]}`),
+		[]string{"call_1", "call_2", "call_1"},
+		openAIWSAutoAbortedToolOutputValue,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 2, injected)
+	require.Equal(t, "input_text", gjson.GetBytes(updatedPayload, "input.0.type").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(updatedPayload, "input.1.type").String())
+	require.Equal(t, "call_1", gjson.GetBytes(updatedPayload, "input.1.call_id").String())
+	require.Equal(t, openAIWSAutoAbortedToolOutputValue, gjson.GetBytes(updatedPayload, "input.1.output").String())
+	require.Equal(t, "call_2", gjson.GetBytes(updatedPayload, "input.2.call_id").String())
 }
 
 func TestReplaceOpenAIWSMessageModel_OptimizedStillCorrect(t *testing.T) {
@@ -70,4 +133,46 @@ func TestReplaceOpenAIWSMessageModel_OptimizedStillCorrect(t *testing.T) {
 
 	both := []byte(`{"model":"gpt-5.1","response":{"model":"gpt-5.1"}}`)
 	require.Equal(t, `{"model":"custom-model","response":{"model":"custom-model"}}`, string(replaceOpenAIWSMessageModel(both, "gpt-5.1", "custom-model")))
+}
+
+func TestResolveOpenAIWSFirstMessageMeta_ContextPreferred(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	SetOpenAIWSFirstMessageMeta(c, "ctx_model", "resp_ctx", OpenAIPreviousResponseIDKindResponseID)
+
+	model, prevID, prevKind := ResolveOpenAIWSFirstMessageMeta(
+		c,
+		[]byte(`{"model":"payload_model","previous_response_id":"resp_payload"}`),
+	)
+	require.Equal(t, "ctx_model", model)
+	require.Equal(t, "resp_ctx", prevID)
+	require.Equal(t, OpenAIPreviousResponseIDKindResponseID, prevKind)
+
+	require.NotPanics(t, func() {
+		SetOpenAIWSFirstMessageMeta(nil, "m", "resp_x", OpenAIPreviousResponseIDKindResponseID)
+	})
+}
+
+func TestResolveOpenAIWSFirstMessageMeta_FallbackParse(t *testing.T) {
+	model, prevID, prevKind := ResolveOpenAIWSFirstMessageMeta(
+		nil,
+		[]byte(`{"model":"payload_model","previous_response_id":"resp_payload"}`),
+	)
+	require.Equal(t, "payload_model", model)
+	require.Equal(t, "resp_payload", prevID)
+	require.Equal(t, OpenAIPreviousResponseIDKindResponseID, prevKind)
+}
+
+func TestOpenAIWSHostPathForLogFromURL(t *testing.T) {
+	host, path := openAIWSHostPathForLogFromURL("wss://api.openai.com/v1/responses?stream=true")
+	require.Equal(t, "api.openai.com", host)
+	require.Equal(t, "/v1/responses", path)
+
+	host, path = openAIWSHostPathForLogFromURL("api.openai.com/v1/responses")
+	require.Equal(t, "api.openai.com", host)
+	require.Equal(t, "/v1/responses", path)
+
+	host, path = openAIWSHostPathForLogFromURL(" ")
+	require.Equal(t, "-", host)
+	require.Equal(t, "-", path)
 }

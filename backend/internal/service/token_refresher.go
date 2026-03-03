@@ -7,6 +7,18 @@ import (
 	"time"
 )
 
+const openAISoraSyncConcurrencyLimit = 8
+
+// needsRefreshWithoutExpiry 在 expires_at 缺失时判断是否需要刷新。
+// 通过 Account.UpdatedAt 避免每轮刷新周期都发起无效刷新：
+// 如果账号在 refreshWindow 内曾被更新，说明最近可能已刷新过，跳过本轮。
+func needsRefreshWithoutExpiry(account *Account, refreshWindow time.Duration) bool {
+	if refreshWindow <= 0 {
+		return true
+	}
+	return time.Since(account.UpdatedAt) >= refreshWindow
+}
+
 // TokenRefresher 定义平台特定的token刷新策略接口
 // 通过此接口可以扩展支持不同平台（Anthropic/OpenAI/Gemini）
 type TokenRefresher interface {
@@ -46,7 +58,8 @@ func (r *ClaudeTokenRefresher) CanRefresh(account *Account) bool {
 func (r *ClaudeTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
-		return false
+		// 无过期时间：如果账号近期已更新（可能刚刷新过），跳过本轮
+		return needsRefreshWithoutExpiry(account, refreshWindow)
 	}
 	return time.Until(*expiresAt) < refreshWindow
 }
@@ -87,6 +100,10 @@ type OpenAITokenRefresher struct {
 	accountRepo        AccountRepository
 	soraAccountRepo    SoraAccountRepository // Sora 扩展表仓储，用于双表同步
 	syncLinkedSora     bool
+	syncLinkedSoraSem  chan struct{}
+
+	// test hook: override sync execution target when needed.
+	syncLinkedSoraAccountsFn func(ctx context.Context, openaiAccountID int64, newCredentials map[string]any)
 }
 
 // NewOpenAITokenRefresher 创建 OpenAI token刷新器
@@ -94,6 +111,7 @@ func NewOpenAITokenRefresher(openaiOAuthService *OpenAIOAuthService, accountRepo
 	return &OpenAITokenRefresher{
 		openaiOAuthService: openaiOAuthService,
 		accountRepo:        accountRepo,
+		syncLinkedSoraSem:  make(chan struct{}, openAISoraSyncConcurrencyLimit),
 	}
 }
 
@@ -120,7 +138,8 @@ func (r *OpenAITokenRefresher) CanRefresh(account *Account) bool {
 func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
-		return false
+		// 无过期时间：如果账号近期已更新（可能刚刷新过），跳过本轮
+		return needsRefreshWithoutExpiry(account, refreshWindow)
 	}
 
 	return time.Until(*expiresAt) < refreshWindow
@@ -147,10 +166,56 @@ func (r *OpenAITokenRefresher) Refresh(ctx context.Context, account *Account) (m
 
 	// 异步同步关联的 Sora 账号（不阻塞主流程）
 	if r.accountRepo != nil && r.syncLinkedSora {
-		go r.syncLinkedSoraAccounts(context.Background(), account.ID, newCredentials)
+		syncCredentials := copyCredentialsMap(newCredentials)
+		syncFn := r.syncLinkedSoraAccounts
+		if r.syncLinkedSoraAccountsFn != nil {
+			syncFn = r.syncLinkedSoraAccountsFn
+		}
+		if r.tryAcquireSyncLinkedSoraSlot() {
+			go func() {
+				defer r.releaseSyncLinkedSoraSlot()
+				syncFn(context.Background(), account.ID, syncCredentials)
+			}()
+		} else {
+			// 达到并发上限时回退为同步执行，避免 goroutine 无界堆积。
+			syncFn(ctx, account.ID, syncCredentials)
+		}
 	}
 
 	return newCredentials, nil
+}
+
+func copyCredentialsMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return map[string]any{}
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (r *OpenAITokenRefresher) tryAcquireSyncLinkedSoraSlot() bool {
+	if r == nil || r.syncLinkedSoraSem == nil {
+		return false
+	}
+	select {
+	case r.syncLinkedSoraSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *OpenAITokenRefresher) releaseSyncLinkedSoraSlot() {
+	if r == nil || r.syncLinkedSoraSem == nil {
+		return
+	}
+	select {
+	case <-r.syncLinkedSoraSem:
+	default:
+	}
 }
 
 // syncLinkedSoraAccounts 同步关联的 Sora 账号的 token（双表同步）

@@ -6,8 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
-
 	"github.com/imroc/req/v3"
 )
 
@@ -35,11 +33,11 @@ var sharedReqClients sync.Map
 
 // getSharedReqClient 获取共享的 req 客户端实例
 // 性能优化：相同配置复用同一客户端，避免重复创建
-func getSharedReqClient(opts reqClientOptions) (*req.Client, error) {
+func getSharedReqClient(opts reqClientOptions) *req.Client {
 	key := buildReqClientKey(opts)
 	if cached, ok := sharedReqClients.Load(key); ok {
 		if c, ok := cached.(*req.Client); ok {
-			return c, nil
+			return c
 		}
 	}
 
@@ -50,19 +48,15 @@ func getSharedReqClient(opts reqClientOptions) (*req.Client, error) {
 	if opts.Impersonate {
 		client = client.ImpersonateChrome()
 	}
-	trimmed, _, err := proxyurl.Parse(opts.ProxyURL)
-	if err != nil {
-		return nil, err
-	}
-	if trimmed != "" {
-		client.SetProxyURL(trimmed)
+	if strings.TrimSpace(opts.ProxyURL) != "" {
+		client.SetProxyURL(strings.TrimSpace(opts.ProxyURL))
 	}
 
 	actual, _ := sharedReqClients.LoadOrStore(key, client)
 	if c, ok := actual.(*req.Client); ok {
-		return c, nil
+		return c
 	}
-	return client, nil
+	return client
 }
 
 func buildReqClientKey(opts reqClientOptions) string {

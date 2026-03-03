@@ -34,6 +34,29 @@ func (s *openaiOAuthClientStateStub) RefreshTokenWithClientID(ctx context.Contex
 	return s.RefreshToken(ctx, refreshToken, proxyURL)
 }
 
+type openaiOAuthClientRefreshStub struct {
+	refreshCalled int32
+	lastClientID  string
+}
+
+func (s *openaiOAuthClientRefreshStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *openaiOAuthClientRefreshStub) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*openai.TokenResponse, error) {
+	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, "")
+}
+
+func (s *openaiOAuthClientRefreshStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
+	atomic.AddInt32(&s.refreshCalled, 1)
+	s.lastClientID = clientID
+	return &openai.TokenResponse{
+		AccessToken:  "new-at",
+		RefreshToken: "new-rt",
+		ExpiresIn:    3600,
+	}, nil
+}
+
 func TestOpenAIOAuthService_ExchangeCode_StateRequired(t *testing.T) {
 	client := &openaiOAuthClientStateStub{}
 	svc := NewOpenAIOAuthService(nil, client)
@@ -53,6 +76,30 @@ func TestOpenAIOAuthService_ExchangeCode_StateRequired(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "oauth state is required")
 	require.Equal(t, int32(0), atomic.LoadInt32(&client.exchangeCalled))
+}
+
+func TestOpenAIOAuthService_RefreshAccountToken_NilProxyRepoWithProxyID(t *testing.T) {
+	client := &openaiOAuthClientRefreshStub{}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+
+	proxyID := int64(123)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		ProxyID:  &proxyID,
+		Credentials: map[string]any{
+			"refresh_token": "rt",
+			"client_id":     "cid",
+		},
+	}
+
+	tokenInfo, err := svc.RefreshAccountToken(context.Background(), account)
+	require.NoError(t, err)
+	require.NotNil(t, tokenInfo)
+	require.Equal(t, "new-at", tokenInfo.AccessToken)
+	require.Equal(t, int32(1), atomic.LoadInt32(&client.refreshCalled))
+	require.Equal(t, "cid", client.lastClientID)
 }
 
 func TestOpenAIOAuthService_ExchangeCode_StateMismatch(t *testing.T) {

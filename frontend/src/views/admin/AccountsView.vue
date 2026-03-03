@@ -115,6 +115,14 @@
                 {{ selIds.length ? t('admin.accounts.dataExportSelected') : t('admin.accounts.dataExport') }}
               </button>
             </template>
+            <template #afterCreate>
+              <button @click="openBulkEditScopeSelector" class="btn btn-secondary">
+                {{ t('admin.accounts.bulkActions.edit') }}
+                <span v-if="selIds.length > 0" class="ml-1 text-xs text-primary-600 dark:text-primary-400">
+                  ({{ selIds.length }})
+                </span>
+              </button>
+            </template>
           </AccountTableActions>
         </div>
         <div
@@ -131,7 +139,7 @@
         </div>
       </template>
       <template #table>
-        <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @edit="showBulkEdit = true" @clear="selIds = []" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
+        <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @edit="openBulkEditScopeSelector" @clear="selIds = []" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
         <DataTable
           :columns="cols"
           :data="accounts"
@@ -263,7 +271,94 @@
     <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @reauth="handleReAuth" @refresh-token="handleRefresh" @reset-status="handleResetStatus" @clear-rate-limit="handleClearRateLimit" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
-    <BulkEditAccountModal :show="showBulkEdit" :account-ids="selIds" :selected-platforms="selPlatforms" :selected-types="selTypes" :proxies="proxies" :groups="groups" @close="showBulkEdit = false" @updated="handleBulkUpdated" />
+    <BaseDialog
+      :show="showBulkEditScope"
+      :title="t('admin.accounts.bulkEdit.scopeTitle')"
+      width="wide"
+      @close="closeBulkEditScopeSelector"
+    >
+      <div class="space-y-4">
+        <div class="rounded-lg bg-blue-50 p-4 dark:bg-blue-900/20">
+          <p class="text-sm text-blue-700 dark:text-blue-400">
+            {{ t('admin.accounts.bulkEdit.scopeInfo', { count: selIds.length }) }}
+          </p>
+          <p class="mt-1 text-xs text-blue-600 dark:text-blue-300">
+            {{ t('admin.accounts.bulkEdit.onlySameTypeHint') }}
+          </p>
+        </div>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label mb-2">{{ t('admin.accounts.filters.platform') }}</label>
+            <Select v-model="bulkEditPlatform" :options="bulkEditPlatformOptions" />
+          </div>
+          <div>
+            <label class="input-label mb-2">{{ t('admin.accounts.filters.type') }}</label>
+            <Select v-model="bulkEditType" :options="bulkEditTypeOptions" :disabled="!bulkEditPlatform" />
+          </div>
+        </div>
+        <div class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300">
+          {{ t('admin.accounts.bulkEdit.scopeMatched', { count: bulkEditMatchedCount }) }}
+        </div>
+        <div class="rounded-lg border border-gray-200 bg-white px-3 py-3 dark:border-dark-600 dark:bg-dark-800">
+          <p class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.bulkEdit.scopeSummaryTitle') }}
+          </p>
+          <div class="space-y-1">
+            <div
+              v-for="stat in bulkEditScopeGroupedStats"
+              :key="stat.key"
+              class="flex items-center justify-between text-sm"
+            >
+              <span class="text-gray-700 dark:text-gray-300">
+                {{ resolvePlatformLabel(stat.platform) }} · {{ resolveAccountTypeLabel(stat.type) }}
+              </span>
+              <span class="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+                {{ stat.count }}
+              </span>
+            </div>
+          </div>
+          <p class="mt-3 text-sm text-gray-700 dark:text-gray-300">
+            {{
+              t('admin.accounts.bulkEdit.scopeTargetPreview', {
+                matched: bulkEditMatchedCount,
+                selected: bulkEditScopeTotalCount
+              })
+            }}
+          </p>
+          <p
+            v-if="bulkEditExcludedCount > 0"
+            class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+          >
+            {{ t('admin.accounts.bulkEdit.scopeExcludedHint', { count: bulkEditExcludedCount }) }}
+          </p>
+        </div>
+      </div>
+      <template #footer>
+        <div class="flex justify-end gap-3">
+          <button class="btn btn-secondary" @click="closeBulkEditScopeSelector">
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            class="btn btn-primary"
+            :disabled="!canConfirmBulkEditScope"
+            @click="confirmBulkEditScopeSelection"
+          >
+            {{ t('admin.accounts.bulkEdit.openScopedEditor') }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
+    <BulkEditAccountScopedModal
+      :show="showBulkEdit"
+      :account-ids="bulkEditScopedIds"
+      :scope-platform="bulkEditScopedPlatform"
+      :scope-type="bulkEditScopedType"
+      :scope-group-ids="bulkEditScopedGroupIds"
+      :proxies="proxies"
+      :groups="groups"
+      @close="closeBulkEditModal"
+      @updated="handleBulkUpdated"
+    />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
     <ConfirmDialog :show="showExportDataDialog" :title="t('admin.accounts.dataExport')" :message="t('admin.accounts.dataExportConfirmMessage')" :confirm-text="t('admin.accounts.dataExportConfirm')" :cancel-text="t('common.cancel')" @confirm="handleExportData" @cancel="showExportDataDialog = false">
@@ -289,7 +384,9 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal } from '@/components/account'
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import Select from '@/components/common/Select.vue'
+import { CreateAccountModal, EditAccountModal, BulkEditAccountScopedModal, SyncFromCrsModal, TempUnschedStatusModal } from '@/components/account'
 import AccountTableActions from '@/components/admin/account/AccountTableActions.vue'
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
@@ -307,7 +404,15 @@ import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import type { Account, AccountPlatform, AccountType, Proxy, AdminGroup, WindowStats } from '@/types'
+import {
+  buildBulkEditPlatformOptions,
+  buildBulkEditScopeGroupedStats,
+  buildBulkEditTypeOptions,
+  countBulkEditScopedAccounts,
+  matchBulkEditScopedAccountIds
+} from './accountsBulkEditScope'
+import { resolveBulkEditScopeEditorKey } from '@/components/account/bulkEditScopeProfile'
+import type { Account, Proxy, AdminGroup, WindowStats, AccountPlatform, AccountType } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -316,22 +421,6 @@ const authStore = useAuthStore()
 const proxies = ref<Proxy[]>([])
 const groups = ref<AdminGroup[]>([])
 const selIds = ref<number[]>([])
-const selPlatforms = computed<AccountPlatform[]>(() => {
-  const platforms = new Set(
-    accounts.value
-      .filter(a => selIds.value.includes(a.id))
-      .map(a => a.platform)
-  )
-  return [...platforms]
-})
-const selTypes = computed<AccountType[]>(() => {
-  const types = new Set(
-    accounts.value
-      .filter(a => selIds.value.includes(a.id))
-      .map(a => a.type)
-  )
-  return [...types]
-})
 const showCreate = ref(false)
 const showEdit = ref(false)
 const showSync = ref(false)
@@ -339,6 +428,7 @@ const showImportData = ref(false)
 const showExportDataDialog = ref(false)
 const includeProxyOnExport = ref(true)
 const showBulkEdit = ref(false)
+const showBulkEditScope = ref(false)
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
 const showReAuth = ref(false)
@@ -354,6 +444,14 @@ const statsAcc = ref<Account | null>(null)
 const togglingSchedulable = ref<number | null>(null)
 const menu = reactive<{show:boolean, acc:Account|null, pos:{top:number, left:number}|null}>({ show: false, acc: null, pos: null })
 const exportingData = ref(false)
+const bulkEditScopeLoading = ref(false)
+const bulkEditPlatform = ref<AccountPlatform | ''>('')
+const bulkEditType = ref<AccountType | ''>('')
+const bulkEditScopedIds = ref<number[]>([])
+const bulkEditScopedGroupIds = ref<number[]>([])
+const bulkEditScopedPlatform = ref<AccountPlatform | ''>('')
+const bulkEditScopedType = ref<AccountType | ''>('')
+const bulkEditCandidateAccounts = ref<Account[]>([])
 
 // Column settings
 const showColumnDropdown = ref(false)
@@ -599,6 +697,10 @@ watch(loading, (isLoading, wasLoading) => {
   }
 })
 
+watch(bulkEditPlatform, () => {
+  bulkEditType.value = ''
+})
+
 const isAnyModalOpen = computed(() => {
   return (
     showCreate.value ||
@@ -607,6 +709,7 @@ const isAnyModalOpen = computed(() => {
     showImportData.value ||
     showExportDataDialog.value ||
     showBulkEdit.value ||
+    showBulkEditScope.value ||
     showTempUnsched.value ||
     showDeleteDialog.value ||
     showReAuth.value ||
@@ -786,6 +889,84 @@ const cols = computed(() =>
   )
 )
 
+const platformLabelMap: Record<string, string> = {
+  anthropic: t('admin.accounts.platforms.anthropic'),
+  openai: t('admin.accounts.platforms.openai'),
+  gemini: t('admin.accounts.platforms.gemini'),
+  antigravity: t('admin.accounts.platforms.antigravity'),
+  sora: t('admin.accounts.platforms.sora'),
+  claude: t('admin.accounts.platforms.claude')
+}
+
+const resolvePlatformLabel = (platform: string) => platformLabelMap[platform] || platform
+
+const resolveAccountTypeLabel = (accountType: string) => {
+  if (accountType === 'oauth') return t('admin.accounts.oauthType')
+  if (accountType === 'setup-token') return t('admin.accounts.setupToken')
+  if (accountType === 'apikey') return t('admin.accounts.apiKey')
+  if (accountType === 'upstream') return t('admin.accounts.types.upstream')
+  return accountType
+}
+
+const isBulkEditScopeSupported = (platform: string, accountType: string) =>
+  Boolean(resolveBulkEditScopeEditorKey(platform as AccountPlatform, accountType as AccountType))
+
+const bulkEditScopeGroupedStats = computed(() =>
+  buildBulkEditScopeGroupedStats(bulkEditCandidateAccounts.value)
+)
+
+const bulkEditScopeTotalCount = computed(() => bulkEditCandidateAccounts.value.length)
+
+const bulkEditPlatformOptions = computed(() => {
+  return buildBulkEditPlatformOptions(
+    bulkEditCandidateAccounts.value,
+    t('admin.accounts.bulkEdit.choosePlatform'),
+    resolvePlatformLabel,
+    (platform, count) => ({
+      label: `${resolvePlatformLabel(platform)} (${count})`
+    })
+  )
+})
+
+const bulkEditTypeOptions = computed(() => {
+  return buildBulkEditTypeOptions(
+    bulkEditCandidateAccounts.value,
+    bulkEditPlatform.value,
+    t('admin.accounts.bulkEdit.chooseType'),
+    resolveAccountTypeLabel,
+    (accountType, count) => {
+      const supported = bulkEditPlatform.value
+        ? isBulkEditScopeSupported(bulkEditPlatform.value, accountType)
+        : false
+      return {
+        label: supported
+          ? `${resolveAccountTypeLabel(accountType)} (${count})`
+          : `${resolveAccountTypeLabel(accountType)} (${count}) · ${t('admin.accounts.bulkEdit.unsupportedScope')}`,
+        disabled: !supported
+      }
+    }
+  )
+})
+
+const bulkEditMatchedCount = computed(() =>
+  countBulkEditScopedAccounts(
+    bulkEditCandidateAccounts.value,
+    bulkEditPlatform.value,
+    bulkEditType.value
+  )
+)
+
+const bulkEditExcludedCount = computed(() =>
+  Math.max(0, bulkEditScopeTotalCount.value - bulkEditMatchedCount.value)
+)
+
+const canConfirmBulkEditScope = computed(() => {
+  if (bulkEditScopeLoading.value) return false
+  if (!bulkEditPlatform.value || !bulkEditType.value) return false
+  if (!isBulkEditScopeSupported(bulkEditPlatform.value, bulkEditType.value)) return false
+  return bulkEditMatchedCount.value > 0
+})
+
 const handleEdit = (a: Account) => { edAcc.value = a; showEdit.value = true }
 const openMenu = (a: Account, e: MouseEvent) => {
   menu.acc = a
@@ -956,7 +1137,143 @@ const handleBulkToggleSchedulable = async (schedulable: boolean) => {
     appStore.showError(t('common.error'))
   }
 }
-const handleBulkUpdated = () => { showBulkEdit.value = false; selIds.value = []; reload() }
+const loadBulkEditCandidateAccounts = async (accountIds: number[]) => {
+  const visibleAccountMap = new Map(accounts.value.map(account => [account.id, account]))
+  const candidateMap = new Map<number, Account>()
+  const missingIds: number[] = []
+
+  for (const accountId of accountIds) {
+    const visibleAccount = visibleAccountMap.get(accountId)
+    if (visibleAccount) {
+      candidateMap.set(accountId, visibleAccount)
+      continue
+    }
+    missingIds.push(accountId)
+  }
+
+  if (missingIds.length > 0) {
+    const fetchResults = await Promise.allSettled(
+      missingIds.map(accountId => adminAPI.accounts.getById(accountId))
+    )
+    let failedCount = 0
+    fetchResults.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        candidateMap.set(result.value.id, result.value)
+      } else {
+        failedCount += 1
+        console.error(`Failed to load account ${missingIds[index]} for bulk edit scope:`, result.reason)
+      }
+    })
+    if (failedCount > 0) {
+      appStore.showError(t('admin.accounts.bulkEdit.loadSelectionFailed', { count: failedCount }))
+    }
+  }
+
+  return accountIds
+    .map(accountId => candidateMap.get(accountId))
+    .filter((account): account is Account => Boolean(account))
+}
+
+const openBulkEditScopeSelector = async () => {
+  if (selIds.value.length === 0) {
+    appStore.showError(t('admin.accounts.bulkEdit.noSelection'))
+    return
+  }
+
+  bulkEditScopeLoading.value = true
+  bulkEditPlatform.value = ''
+  bulkEditType.value = ''
+  bulkEditScopedIds.value = []
+  bulkEditScopedGroupIds.value = []
+  bulkEditScopedPlatform.value = ''
+  bulkEditScopedType.value = ''
+
+  try {
+    const selectedIds = Array.from(new Set(selIds.value))
+    const candidateAccounts = await loadBulkEditCandidateAccounts(selectedIds)
+    if (candidateAccounts.length === 0) {
+      appStore.showError(t('admin.accounts.bulkEdit.noSelection'))
+      return
+    }
+    bulkEditCandidateAccounts.value = candidateAccounts
+    showBulkEditScope.value = true
+  } catch (error) {
+    console.error('Failed to prepare bulk edit scope selector:', error)
+    appStore.showError(t('admin.accounts.bulkEdit.loadSelectionFailed', { count: selIds.value.length }))
+  } finally {
+    bulkEditScopeLoading.value = false
+  }
+}
+
+const closeBulkEditScopeSelector = () => {
+  showBulkEditScope.value = false
+  bulkEditScopeLoading.value = false
+  bulkEditPlatform.value = ''
+  bulkEditType.value = ''
+  bulkEditScopedGroupIds.value = []
+  bulkEditCandidateAccounts.value = []
+}
+
+const confirmBulkEditScopeSelection = () => {
+  if (!bulkEditPlatform.value) {
+    appStore.showError(t('admin.accounts.bulkEdit.choosePlatform'))
+    return
+  }
+  if (!bulkEditType.value) {
+    appStore.showError(t('admin.accounts.bulkEdit.chooseType'))
+    return
+  }
+  if (!isBulkEditScopeSupported(bulkEditPlatform.value, bulkEditType.value)) {
+    appStore.showError(t('admin.accounts.bulkEdit.unsupportedScope'))
+    return
+  }
+
+  const matchedAccountIds = matchBulkEditScopedAccountIds(
+    bulkEditCandidateAccounts.value,
+    bulkEditPlatform.value,
+    bulkEditType.value
+  )
+
+  if (matchedAccountIds.length === 0) {
+    appStore.showError(t('admin.accounts.bulkEdit.noScopedMatch'))
+    return
+  }
+
+  const matchedIDSet = new Set(matchedAccountIds)
+  const scopedGroupIDSet = new Set<number>()
+  for (const account of bulkEditCandidateAccounts.value) {
+    if (!matchedIDSet.has(account.id) || !Array.isArray(account.groups)) continue
+    for (const group of account.groups) {
+      if (typeof group?.id !== 'number' || !Number.isFinite(group.id) || group.id <= 0) continue
+      scopedGroupIDSet.add(Math.floor(group.id))
+    }
+  }
+
+  bulkEditScopedPlatform.value = bulkEditPlatform.value
+  bulkEditScopedType.value = bulkEditType.value
+  bulkEditScopedGroupIds.value = Array.from(scopedGroupIDSet).sort((a, b) => a - b)
+  closeBulkEditScopeSelector()
+  bulkEditScopedIds.value = matchedAccountIds
+  showBulkEdit.value = true
+}
+
+const closeBulkEditModal = () => {
+  showBulkEdit.value = false
+  bulkEditScopedIds.value = []
+  bulkEditScopedGroupIds.value = []
+  bulkEditScopedPlatform.value = ''
+  bulkEditScopedType.value = ''
+}
+
+const handleBulkUpdated = () => {
+  const editedIds = new Set(bulkEditScopedIds.value)
+  closeBulkEditModal()
+  if (editedIds.size > 0) {
+    selIds.value = selIds.value.filter(id => !editedIds.has(id))
+  }
+  reload()
+}
+
 const handleDataImported = () => { showImportData.value = false; reload() }
 const accountMatchesCurrentFilters = (account: Account) => {
   if (params.platform && account.platform !== params.platform) return false

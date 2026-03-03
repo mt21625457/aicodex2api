@@ -151,9 +151,11 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 			}
 
 			// 从数据库获取最新账户信息
-			fresh, err := p.accountRepo.GetByID(ctx, account.ID)
-			if err == nil && fresh != nil {
-				account = fresh
+			if p.accountRepo != nil {
+				fresh, err := p.accountRepo.GetByID(ctx, account.ID)
+				if err == nil && fresh != nil {
+					account = fresh
+				}
 			}
 			expiresAt = account.GetCredentialAsTime("expires_at")
 			if expiresAt == nil || time.Until(*expiresAt) <= openAITokenRefreshSkew {
@@ -181,8 +183,10 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 							}
 						}
 						account.Credentials = newCredentials
-						if updateErr := p.accountRepo.Update(ctx, account); updateErr != nil {
-							slog.Error("openai_token_provider_update_failed", "account_id", account.ID, "error", updateErr)
+						if p.accountRepo != nil {
+							if updateErr := p.accountRepo.Update(ctx, account); updateErr != nil {
+								slog.Error("openai_token_provider_update_failed", "account_id", account.ID, "error", updateErr)
+							}
 						}
 						expiresAt = account.GetCredentialAsTime("expires_at")
 					}
@@ -233,8 +237,10 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 							}
 						}
 						account.Credentials = newCredentials
-						if updateErr := p.accountRepo.Update(ctx, account); updateErr != nil {
-							slog.Error("openai_token_provider_update_failed", "account_id", account.ID, "error", updateErr)
+						if p.accountRepo != nil {
+							if updateErr := p.accountRepo.Update(ctx, account); updateErr != nil {
+								slog.Error("openai_token_provider_update_failed", "account_id", account.ID, "error", updateErr)
+							}
 						}
 						expiresAt = account.GetCredentialAsTime("expires_at")
 					}

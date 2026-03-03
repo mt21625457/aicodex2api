@@ -228,20 +228,8 @@ func TestGetTier_两者都为nil(t *testing.T) {
 // NewClient
 // ---------------------------------------------------------------------------
 
-func mustNewClient(t *testing.T, proxyURL string) *Client {
-	t.Helper()
-	client, err := NewClient(proxyURL)
-	if err != nil {
-		t.Fatalf("NewClient(%q) failed: %v", proxyURL, err)
-	}
-	return client
-}
-
 func TestNewClient_无代理(t *testing.T) {
-	client, err := NewClient("")
-	if err != nil {
-		t.Fatalf("NewClient 返回错误: %v", err)
-	}
+	client := NewClient("")
 	if client == nil {
 		t.Fatal("NewClient 返回 nil")
 	}
@@ -258,10 +246,7 @@ func TestNewClient_无代理(t *testing.T) {
 }
 
 func TestNewClient_有代理(t *testing.T) {
-	client, err := NewClient("http://proxy.example.com:8080")
-	if err != nil {
-		t.Fatalf("NewClient 返回错误: %v", err)
-	}
+	client := NewClient("http://proxy.example.com:8080")
 	if client == nil {
 		t.Fatal("NewClient 返回 nil")
 	}
@@ -271,10 +256,7 @@ func TestNewClient_有代理(t *testing.T) {
 }
 
 func TestNewClient_空格代理(t *testing.T) {
-	client, err := NewClient("   ")
-	if err != nil {
-		t.Fatalf("NewClient 返回错误: %v", err)
-	}
+	client := NewClient("   ")
 	if client == nil {
 		t.Fatal("NewClient 返回 nil")
 	}
@@ -285,13 +267,15 @@ func TestNewClient_空格代理(t *testing.T) {
 }
 
 func TestNewClient_无效代理URL(t *testing.T) {
-	// 无效 URL 应返回 error
-	_, err := NewClient("://invalid")
-	if err == nil {
-		t.Fatal("无效代理 URL 应返回错误")
+	// 无效 URL 时 url.Parse 不一定返回错误（Go 的 url.Parse 很宽容），
+	// 但 ://invalid 会导致解析错误
+	client := NewClient("://invalid")
+	if client == nil {
+		t.Fatal("NewClient 返回 nil")
 	}
-	if !strings.Contains(err.Error(), "invalid proxy URL") {
-		t.Errorf("错误信息应包含 'invalid proxy URL': got %s", err.Error())
+	// 无效 URL 解析失败时，Transport 应保持 nil
+	if client.httpClient.Transport != nil {
+		t.Error("无效代理 URL 时 Transport 应为 nil")
 	}
 }
 
@@ -515,7 +499,7 @@ func TestClient_ExchangeCode_无ClientSecret(t *testing.T) {
 	defaultClientSecret = ""
 	t.Cleanup(func() { defaultClientSecret = old })
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	_, err := client.ExchangeCode(context.Background(), "code", "verifier")
 	if err == nil {
 		t.Fatal("缺少 client_secret 时应返回错误")
@@ -618,7 +602,7 @@ func TestClient_RefreshToken_无ClientSecret(t *testing.T) {
 	defaultClientSecret = ""
 	t.Cleanup(func() { defaultClientSecret = old })
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	_, err := client.RefreshToken(context.Background(), "refresh-tok")
 	if err == nil {
 		t.Fatal("缺少 client_secret 时应返回错误")
@@ -1258,7 +1242,7 @@ func TestClient_LoadCodeAssist_Success_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	resp, rawResp, err := client.LoadCodeAssist(context.Background(), "test-token")
 	if err != nil {
 		t.Fatalf("LoadCodeAssist 失败: %v", err)
@@ -1293,7 +1277,7 @@ func TestClient_LoadCodeAssist_HTTPError_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	_, _, err := client.LoadCodeAssist(context.Background(), "bad-token")
 	if err == nil {
 		t.Fatal("服务器返回 403 时应返回错误")
@@ -1316,7 +1300,7 @@ func TestClient_LoadCodeAssist_InvalidJSON_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	_, _, err := client.LoadCodeAssist(context.Background(), "token")
 	if err == nil {
 		t.Fatal("无效 JSON 响应应返回错误")
@@ -1349,7 +1333,7 @@ func TestClient_LoadCodeAssist_URLFallback_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server1.URL, server2.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	resp, _, err := client.LoadCodeAssist(context.Background(), "token")
 	if err != nil {
 		t.Fatalf("LoadCodeAssist 应在 fallback 后成功: %v", err)
@@ -1377,7 +1361,7 @@ func TestClient_LoadCodeAssist_AllURLsFail_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server1.URL, server2.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	_, _, err := client.LoadCodeAssist(context.Background(), "token")
 	if err == nil {
 		t.Fatal("所有 URL 都失败时应返回错误")
@@ -1393,7 +1377,7 @@ func TestClient_LoadCodeAssist_ContextCanceled_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -1457,7 +1441,7 @@ func TestClient_FetchAvailableModels_Success_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	resp, rawResp, err := client.FetchAvailableModels(context.Background(), "test-token", "project-abc")
 	if err != nil {
 		t.Fatalf("FetchAvailableModels 失败: %v", err)
@@ -1512,7 +1496,7 @@ func TestClient_FetchAvailableModels_HTTPError_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	_, _, err := client.FetchAvailableModels(context.Background(), "bad-token", "proj")
 	if err == nil {
 		t.Fatal("服务器返回 403 时应返回错误")
@@ -1532,7 +1516,7 @@ func TestClient_FetchAvailableModels_InvalidJSON_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	_, _, err := client.FetchAvailableModels(context.Background(), "token", "proj")
 	if err == nil {
 		t.Fatal("无效 JSON 响应应返回错误")
@@ -1562,7 +1546,7 @@ func TestClient_FetchAvailableModels_URLFallback_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server1.URL, server2.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	resp, _, err := client.FetchAvailableModels(context.Background(), "token", "proj")
 	if err != nil {
 		t.Fatalf("FetchAvailableModels 应在 fallback 后成功: %v", err)
@@ -1590,7 +1574,7 @@ func TestClient_FetchAvailableModels_AllURLsFail_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server1.URL, server2.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	_, _, err := client.FetchAvailableModels(context.Background(), "token", "proj")
 	if err == nil {
 		t.Fatal("所有 URL 都失败时应返回错误")
@@ -1606,7 +1590,7 @@ func TestClient_FetchAvailableModels_ContextCanceled_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -1626,7 +1610,7 @@ func TestClient_FetchAvailableModels_EmptyModels_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	resp, rawResp, err := client.FetchAvailableModels(context.Background(), "token", "proj")
 	if err != nil {
 		t.Fatalf("FetchAvailableModels 失败: %v", err)
@@ -1662,7 +1646,7 @@ func TestClient_LoadCodeAssist_408Fallback_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server1.URL, server2.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	resp, _, err := client.LoadCodeAssist(context.Background(), "token")
 	if err != nil {
 		t.Fatalf("LoadCodeAssist 应在 408 fallback 后成功: %v", err)
@@ -1688,7 +1672,7 @@ func TestClient_FetchAvailableModels_404Fallback_RealCall(t *testing.T) {
 
 	withMockBaseURLs(t, []string{server1.URL, server2.URL})
 
-	client := mustNewClient(t, "")
+	client := NewClient("")
 	resp, _, err := client.FetchAvailableModels(context.Background(), "token", "proj")
 	if err != nil {
 		t.Fatalf("FetchAvailableModels 应在 404 fallback 后成功: %v", err)
