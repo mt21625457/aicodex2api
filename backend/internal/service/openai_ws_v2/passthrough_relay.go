@@ -83,6 +83,8 @@ type relayState struct {
 	lastResponseID    string
 	terminalEventType string
 	firstTokenMs      *int
+	currentTurnStart  time.Time
+	currentTurnToken  *int
 	turnTimingByID    map[string]*relayTurnTiming
 }
 
@@ -422,7 +424,7 @@ func runUpstreamToClient(
 		observedEvent := observedUpstreamEvent{}
 		switch msgType {
 		case coderws.MessageText:
-			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure)
+			observedEvent = observeUpstreamMessage(state, payload, nowFn, onUsageParseFailure)
 		case coderws.MessageBinary:
 			// binary frame 直接透传，不进入 JSON 观测路径（避免无效解析开销）。
 		}
@@ -551,7 +553,6 @@ func relayErrorString(err error) string {
 func observeUpstreamMessage(
 	state *relayState,
 	message []byte,
-	startAt time.Time,
 	nowFn func() time.Time,
 	onUsageParseFailure func(eventType string, usageRaw string),
 ) observedUpstreamEvent {
@@ -572,11 +573,15 @@ func observeUpstreamMessage(
 		responseID = strings.TrimSpace(values[3].String())
 	}
 	now := nowFn()
+	if state.currentTurnStart.IsZero() {
+		state.currentTurnStart = now
+		state.currentTurnToken = nil
+	}
 
-	if state.firstTokenMs == nil && isTokenEvent(eventType) {
-		ms := int(now.Sub(startAt).Milliseconds())
+	if state.currentTurnToken == nil && isTokenEvent(eventType) {
+		ms := int(now.Sub(state.currentTurnStart).Milliseconds())
 		if ms >= 0 {
-			state.firstTokenMs = &ms
+			state.currentTurnToken = &ms
 		}
 	}
 	parsedUsage := parseUsageAndAccumulate(state, message, eventType, onUsageParseFailure)
@@ -610,6 +615,19 @@ func observeUpstreamMessage(
 			observed.firstToken = openAIWSRelayCloneIntPtr(turnTiming.firstTokenMs)
 		}
 	}
+	if observed.firstToken == nil {
+		observed.firstToken = openAIWSRelayCloneIntPtr(state.currentTurnToken)
+	}
+	if observed.duration <= 0 && !state.currentTurnStart.IsZero() {
+		duration := now.Sub(state.currentTurnStart)
+		if duration < 0 {
+			duration = 0
+		}
+		observed.duration = duration
+	}
+	state.firstTokenMs = openAIWSRelayCloneIntPtr(observed.firstToken)
+	state.currentTurnStart = time.Time{}
+	state.currentTurnToken = nil
 	return observed
 }
 
@@ -648,7 +666,11 @@ func openAIWSRelayGetOrInitTurnTiming(state *relayState, responseID string, now 
 	}
 	timing, ok := state.turnTimingByID[responseID]
 	if !ok || timing == nil || timing.startAt.IsZero() {
-		timing = &relayTurnTiming{startAt: now}
+		startAt := now
+		if !state.currentTurnStart.IsZero() {
+			startAt = state.currentTurnStart
+		}
+		timing = &relayTurnTiming{startAt: startAt}
 		state.turnTimingByID[responseID] = timing
 		return timing
 	}
@@ -806,7 +828,7 @@ func isTokenEvent(eventType string) bool {
 	if strings.HasPrefix(eventType, "response.output") {
 		return true
 	}
-	return eventType == "response.completed" || eventType == "response.done"
+	return false
 }
 
 func minDuration(a, b time.Duration) time.Duration {

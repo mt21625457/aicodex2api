@@ -1378,6 +1378,21 @@ func TestOpenAIValidateUpstreamBaseURLEnabledEnforcesAllowlist(t *testing.T) {
 	}
 }
 
+func TestOpenAIValidateUpstreamBaseURLNilConfigDefaultsToStrictHTTPS(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+
+	if _, err := svc.validateUpstreamBaseURL("http://example.com"); err == nil {
+		t.Fatalf("expected http to be rejected when config is nil")
+	}
+	normalized, err := svc.validateUpstreamBaseURL("https://example.com")
+	if err != nil {
+		t.Fatalf("expected https to pass when config is nil, got %v", err)
+	}
+	if normalized != "https://example.com" {
+		t.Fatalf("expected normalized https url, got %q", normalized)
+	}
+}
+
 // ==================== P1-08 修复：model 替换性能优化测试 ====================
 
 func TestReplaceModelInSSELine(t *testing.T) {

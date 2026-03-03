@@ -427,6 +427,85 @@ func TestProxyResponsesWebSocketV2Passthrough_Success(t *testing.T) {
 	require.Equal(t, "resp_passthrough", afterTurnResult.RequestID)
 }
 
+func TestProxyResponsesWebSocketV2Passthrough_NilContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &passthroughUpstreamConn{
+		reads: []struct {
+			msgType coderws.MessageType
+			payload []byte
+		}{
+			{
+				msgType: coderws.MessageText,
+				payload: []byte(`{"type":"response.completed","response":{"id":"resp_nil_ctx","usage":{"input_tokens":1,"output_tokens":1}}}`),
+			},
+		},
+	}
+	cfg := buildIngressPolicyTestConfig()
+	svc := buildIngressPolicyTestService(cfg)
+	svc.openaiWSPassthroughDialer = &passthroughDialerStub{
+		conn:       upstream,
+		statusCode: 101,
+	}
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	serverErrCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		require.NoError(t, err)
+		defer func() {
+			_ = conn.CloseNow()
+		}()
+
+		readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
+		msgType, firstMessage, err := conn.Read(readCtx)
+		cancelRead()
+		require.NoError(t, err)
+
+		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ginCtx.Request = r
+		serverErrCh <- svc.proxyResponsesWebSocketV2Passthrough(
+			nil,
+			ginCtx,
+			conn,
+			account,
+			"sk-test",
+			msgType,
+			firstMessage,
+			nil,
+			OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+		)
+	}))
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(
+		dialCtx,
+		"ws"+strings.TrimPrefix(wsServer.URL, "http"),
+		nil,
+	)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, payload, err := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"response.completed","response":{"id":"resp_nil_ctx","usage":{"input_tokens":1,"output_tokens":1}}}`, string(payload))
+
+	require.NoError(t, <-serverErrCh)
+}
+
 func TestProxyResponsesWebSocketV2Passthrough_ZeroTurnFallbackCallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

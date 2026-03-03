@@ -183,7 +183,7 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {
 	require.Equal(t, 7, result.Usage.InputTokens)
 	require.Equal(t, 3, result.Usage.OutputTokens)
 	require.Equal(t, 2, result.Usage.CacheReadInputTokens)
-	require.NotNil(t, result.FirstTokenMs)
+	require.Nil(t, result.FirstTokenMs)
 	require.Equal(t, int64(1), result.ClientToUpstreamFrames)
 	require.Equal(t, int64(1), result.UpstreamToClientFrames)
 	require.Equal(t, int64(0), result.DroppedDownstreamFrames)
@@ -498,6 +498,53 @@ func TestRelay_OnTurnComplete_ProvidesTurnMetrics(t *testing.T) {
 	require.Greater(t, turn.Duration.Milliseconds(), int64(0))
 	require.NotNil(t, result.FirstTokenMs)
 	require.Greater(t, result.Duration.Milliseconds(), int64(0))
+}
+
+func TestRelay_OnTurnComplete_FirstTokenFromTurnFallbackWhenDeltaHasNoResponseID(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.created"}`),
+		},
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.output_text.delta","delta":"hello"}`),
+		},
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.completed","response":{"id":"resp_fallback_ttft","usage":{"input_tokens":2,"output_tokens":1}}}`),
+		},
+	}, true)
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	base := time.Unix(0, 0)
+	var nowTick atomic.Int64
+	nowFn := func() time.Time {
+		step := nowTick.Add(1)
+		return base.Add(time.Duration(step) * 5 * time.Millisecond)
+	}
+
+	var turn RelayTurnResult
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
+		Now: nowFn,
+		OnTurnComplete: func(current RelayTurnResult) {
+			turn = current
+		},
+	})
+	require.Nil(t, relayExit)
+	require.Equal(t, "resp_fallback_ttft", turn.RequestID)
+	require.NotNil(t, turn.FirstTokenMs)
+	require.NotNil(t, result.FirstTokenMs)
+	require.GreaterOrEqual(t, *turn.FirstTokenMs, 0)
+	require.Equal(t, *turn.FirstTokenMs, *result.FirstTokenMs)
+	require.Greater(t, turn.Duration.Milliseconds(), int64(0))
+	require.Greater(t, turn.Duration.Milliseconds(), int64(*turn.FirstTokenMs))
 }
 
 func TestRelay_BinaryFramePassthrough(t *testing.T) {

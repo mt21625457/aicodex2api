@@ -66,6 +66,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if s == nil {
 		return errors.New("service is nil")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if clientConn == nil {
 		return errors.New("client websocket is nil")
 	}

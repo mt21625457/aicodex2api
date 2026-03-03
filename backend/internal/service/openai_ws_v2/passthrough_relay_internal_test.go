@@ -231,7 +231,7 @@ func TestHelperFunctionsCoverage(t *testing.T) {
 
 	require.True(t, isTokenEvent("response.output_text.delta"))
 	require.True(t, isTokenEvent("response.output_audio.delta"))
-	require.True(t, isTokenEvent("response.completed"))
+	require.False(t, isTokenEvent("response.completed"))
 	require.False(t, isTokenEvent(""))
 	require.False(t, isTokenEvent("response.created"))
 
@@ -365,7 +365,8 @@ func TestIsTokenEventCoverageBranches(t *testing.T) {
 	require.False(t, isTokenEvent("response.output_item.added"))
 	require.True(t, isTokenEvent("response.output_audio.delta"))
 	require.True(t, isTokenEvent("response.output"))
-	require.True(t, isTokenEvent("response.done"))
+	require.False(t, isTokenEvent("response.done"))
+	require.False(t, isTokenEvent("response.completed"))
 }
 
 func TestRelayTurnTimingHelpersCoverage(t *testing.T) {
@@ -412,7 +413,6 @@ func TestObserveUpstreamMessage_ResponseIDFallbackPolicy(t *testing.T) {
 	observed := observeUpstreamMessage(
 		state,
 		[]byte(`{"type":"response.output_text.delta","id":"evt_123","delta":"hi"}`),
-		startAt,
 		nowFn,
 		nil,
 	)
@@ -423,7 +423,6 @@ func TestObserveUpstreamMessage_ResponseIDFallbackPolicy(t *testing.T) {
 	observed = observeUpstreamMessage(
 		state,
 		[]byte(`{"type":"response.completed","id":"resp_fallback","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`),
-		startAt,
 		nowFn,
 		nil,
 	)
