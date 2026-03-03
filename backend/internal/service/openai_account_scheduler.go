@@ -1864,7 +1864,7 @@ func (s *OpenAIGatewayService) openAIWSLBTopK() int {
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.LBTopK > 0 {
 		return s.cfg.Gateway.OpenAIWS.LBTopK
 	}
-	return 7
+	return 999
 }
 
 func (s *OpenAIGatewayService) openAIWSSchedulerP2CEnabled() bool {

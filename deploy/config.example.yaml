@@ -265,7 +265,7 @@ gateway:
     # payload_schema 日志采样率（0-1）；降低热路径日志放大
     payload_log_sample_rate: 0.2
     # 调度与粘连参数
-    lb_top_k: 7
+    lb_top_k: 999
     sticky_session_ttl_seconds: 3600
     # 会话哈希迁移兼容开关：新 key 未命中时回退读取旧 SHA-256 key
     session_hash_read_old_fallback: true
