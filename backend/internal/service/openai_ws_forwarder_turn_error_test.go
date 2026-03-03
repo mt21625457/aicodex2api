@@ -51,3 +51,12 @@ func TestOpenAIWSClientReadIdleTimeout_DefaultAndConfig(t *testing.T) {
 	svc.cfg.Gateway.OpenAIWS.ClientReadIdleTimeoutSeconds = 120
 	require.Equal(t, 120*time.Second, svc.openAIWSClientReadIdleTimeout())
 }
+
+func TestOpenAIWSPassthroughIdleTimeout_DefaultAndConfig(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	require.Equal(t, time.Hour, svc.openAIWSPassthroughIdleTimeout())
+
+	svc.cfg = &config.Config{}
+	svc.cfg.Gateway.OpenAIWS.ClientReadIdleTimeoutSeconds = 120
+	require.Equal(t, 120*time.Second, svc.openAIWSPassthroughIdleTimeout())
+}

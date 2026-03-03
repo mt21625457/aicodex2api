@@ -1080,6 +1080,15 @@ export interface ModelStat {
   actual_cost: number // 实际扣除
 }
 
+export interface GroupStat {
+  group_id: number
+  group_name: string | null
+  requests: number
+  total_tokens: number
+  cost: number // 标准计费
+  actual_cost: number // 实际扣除
+}
+
 export interface UserUsageTrendPoint {
   date: string
   user_id: number

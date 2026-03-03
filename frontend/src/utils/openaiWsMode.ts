@@ -38,6 +38,15 @@ export const isOpenAIWSModeEnabled = (mode: OpenAIWSMode): boolean => {
   return mode !== OPENAI_WS_MODE_OFF
 }
 
+export const resolveOpenAIWSModeConcurrencyHintKey = (
+  mode: OpenAIWSMode
+): 'admin.accounts.openai.wsModeConcurrencyHint' | 'admin.accounts.openai.wsModePassthroughHint' => {
+  if (mode === OPENAI_WS_MODE_PASSTHROUGH) {
+    return 'admin.accounts.openai.wsModePassthroughHint'
+  }
+  return 'admin.accounts.openai.wsModeConcurrencyHint'
+}
+
 export const resolveOpenAIWSModeFromExtra = (
   extra: Record<string, unknown> | null | undefined,
   options: ResolveOpenAIWSModeOptions

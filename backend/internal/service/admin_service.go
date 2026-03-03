@@ -1347,6 +1347,11 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 			return nil, errors.New("base_url 必须以 http:// 或 https:// 开头")
 		}
 	}
+	if len(input.Extra) > 0 {
+		if err := validateOpenAIWSModeExtraValues(input.Extra); err != nil {
+			return nil, err
+		}
+	}
 
 	account := &Account{
 		Name:        input.Name,

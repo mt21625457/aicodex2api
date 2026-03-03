@@ -1,6 +1,8 @@
 package openai_ws_v2
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+)
 
 // MetricsSnapshot 是 OpenAI WS v2 passthrough 路径的轻量运行时指标快照。
 type MetricsSnapshot struct {
@@ -9,6 +11,7 @@ type MetricsSnapshot struct {
 }
 
 var (
+	// passthrough 路径默认不会做语义改写，该计数通常应保持为 0（保留用于未来防御性校验）。
 	passthroughSemanticMutationTotal  atomic.Int64
 	passthroughUsageParseFailureTotal atomic.Int64
 )

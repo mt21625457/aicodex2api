@@ -39,6 +39,15 @@ type RelayResult struct {
 	DroppedDownstreamFrames int64
 }
 
+type RelayTurnResult struct {
+	RequestModel      string
+	Usage             Usage
+	RequestID         string
+	TerminalEventType string
+	Duration          time.Duration
+	FirstTokenMs      *int
+}
+
 type RelayExit struct {
 	Stage           string
 	Err             error
@@ -51,6 +60,7 @@ type RelayOptions struct {
 	UpstreamDrainTimeout time.Duration
 	FirstMessageType     coderws.MessageType
 	OnUsageParseFailure  func(eventType string, usageRaw string)
+	OnTurnComplete       func(turn RelayTurnResult)
 	OnTrace              func(event RelayTraceEvent)
 	Now                  func() time.Time
 }
@@ -71,6 +81,7 @@ type relayState struct {
 	lastResponseID    string
 	terminalEventType string
 	firstTokenMs      *int
+	turnTimingByID    map[string]*relayTurnTiming
 }
 
 type relayExitSignal struct {
@@ -78,6 +89,20 @@ type relayExitSignal struct {
 	err             error
 	graceful        bool
 	wroteDownstream bool
+}
+
+type observedUpstreamEvent struct {
+	terminal   bool
+	eventType  string
+	responseID string
+	usage      Usage
+	duration   time.Duration
+	firstToken *int
+}
+
+type relayTurnTiming struct {
+	startAt      time.Time
+	firstTokenMs *int
 }
 
 func Relay(
@@ -175,6 +200,7 @@ func Relay(
 		nowFn,
 		state,
 		options.OnUsageParseFailure,
+		options.OnTurnComplete,
 		&dropDownstreamWrites,
 		upstreamToClientFrames,
 		droppedDownstreamFrames,
@@ -203,7 +229,6 @@ func Relay(
 	} else {
 		relayCancel()
 		_ = upstreamConn.Close()
-		_ = clientConn.Close()
 		secondExit, hasSecondExit = waitRelayExit(exitCh, 200*time.Millisecond)
 	}
 	if hasSecondExit {
@@ -219,7 +244,6 @@ func Relay(
 
 	relayCancel()
 	_ = upstreamConn.Close()
-	_ = clientConn.Close()
 
 	enrichResult(&result, state, nowFn().Sub(startAt))
 	result.ClientToUpstreamFrames = clientToUpstreamFrames.Load()
@@ -254,6 +278,7 @@ func Relay(
 			Graceful:        true,
 			WroteDownstream: combinedWroteDownstream,
 		})
+		_ = clientConn.Close()
 		return result, nil
 	}
 	if !firstExit.graceful {
@@ -289,6 +314,7 @@ func Relay(
 		Graceful:        true,
 		WroteDownstream: combinedWroteDownstream,
 	})
+	_ = clientConn.Close()
 	return result, nil
 }
 
@@ -340,6 +366,7 @@ func runUpstreamToClient(
 	nowFn func() time.Time,
 	state *relayState,
 	onUsageParseFailure func(eventType string, usageRaw string),
+	onTurnComplete func(turn RelayTurnResult),
 	dropDownstreamWrites *atomic.Bool,
 	forwardedFrames *atomic.Int64,
 	droppedFrames *atomic.Int64,
@@ -367,10 +394,14 @@ func runUpstreamToClient(
 			return
 		}
 		markActivity()
-		terminalSeen := false
-		if msgType == coderws.MessageText || msgType == coderws.MessageBinary {
-			terminalSeen = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure)
+		observedEvent := observedUpstreamEvent{}
+		switch msgType {
+		case coderws.MessageText:
+			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure)
+		case coderws.MessageBinary:
+			// binary frame 直接透传，不进入 JSON 观测路径（避免无效解析开销）。
 		}
+		emitTurnComplete(onTurnComplete, state, observedEvent)
 		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
 			if droppedFrames != nil {
 				droppedFrames.Add(1)
@@ -382,7 +413,7 @@ func runUpstreamToClient(
 				PayloadBytes:    len(payload),
 				WroteDownstream: wroteDownstream,
 			})
-			if terminalSeen {
+			if observedEvent.terminal {
 				exitCh <- relayExitSignal{
 					stage:           "drain_terminal",
 					graceful:        true,
@@ -495,35 +526,125 @@ func observeUpstreamMessage(
 	startAt time.Time,
 	nowFn func() time.Time,
 	onUsageParseFailure func(eventType string, usageRaw string),
-) bool {
+) observedUpstreamEvent {
 	if state == nil || len(message) == 0 {
-		return false
+		return observedUpstreamEvent{}
 	}
-	values := gjson.GetManyBytes(message, "type", "response.id", "id")
+	values := gjson.GetManyBytes(message, "type", "response.id", "response_id", "id")
 	eventType := strings.TrimSpace(values[0].String())
 	if eventType == "" {
-		return false
+		return observedUpstreamEvent{}
 	}
 	responseID := strings.TrimSpace(values[1].String())
 	if responseID == "" {
 		responseID = strings.TrimSpace(values[2].String())
 	}
+	// 仅 terminal 事件兜底读取顶层 id，避免把 event_id 当成 response_id 关联到 turn。
+	if responseID == "" && isTerminalEvent(eventType) {
+		responseID = strings.TrimSpace(values[3].String())
+	}
+	now := nowFn()
 
 	if state.firstTokenMs == nil && isTokenEvent(eventType) {
-		ms := int(nowFn().Sub(startAt).Milliseconds())
+		ms := int(now.Sub(startAt).Milliseconds())
 		if ms >= 0 {
 			state.firstTokenMs = &ms
 		}
 	}
-	parseUsageAndAccumulate(state, message, eventType, onUsageParseFailure)
-	if !isTerminalEvent(eventType) {
-		return false
+	parsedUsage := parseUsageAndAccumulate(state, message, eventType, onUsageParseFailure)
+	observed := observedUpstreamEvent{
+		eventType:  eventType,
+		responseID: responseID,
+		usage:      parsedUsage,
 	}
+	if responseID != "" {
+		turnTiming := openAIWSRelayGetOrInitTurnTiming(state, responseID, now)
+		if turnTiming != nil && turnTiming.firstTokenMs == nil && isTokenEvent(eventType) {
+			ms := int(now.Sub(turnTiming.startAt).Milliseconds())
+			if ms >= 0 {
+				turnTiming.firstTokenMs = &ms
+			}
+		}
+	}
+	if !isTerminalEvent(eventType) {
+		return observed
+	}
+	observed.terminal = true
 	state.terminalEventType = eventType
 	if responseID != "" {
 		state.lastResponseID = responseID
+		if turnTiming, ok := openAIWSRelayDeleteTurnTiming(state, responseID); ok {
+			duration := now.Sub(turnTiming.startAt)
+			if duration < 0 {
+				duration = 0
+			}
+			observed.duration = duration
+			observed.firstToken = openAIWSRelayCloneIntPtr(turnTiming.firstTokenMs)
+		}
 	}
-	return true
+	return observed
+}
+
+func emitTurnComplete(
+	onTurnComplete func(turn RelayTurnResult),
+	state *relayState,
+	observed observedUpstreamEvent,
+) {
+	if onTurnComplete == nil || !observed.terminal {
+		return
+	}
+	responseID := strings.TrimSpace(observed.responseID)
+	if responseID == "" {
+		return
+	}
+	requestModel := ""
+	if state != nil {
+		requestModel = state.requestModel
+	}
+	onTurnComplete(RelayTurnResult{
+		RequestModel:      requestModel,
+		Usage:             observed.usage,
+		RequestID:         responseID,
+		TerminalEventType: observed.eventType,
+		Duration:          observed.duration,
+		FirstTokenMs:      openAIWSRelayCloneIntPtr(observed.firstToken),
+	})
+}
+
+func openAIWSRelayGetOrInitTurnTiming(state *relayState, responseID string, now time.Time) *relayTurnTiming {
+	if state == nil {
+		return nil
+	}
+	if state.turnTimingByID == nil {
+		state.turnTimingByID = make(map[string]*relayTurnTiming, 8)
+	}
+	timing, ok := state.turnTimingByID[responseID]
+	if !ok || timing == nil || timing.startAt.IsZero() {
+		timing = &relayTurnTiming{startAt: now}
+		state.turnTimingByID[responseID] = timing
+		return timing
+	}
+	return timing
+}
+
+func openAIWSRelayDeleteTurnTiming(state *relayState, responseID string) (relayTurnTiming, bool) {
+	if state == nil || state.turnTimingByID == nil {
+		return relayTurnTiming{}, false
+	}
+	timing, ok := state.turnTimingByID[responseID]
+	if !ok || timing == nil {
+		return relayTurnTiming{}, false
+	}
+	delete(state.turnTimingByID, responseID)
+	return *timing, true
+}
+
+func openAIWSRelayCloneIntPtr(v *int) *int {
+	if v == nil {
+		return nil
+	}
+	cloned := *v
+	return &cloned
 }
 
 func parseUsageAndAccumulate(
@@ -531,13 +652,13 @@ func parseUsageAndAccumulate(
 	message []byte,
 	eventType string,
 	onParseFailure func(eventType string, usageRaw string),
-) {
+) Usage {
 	if state == nil || len(message) == 0 || !shouldParseUsage(eventType) {
-		return
+		return Usage{}
 	}
 	usageResult := gjson.GetBytes(message, "response.usage")
 	if !usageResult.Exists() {
-		return
+		return Usage{}
 	}
 	usageRaw := strings.TrimSpace(usageResult.Raw)
 	if usageRaw == "" || !strings.HasPrefix(usageRaw, "{") {
@@ -545,31 +666,39 @@ func parseUsageAndAccumulate(
 		if onParseFailure != nil {
 			onParseFailure(eventType, usageRaw)
 		}
-		return
+		return Usage{}
 	}
 
 	inputResult := gjson.GetBytes(message, "response.usage.input_tokens")
 	outputResult := gjson.GetBytes(message, "response.usage.output_tokens")
 	cachedResult := gjson.GetBytes(message, "response.usage.input_tokens_details.cached_tokens")
 
-	inputTokens, inputOK := parseUsageIntField(inputResult)
-	outputTokens, outputOK := parseUsageIntField(outputResult)
-	cachedTokens, cachedOK := parseUsageIntField(cachedResult)
+	inputTokens, inputOK := parseUsageIntField(inputResult, true)
+	outputTokens, outputOK := parseUsageIntField(outputResult, true)
+	cachedTokens, cachedOK := parseUsageIntField(cachedResult, false)
 	if !inputOK || !outputOK || !cachedOK {
 		recordUsageParseFailure()
 		if onParseFailure != nil {
 			onParseFailure(eventType, usageRaw)
 		}
+		// 解析失败时不做部分字段累加，避免计费 usage 出现“半有效”状态。
+		return Usage{}
+	}
+	parsedUsage := Usage{
+		InputTokens:          inputTokens,
+		OutputTokens:         outputTokens,
+		CacheReadInputTokens: cachedTokens,
 	}
 
-	state.usage.InputTokens += inputTokens
-	state.usage.OutputTokens += outputTokens
-	state.usage.CacheReadInputTokens += cachedTokens
+	state.usage.InputTokens += parsedUsage.InputTokens
+	state.usage.OutputTokens += parsedUsage.OutputTokens
+	state.usage.CacheReadInputTokens += parsedUsage.CacheReadInputTokens
+	return parsedUsage
 }
 
-func parseUsageIntField(value gjson.Result) (int, bool) {
+func parseUsageIntField(value gjson.Result, required bool) (int, bool) {
 	if !value.Exists() {
-		return 0, true
+		return 0, !required
 	}
 	if value.Type != gjson.Number {
 		return 0, false

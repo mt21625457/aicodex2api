@@ -743,6 +743,46 @@ func TestResolveOpenAIUsageRequestID_FallbackChangesWhenUsageChanges(t *testing.
 	require.NotEqual(t, baseID, changedID, "fallback request id should change when usage fingerprint changes")
 }
 
+func TestResolveOpenAIUsageRequestID_FallbackChangesWhenWSIngressModeChanges(t *testing.T) {
+	base := &OpenAIRecordUsageInput{
+		FallbackRequestID: "req_fallback_seed",
+		APIKey:            &APIKey{ID: 11003},
+		Account:           &Account{ID: 21003},
+		Result: &OpenAIForwardResult{
+			Model:         "gpt-5.3-codex",
+			Stream:        true,
+			OpenAIWSMode:  true,
+			WSIngressMode: OpenAIWSIngressModeCtxPool,
+			Usage: OpenAIUsage{
+				InputTokens:  10,
+				OutputTokens: 4,
+			},
+			Duration: 2 * time.Second,
+		},
+	}
+	changed := &OpenAIRecordUsageInput{
+		FallbackRequestID: base.FallbackRequestID,
+		APIKey:            base.APIKey,
+		Account:           base.Account,
+		Result: &OpenAIForwardResult{
+			Model:         base.Result.Model,
+			Stream:        base.Result.Stream,
+			OpenAIWSMode:  true,
+			WSIngressMode: OpenAIWSIngressModePassthrough,
+			Usage: OpenAIUsage{
+				InputTokens:  10,
+				OutputTokens: 4,
+			},
+			Duration: 2 * time.Second,
+		},
+	}
+
+	baseID := resolveOpenAIUsageRequestID(base)
+	changedID := resolveOpenAIUsageRequestID(changed)
+
+	require.NotEqual(t, baseID, changedID, "fallback request id should change when ws ingress mode changes")
+}
+
 func TestOpenAIGatewayServiceRecordUsage_UsesFallbackRequestIDWhenMissing(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{
 		inserted: true,

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -21,6 +22,8 @@ type openAIWSClientFrameConn struct {
 }
 
 const openaiWSV2PassthroughModeFields = "ws_mode=passthrough ws_router=v2"
+
+var _ openaiwsv2.FrameConn = (*openAIWSClientFrameConn)(nil)
 
 func (c *openAIWSClientFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
 	if c == nil || c.conn == nil {
@@ -148,6 +151,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return errors.New("openai ws passthrough upstream connection does not support frame relay")
 	}
 
+	completedTurns := atomic.Int32{}
 	relayResult, relayExit := openaiwsv2.RunEntry(openaiwsv2.EntryInput{
 		Ctx:                ctx,
 		ClientConn:         &openAIWSClientFrameConn{conn: clientConn},
@@ -155,7 +159,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		FirstClientMessage: firstClientMessage,
 		Options: openaiwsv2.RelayOptions{
 			WriteTimeout:     s.openAIWSWriteTimeout(),
-			IdleTimeout:      s.openAIWSClientReadIdleTimeout(),
+			IdleTimeout:      s.openAIWSPassthroughIdleTimeout(),
 			FirstMessageType: firstClientMessageType,
 			OnUsageParseFailure: func(eventType string, usageRaw string) {
 				logOpenAIWSV2Passthrough(
@@ -163,6 +167,40 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					truncateOpenAIWSLogValue(eventType, openAIWSLogValueMaxLen),
 					truncateOpenAIWSLogValue(usageRaw, openAIWSLogValueMaxLen),
 				)
+			},
+			OnTurnComplete: func(turn openaiwsv2.RelayTurnResult) {
+				turnNo := int(completedTurns.Add(1))
+				turnResult := &OpenAIForwardResult{
+					RequestID: turn.RequestID,
+					Usage: OpenAIUsage{
+						InputTokens:              turn.Usage.InputTokens,
+						OutputTokens:             turn.Usage.OutputTokens,
+						CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens,
+						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
+					},
+					Model:             turn.RequestModel,
+					Stream:            true,
+					OpenAIWSMode:      true,
+					WSIngressMode:     OpenAIWSIngressModePassthrough,
+					Duration:          turn.Duration,
+					FirstTokenMs:      turn.FirstTokenMs,
+					TerminalEventType: turn.TerminalEventType,
+				}
+				logOpenAIWSV2Passthrough(
+					"relay_turn_completed account_id=%d turn=%d request_id=%s terminal_event=%s duration_ms=%d first_token_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
+					account.ID,
+					turnNo,
+					truncateOpenAIWSLogValue(turnResult.RequestID, openAIWSIDValueMaxLen),
+					truncateOpenAIWSLogValue(turnResult.TerminalEventType, openAIWSLogValueMaxLen),
+					turnResult.Duration.Milliseconds(),
+					openAIWSFirstTokenMsForLog(turnResult.FirstTokenMs),
+					turnResult.Usage.InputTokens,
+					turnResult.Usage.OutputTokens,
+					turnResult.Usage.CacheReadInputTokens,
+				)
+				if hooks != nil && hooks.AfterTurn != nil {
+					hooks.AfterTurn(turnNo, turnResult, nil)
+				}
 			},
 			OnTrace: func(event openaiwsv2.RelayTraceEvent) {
 				logOpenAIWSV2Passthrough(
@@ -191,14 +229,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		Model:             relayResult.RequestModel,
 		Stream:            true,
 		OpenAIWSMode:      true,
+		WSIngressMode:     OpenAIWSIngressModePassthrough,
 		Duration:          relayResult.Duration,
 		FirstTokenMs:      relayResult.FirstTokenMs,
 		TerminalEventType: relayResult.TerminalEventType,
 	}
 
+	turnCount := int(completedTurns.Load())
 	if relayExit == nil {
 		logOpenAIWSV2Passthrough(
-			"relay_completed account_id=%d request_id=%s terminal_event=%s duration_ms=%d c2u_frames=%d u2c_frames=%d dropped_frames=%d",
+			"relay_completed account_id=%d request_id=%s terminal_event=%s duration_ms=%d c2u_frames=%d u2c_frames=%d dropped_frames=%d turns=%d",
 			account.ID,
 			truncateOpenAIWSLogValue(result.RequestID, openAIWSIDValueMaxLen),
 			truncateOpenAIWSLogValue(result.TerminalEventType, openAIWSLogValueMaxLen),
@@ -206,14 +246,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			relayResult.ClientToUpstreamFrames,
 			relayResult.UpstreamToClientFrames,
 			relayResult.DroppedDownstreamFrames,
+			turnCount,
 		)
-		if hooks != nil && hooks.AfterTurn != nil {
+		// 正常路径按 terminal 事件逐 turn 已回调；仅在零 turn 场景兜底回调一次。
+		if turnCount == 0 && hooks != nil && hooks.AfterTurn != nil {
 			hooks.AfterTurn(1, result, nil)
 		}
 		return nil
 	}
 	logOpenAIWSV2Passthrough(
-		"relay_failed account_id=%d stage=%s wrote_downstream=%v err=%s duration_ms=%d c2u_frames=%d u2c_frames=%d dropped_frames=%d",
+		"relay_failed account_id=%d stage=%s wrote_downstream=%v err=%s duration_ms=%d c2u_frames=%d u2c_frames=%d dropped_frames=%d turns=%d",
 		account.ID,
 		truncateOpenAIWSLogValue(relayExit.Stage, openAIWSLogValueMaxLen),
 		relayExit.WroteDownstream,
@@ -222,6 +264,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		relayResult.ClientToUpstreamFrames,
 		relayResult.UpstreamToClientFrames,
 		relayResult.DroppedDownstreamFrames,
+		turnCount,
 	)
 
 	relayErr := relayExit.Err
@@ -232,14 +275,24 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			relayErr,
 		)
 	}
-	turnErr := wrapOpenAIWSIngressTurnErrorWithPartial(
-		relayExit.Stage,
-		relayErr,
-		relayExit.WroteDownstream,
-		result,
-	)
+	turnErr := error(nil)
+	if turnCount == 0 {
+		turnErr = wrapOpenAIWSIngressTurnErrorWithPartial(
+			relayExit.Stage,
+			relayErr,
+			relayExit.WroteDownstream,
+			result,
+		)
+	} else {
+		// 已按 turn 回调 usage 时，错误路径不再附带 partial，避免重复记账同一 request_id。
+		turnErr = wrapOpenAIWSIngressTurnError(
+			relayExit.Stage,
+			relayErr,
+			relayExit.WroteDownstream,
+		)
+	}
 	if hooks != nil && hooks.AfterTurn != nil {
-		hooks.AfterTurn(1, nil, turnErr)
+		hooks.AfterTurn(turnCount+1, nil, turnErr)
 	}
 	return turnErr
 }
@@ -312,6 +365,13 @@ func relayErrorText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func openAIWSFirstTokenMsForLog(firstTokenMs *int) int {
+	if firstTokenMs == nil {
+		return -1
+	}
+	return *firstTokenMs
 }
 
 func logOpenAIWSV2Passthrough(format string, args ...any) {

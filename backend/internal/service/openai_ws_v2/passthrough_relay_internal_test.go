@@ -119,6 +119,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			time.Now,
 			&relayState{},
 			nil,
+			nil,
 			drop,
 			nil,
 			nil,
@@ -146,6 +147,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			time.Now(),
 			time.Now,
 			&relayState{},
+			nil,
 			nil,
 			drop,
 			nil,
@@ -178,6 +180,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 			time.Now,
 			&relayState{},
 			nil,
+			nil,
 			drop,
 			nil,
 			dropped,
@@ -205,7 +208,7 @@ func TestRunIdleWatchdog_NoTimeoutWhenDisabled(t *testing.T) {
 	select {
 	case <-exitCh:
 		t.Fatal("unexpected idle timeout signal")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -249,14 +252,16 @@ func TestHelperFunctionsCoverage(t *testing.T) {
 	_, ok = waitRelayExit(ch, 10*time.Millisecond)
 	require.False(t, ok)
 
-	n, ok := parseUsageIntField(gjson.Get(`{"n":3}`, "n"))
+	n, ok := parseUsageIntField(gjson.Get(`{"n":3}`, "n"), true)
 	require.True(t, ok)
 	require.Equal(t, 3, n)
-	_, ok = parseUsageIntField(gjson.Get(`{"n":"x"}`, "n"))
+	_, ok = parseUsageIntField(gjson.Get(`{"n":"x"}`, "n"), true)
 	require.False(t, ok)
-	n, ok = parseUsageIntField(gjson.Result{})
+	n, ok = parseUsageIntField(gjson.Result{}, false)
 	require.True(t, ok)
 	require.Equal(t, 0, n)
+	_, ok = parseUsageIntField(gjson.Result{}, true)
+	require.False(t, ok)
 }
 
 func TestParseUsageAndEnrichCoverage(t *testing.T) {
@@ -265,6 +270,26 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
 	state := &relayState{}
 	parseUsageAndAccumulate(state, []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":"bad"}}}`), "response.completed", nil)
 	require.Equal(t, 0, state.usage.InputTokens)
+
+	parseUsageAndAccumulate(
+		state,
+		[]byte(`{"type":"response.completed","response":{"usage":{"input_tokens":9,"output_tokens":"bad","input_tokens_details":{"cached_tokens":2}}}}`),
+		"response.completed",
+		nil,
+	)
+	require.Equal(t, 0, state.usage.InputTokens, "部分字段解析失败时不应累加 usage")
+	require.Equal(t, 0, state.usage.OutputTokens)
+	require.Equal(t, 0, state.usage.CacheReadInputTokens)
+
+	parseUsageAndAccumulate(
+		state,
+		[]byte(`{"type":"response.completed","response":{"usage":{"input_tokens_details":{"cached_tokens":2}}}}`),
+		"response.completed",
+		nil,
+	)
+	require.Equal(t, 0, state.usage.InputTokens, "必填 usage 字段缺失时不应累加 usage")
+	require.Equal(t, 0, state.usage.OutputTokens)
+	require.Equal(t, 0, state.usage.CacheReadInputTokens)
 
 	parseUsageAndAccumulate(state, []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":1,"input_tokens_details":{"cached_tokens":1}}}}`), "response.completed", nil)
 	require.Equal(t, 2, state.usage.InputTokens)
@@ -278,4 +303,130 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
 	parseUsageAndAccumulate(state, []byte(`{"type":"response.in_progress","response":{"usage":{"input_tokens":9}}}`), "response.in_progress", nil)
 	require.Equal(t, 2, state.usage.InputTokens)
 	enrichResult(nil, state, 0)
+}
+
+func TestEmitTurnCompleteCoverage(t *testing.T) {
+	t.Parallel()
+
+	// 非 terminal 事件不应触发。
+	called := 0
+	emitTurnComplete(func(turn RelayTurnResult) {
+		called++
+	}, &relayState{requestModel: "gpt-5"}, observedUpstreamEvent{
+		terminal:   false,
+		eventType:  "response.output_text.delta",
+		responseID: "resp_ignored",
+		usage:      Usage{InputTokens: 1},
+	})
+	require.Equal(t, 0, called)
+
+	// 缺少 response_id 时不应触发。
+	emitTurnComplete(func(turn RelayTurnResult) {
+		called++
+	}, &relayState{requestModel: "gpt-5"}, observedUpstreamEvent{
+		terminal:  true,
+		eventType: "response.completed",
+	})
+	require.Equal(t, 0, called)
+
+	// terminal 且 response_id 存在，应该触发；state=nil 时 model 为空串。
+	var got RelayTurnResult
+	emitTurnComplete(func(turn RelayTurnResult) {
+		called++
+		got = turn
+	}, nil, observedUpstreamEvent{
+		terminal:   true,
+		eventType:  "response.completed",
+		responseID: "resp_emit",
+		usage:      Usage{InputTokens: 2, OutputTokens: 3},
+	})
+	require.Equal(t, 1, called)
+	require.Equal(t, "resp_emit", got.RequestID)
+	require.Equal(t, "response.completed", got.TerminalEventType)
+	require.Equal(t, 2, got.Usage.InputTokens)
+	require.Equal(t, 3, got.Usage.OutputTokens)
+	require.Equal(t, "", got.RequestModel)
+}
+
+func TestIsDisconnectErrorCoverage_CloseStatusesAndMessageBranches(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, isDisconnectError(coderws.CloseError{Code: coderws.StatusNormalClosure}))
+	require.True(t, isDisconnectError(coderws.CloseError{Code: coderws.StatusNoStatusRcvd}))
+	require.True(t, isDisconnectError(coderws.CloseError{Code: coderws.StatusAbnormalClosure}))
+	require.True(t, isDisconnectError(errors.New("connection reset by peer")))
+	require.False(t, isDisconnectError(errors.New("   ")))
+}
+
+func TestIsTokenEventCoverageBranches(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, isTokenEvent("response.in_progress"))
+	require.False(t, isTokenEvent("response.output_item.added"))
+	require.True(t, isTokenEvent("response.output_audio.delta"))
+	require.True(t, isTokenEvent("response.output"))
+	require.True(t, isTokenEvent("response.done"))
+}
+
+func TestRelayTurnTimingHelpersCoverage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100, 0)
+	// nil state
+	require.Nil(t, openAIWSRelayGetOrInitTurnTiming(nil, "resp_nil", now))
+	_, ok := openAIWSRelayDeleteTurnTiming(nil, "resp_nil")
+	require.False(t, ok)
+
+	state := &relayState{}
+	timing := openAIWSRelayGetOrInitTurnTiming(state, "resp_a", now)
+	require.NotNil(t, timing)
+	require.Equal(t, now, timing.startAt)
+
+	// 再次获取返回同一条 timing
+	timing2 := openAIWSRelayGetOrInitTurnTiming(state, "resp_a", now.Add(5*time.Second))
+	require.NotNil(t, timing2)
+	require.Equal(t, now, timing2.startAt)
+
+	// 删除存在键
+	deleted, ok := openAIWSRelayDeleteTurnTiming(state, "resp_a")
+	require.True(t, ok)
+	require.Equal(t, now, deleted.startAt)
+
+	// 删除不存在键
+	_, ok = openAIWSRelayDeleteTurnTiming(state, "resp_a")
+	require.False(t, ok)
+}
+
+func TestObserveUpstreamMessage_ResponseIDFallbackPolicy(t *testing.T) {
+	t.Parallel()
+
+	state := &relayState{requestModel: "gpt-5"}
+	startAt := time.Unix(0, 0)
+	now := startAt
+	nowFn := func() time.Time {
+		now = now.Add(5 * time.Millisecond)
+		return now
+	}
+
+	// 非 terminal：仅有顶层 id，不应把 event id 当成 response_id。
+	observed := observeUpstreamMessage(
+		state,
+		[]byte(`{"type":"response.output_text.delta","id":"evt_123","delta":"hi"}`),
+		startAt,
+		nowFn,
+		nil,
+	)
+	require.False(t, observed.terminal)
+	require.Equal(t, "", observed.responseID)
+
+	// terminal：允许兜底用顶层 id（用于兼容少数字段变体）。
+	observed = observeUpstreamMessage(
+		state,
+		[]byte(`{"type":"response.completed","id":"resp_fallback","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`),
+		startAt,
+		nowFn,
+		nil,
+	)
+	require.True(t, observed.terminal)
+	require.Equal(t, "resp_fallback", observed.responseID)
 }

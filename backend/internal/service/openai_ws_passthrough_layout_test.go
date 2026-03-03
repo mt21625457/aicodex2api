@@ -3,7 +3,6 @@ package service
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,10 +11,8 @@ import (
 func TestOpenAIWSPassthroughDataPlaneLayout(t *testing.T) {
 	t.Parallel()
 
-	_, thisFile, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-
-	serviceDir := filepath.Dir(thisFile)
+	serviceDir, err := os.Getwd()
+	require.NoError(t, err)
 	v2Dir := filepath.Join(serviceDir, "openai_ws_v2")
 	forwarderFile := filepath.Join(serviceDir, "openai_ws_forwarder.go")
 

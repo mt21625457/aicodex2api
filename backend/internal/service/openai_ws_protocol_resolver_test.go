@@ -145,7 +145,7 @@ func TestOpenAIWSProtocolResolver_Resolve_ModeRouterV2(t *testing.T) {
 	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
 	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModeOff
 
-	t.Run("dedicated mode is blocked and routes to http", func(t *testing.T) {
+	t.Run("dedicated mode maps to ctx_pool and routes to ws v2", func(t *testing.T) {
 		account := &Account{
 			Platform:    PlatformOpenAI,
 			Type:        AccountTypeOAuth,

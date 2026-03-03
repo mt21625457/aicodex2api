@@ -204,6 +204,8 @@ gateway:
     # 新版 WS mode 路由（默认开启）。关闭时保持当前 legacy 实现行为。
     mode_router_v2_enabled: true
     # ingress 默认模式：off|ctx_pool|passthrough（仅 mode_router_v2_enabled=true 生效）
+    # 建议：常规场景选 ctx_pool；需要“原样透传 + 不走连接池”时选 passthrough；紧急回滚选 off。
+    # Recommendation: use ctx_pool for normal traffic, passthrough for raw relay without pool reuse, off for emergency rollback.
     ingress_mode_default: ctx_pool
     # 全局总开关，默认 true；关闭时所有请求保持原有 HTTP/SSE 路由
     enabled: true
@@ -227,7 +229,7 @@ gateway:
     # 协议 feature 开关，v2 优先于 v1
     responses_websockets: false
     responses_websockets_v2: true
-    # 连接池参数（按账号池化复用）
+    # 连接池参数（按账号池化复用，仅 ctx_pool 模式生效；passthrough 模式不使用连接池）
     max_conns_per_account: 128
     min_idle_per_account: 4
     max_idle_per_account: 12

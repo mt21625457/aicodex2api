@@ -220,8 +220,11 @@ type OpenAIForwardResult struct {
 	ReasoningEffort *string
 	Stream          bool
 	OpenAIWSMode    bool
-	Duration        time.Duration
-	FirstTokenMs    *int
+	// WSIngressMode records which WS v2 ingress path produced this result.
+	// Expected values: ctx_pool / passthrough.
+	WSIngressMode string
+	Duration      time.Duration
+	FirstTokenMs  *int
 	// TerminalEventType records the terminal event that ended the WS turn.
 	TerminalEventType string
 	// PendingFunctionCallIDs 表示该 response 中未完成的 function_call call_id 集合。
@@ -3740,6 +3743,8 @@ func buildOpenAIUsageFallbackRequestID(input *OpenAIRecordUsageInput) string {
 	_ = seed.WriteByte('|')
 	_, _ = seed.WriteString(strconv.FormatBool(result.OpenAIWSMode))
 	_ = seed.WriteByte('|')
+	_, _ = seed.WriteString(normalizeOpenAIWSIngressMode(result.WSIngressMode))
+	_ = seed.WriteByte('|')
 	_, _ = seed.WriteString(strconv.Itoa(usage.InputTokens))
 	_ = seed.WriteByte('|')
 	_, _ = seed.WriteString(strconv.Itoa(usage.OutputTokens))
@@ -3762,6 +3767,44 @@ func buildOpenAIUsageFallbackRequestID(input *OpenAIRecordUsageInput) string {
 
 	sum := sha256.Sum256([]byte(seed.String()))
 	return "wsf_" + hex.EncodeToString(sum[:16])
+}
+
+func logOpenAIWSUsageRecorded(
+	result *OpenAIForwardResult,
+	usageLog *UsageLog,
+	inserted bool,
+	shouldBill bool,
+	billedAmount float64,
+) {
+	if result == nil || usageLog == nil || !result.OpenAIWSMode {
+		return
+	}
+	wsIngressMode := normalizeOpenAIWSIngressMode(result.WSIngressMode)
+	if wsIngressMode == "" {
+		wsIngressMode = "-"
+	}
+
+	logOpenAIWSModeInfo(
+		"ingress_ws_usage_recorded account_id=%d api_key_id=%d user_id=%d request_id=%s ws_ingress_mode=%s request_type=%s requests=1 model=%s input_tokens=%d output_tokens=%d cache_creation_tokens=%d cache_read_tokens=%d total_tokens=%d total_cost=%.6f actual_cost=%.6f billed_amount=%.6f should_bill=%v inserted=%v terminal_event=%s",
+		usageLog.AccountID,
+		usageLog.APIKeyID,
+		usageLog.UserID,
+		truncateOpenAIWSLogValue(usageLog.RequestID, openAIWSIDValueMaxLen),
+		normalizeOpenAIWSLogValue(wsIngressMode),
+		normalizeOpenAIWSLogValue(usageLog.EffectiveRequestType().String()),
+		truncateOpenAIWSLogValue(usageLog.Model, openAIWSLogValueMaxLen),
+		usageLog.InputTokens,
+		usageLog.OutputTokens,
+		usageLog.CacheCreationTokens,
+		usageLog.CacheReadTokens,
+		usageLog.TotalTokens(),
+		usageLog.TotalCost,
+		usageLog.ActualCost,
+		billedAmount,
+		shouldBill,
+		inserted,
+		truncateOpenAIWSLogValue(result.TerminalEventType, openAIWSLogValueMaxLen),
+	)
 }
 
 // RecordUsage records usage and deducts balance
@@ -3877,6 +3920,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		logger.LegacyPrintf("service.openai_gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
+		logOpenAIWSUsageRecorded(result, usageLog, inserted, false, 0)
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)
 		return nil
 	}
@@ -3942,6 +3986,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			logger.LegacyPrintf("service.openai_gateway", "Update API key quota failed: %v", err)
 		}
 	}
+	billedAmount := 0.0
+	if shouldBill {
+		billedAmount = billAmount
+	}
+	logOpenAIWSUsageRecorded(result, usageLog, inserted, shouldBill, billedAmount)
 
 	// Schedule batch update for account last_used_at
 	s.deferredService.ScheduleLastUsedUpdate(account.ID)

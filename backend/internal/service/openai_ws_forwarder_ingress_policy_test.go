@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,8 +120,111 @@ func buildIngressPolicyTestAccount(extra map[string]any) *Account {
 	}
 }
 
-type openAIWSPassthroughPanicStateStore struct {
-	OpenAIWSStateStore
+type openAIWSPassthroughProbeStateStore struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func newOpenAIWSPassthroughProbeStateStore() *openAIWSPassthroughProbeStateStore {
+	return &openAIWSPassthroughProbeStateStore{
+		calls: make([]string, 0, 4),
+	}
+}
+
+func (s *openAIWSPassthroughProbeStateStore) record(method string) {
+	s.mu.Lock()
+	s.calls = append(s.calls, method)
+	s.mu.Unlock()
+}
+
+func (s *openAIWSPassthroughProbeStateStore) unexpectedErr(method string) error {
+	s.record(method)
+	return errors.New("passthrough must not call OpenAIWSStateStore." + method)
+}
+
+func (s *openAIWSPassthroughProbeStateStore) Calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.calls))
+	copy(out, s.calls)
+	return out
+}
+
+func (s *openAIWSPassthroughProbeStateStore) BindResponseAccount(context.Context, int64, string, int64, time.Duration) error {
+	return s.unexpectedErr("BindResponseAccount")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) GetResponseAccount(context.Context, int64, string) (int64, error) {
+	return 0, s.unexpectedErr("GetResponseAccount")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) DeleteResponseAccount(context.Context, int64, string) error {
+	return s.unexpectedErr("DeleteResponseAccount")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) BindResponseConn(string, string, time.Duration) {
+	s.record("BindResponseConn")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) GetResponseConn(string) (string, bool) {
+	s.record("GetResponseConn")
+	return "", false
+}
+
+func (s *openAIWSPassthroughProbeStateStore) DeleteResponseConn(string) {
+	s.record("DeleteResponseConn")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) BindResponsePendingToolCalls(int64, string, []string, time.Duration) {
+	s.record("BindResponsePendingToolCalls")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) GetResponsePendingToolCalls(int64, string) ([]string, bool) {
+	s.record("GetResponsePendingToolCalls")
+	return nil, false
+}
+
+func (s *openAIWSPassthroughProbeStateStore) DeleteResponsePendingToolCalls(int64, string) {
+	s.record("DeleteResponsePendingToolCalls")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) BindSessionTurnState(int64, string, string, time.Duration) {
+	s.record("BindSessionTurnState")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) GetSessionTurnState(int64, string) (string, bool) {
+	s.record("GetSessionTurnState")
+	return "", false
+}
+
+func (s *openAIWSPassthroughProbeStateStore) DeleteSessionTurnState(int64, string) {
+	s.record("DeleteSessionTurnState")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) BindSessionLastResponseID(int64, string, string, time.Duration) {
+	s.record("BindSessionLastResponseID")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) GetSessionLastResponseID(int64, string) (string, bool) {
+	s.record("GetSessionLastResponseID")
+	return "", false
+}
+
+func (s *openAIWSPassthroughProbeStateStore) DeleteSessionLastResponseID(int64, string) {
+	s.record("DeleteSessionLastResponseID")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) BindSessionConn(int64, string, string, time.Duration) {
+	s.record("BindSessionConn")
+}
+
+func (s *openAIWSPassthroughProbeStateStore) GetSessionConn(int64, string) (string, bool) {
+	s.record("GetSessionConn")
+	return "", false
+}
+
+func (s *openAIWSPassthroughProbeStateStore) DeleteSessionConn(int64, string) {
+	s.record("DeleteSessionConn")
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ModeOffReturnsPolicyViolation(t *testing.T) {
@@ -261,7 +365,8 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughDoesN
 	svc := buildIngressPolicyTestService(cfg)
 	dialer := &openAIWSAlwaysFailDialer{}
 	svc.openaiWSPassthroughDialer = dialer
-	svc.openaiWSStateStore = &openAIWSPassthroughPanicStateStore{}
+	storeProbe := newOpenAIWSPassthroughProbeStateStore()
+	svc.openaiWSStateStore = storeProbe
 	account := buildIngressPolicyTestAccount(map[string]any{
 		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
 	})
@@ -275,4 +380,5 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughDoesN
 	require.Error(t, serverErr)
 	require.Contains(t, serverErr.Error(), "openai ws passthrough dial")
 	require.Equal(t, 1, dialer.DialCount())
+	require.Empty(t, storeProbe.Calls(), "passthrough 路径不应访问 StateStore")
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,10 @@ type delayedReadFrameConn struct {
 	base       FrameConn
 	firstDelay time.Duration
 	once       sync.Once
+}
+
+type closeSpyFrameConn struct {
+	closeCalls atomic.Int32
 }
 
 func newPassthroughTestFrameConn(frames []passthroughTestFrame, autoClose bool) *passthroughTestFrameConn {
@@ -119,6 +124,40 @@ func (c *delayedReadFrameConn) Close() error {
 		return nil
 	}
 	return c.base.Close()
+}
+
+func (c *closeSpyFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	<-ctx.Done()
+	return coderws.MessageText, nil, ctx.Err()
+}
+
+func (c *closeSpyFrameConn) WriteFrame(ctx context.Context, _ coderws.MessageType, _ []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+func (c *closeSpyFrameConn) Close() error {
+	if c != nil {
+		c.closeCalls.Add(1)
+	}
+	return nil
+}
+
+func (c *closeSpyFrameConn) CloseCalls() int32 {
+	if c == nil {
+		return 0
+	}
+	return c.closeCalls.Load()
 }
 
 func TestRelay_BasicRelayAndUsage(t *testing.T) {
@@ -284,6 +323,36 @@ func TestRelay_IdleTimeout(t *testing.T) {
 	require.Equal(t, "gpt-4o", result.RequestModel)
 }
 
+func TestRelay_IdleTimeoutDoesNotCloseClientOnError(t *testing.T) {
+	t.Parallel()
+
+	clientConn := &closeSpyFrameConn{}
+	upstreamConn := &closeSpyFrameConn{}
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-4o","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	callCount := 0
+	nowFn := func() time.Time {
+		callCount++
+		if callCount <= 5 {
+			return now
+		}
+		return now.Add(time.Hour)
+	}
+
+	_, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
+		IdleTimeout: 2 * time.Second,
+		Now:         nowFn,
+	})
+	require.NotNil(t, relayExit, "应因 idle timeout 退出")
+	require.Equal(t, "idle_timeout", relayExit.Stage)
+	require.Zero(t, clientConn.CloseCalls(), "错误路径不应提前关闭客户端连接，交给上层决定 close code")
+	require.GreaterOrEqual(t, upstreamConn.CloseCalls(), int32(1))
+}
+
 func TestRelay_NilConnections(t *testing.T) {
 	t.Parallel()
 
@@ -345,6 +414,88 @@ func TestRelay_MultipleUpstreamMessages(t *testing.T) {
 	require.Len(t, clientWrites, 3)
 }
 
+func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.completed","response":{"id":"resp_turn_1","usage":{"input_tokens":2,"output_tokens":1}}}`),
+		},
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.failed","response":{"id":"resp_turn_2","usage":{"input_tokens":3,"output_tokens":4}}}`),
+		},
+	}, true)
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	turns := make([]RelayTurnResult, 0, 2)
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
+		OnTurnComplete: func(turn RelayTurnResult) {
+			turns = append(turns, turn)
+		},
+	})
+	require.Nil(t, relayExit)
+	require.Len(t, turns, 2)
+	require.Equal(t, "resp_turn_1", turns[0].RequestID)
+	require.Equal(t, "response.completed", turns[0].TerminalEventType)
+	require.Equal(t, 2, turns[0].Usage.InputTokens)
+	require.Equal(t, 1, turns[0].Usage.OutputTokens)
+	require.Equal(t, "resp_turn_2", turns[1].RequestID)
+	require.Equal(t, "response.failed", turns[1].TerminalEventType)
+	require.Equal(t, 3, turns[1].Usage.InputTokens)
+	require.Equal(t, 4, turns[1].Usage.OutputTokens)
+	require.Equal(t, 5, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+}
+
+func TestRelay_OnTurnComplete_ProvidesTurnMetrics(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.output_text.delta","response_id":"resp_metric","delta":"hi"}`),
+		},
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.completed","response":{"id":"resp_metric","usage":{"input_tokens":2,"output_tokens":1}}}`),
+		},
+	}, true)
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	base := time.Unix(0, 0)
+	var nowTick atomic.Int64
+	nowFn := func() time.Time {
+		step := nowTick.Add(1)
+		return base.Add(time.Duration(step) * 5 * time.Millisecond)
+	}
+
+	var turn RelayTurnResult
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
+		Now: nowFn,
+		OnTurnComplete: func(current RelayTurnResult) {
+			turn = current
+		},
+	})
+	require.Nil(t, relayExit)
+	require.Equal(t, "resp_metric", turn.RequestID)
+	require.Equal(t, "response.completed", turn.TerminalEventType)
+	require.NotNil(t, turn.FirstTokenMs)
+	require.GreaterOrEqual(t, *turn.FirstTokenMs, 0)
+	require.Greater(t, turn.Duration.Milliseconds(), int64(0))
+	require.NotNil(t, result.FirstTokenMs)
+	require.Greater(t, result.Duration.Milliseconds(), int64(0))
+}
+
 func TestRelay_BinaryFramePassthrough(t *testing.T) {
 	t.Parallel()
 
@@ -371,6 +522,32 @@ func TestRelay_BinaryFramePassthrough(t *testing.T) {
 	require.Len(t, clientWrites, 1)
 	require.Equal(t, coderws.MessageBinary, clientWrites[0].msgType)
 	require.Equal(t, binaryPayload, clientWrites[0].payload)
+}
+
+func TestRelay_BinaryJSONFrameSkipsObservation(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageBinary,
+			payload: []byte(`{"type":"response.completed","response":{"id":"resp_binary","usage":{"input_tokens":7,"output_tokens":3}}}`),
+		},
+	}, true)
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-4o","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
+	require.Nil(t, relayExit)
+	require.Equal(t, 0, result.Usage.InputTokens)
+	require.Equal(t, "", result.RequestID)
+	require.Equal(t, "", result.TerminalEventType)
+
+	clientWrites := clientConn.Writes()
+	require.Len(t, clientWrites, 1)
+	require.Equal(t, coderws.MessageBinary, clientWrites[0].msgType)
 }
 
 func TestRelay_UpstreamErrorEventPassthroughRaw(t *testing.T) {
@@ -500,16 +677,22 @@ func TestRelay_TraceEvents_ContainsLifecycleStages(t *testing.T) {
 	defer cancel()
 
 	stages := make([]string, 0, 8)
+	var stagesMu sync.Mutex
 	_, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
 		OnTrace: func(event RelayTraceEvent) {
+			stagesMu.Lock()
 			stages = append(stages, event.Stage)
+			stagesMu.Unlock()
 		},
 	})
 	require.Nil(t, relayExit)
-	require.Contains(t, stages, "relay_start")
-	require.Contains(t, stages, "write_first_message_ok")
-	require.Contains(t, stages, "first_exit")
-	require.Contains(t, stages, "relay_complete")
+	stagesMu.Lock()
+	capturedStages := append([]string(nil), stages...)
+	stagesMu.Unlock()
+	require.Contains(t, capturedStages, "relay_start")
+	require.Contains(t, capturedStages, "write_first_message_ok")
+	require.Contains(t, capturedStages, "first_exit")
+	require.Contains(t, capturedStages, "relay_complete")
 }
 
 func TestRelay_TraceEvents_IdleTimeout(t *testing.T) {
@@ -533,17 +716,23 @@ func TestRelay_TraceEvents_IdleTimeout(t *testing.T) {
 	}
 
 	stages := make([]string, 0, 8)
+	var stagesMu sync.Mutex
 	_, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
 		IdleTimeout: 2 * time.Second,
 		Now:         nowFn,
 		OnTrace: func(event RelayTraceEvent) {
+			stagesMu.Lock()
 			stages = append(stages, event.Stage)
+			stagesMu.Unlock()
 		},
 	})
 	require.NotNil(t, relayExit)
 	require.Equal(t, "idle_timeout", relayExit.Stage)
-	require.Contains(t, stages, "idle_timeout_triggered")
-	require.Contains(t, stages, "relay_exit")
+	stagesMu.Lock()
+	capturedStages := append([]string(nil), stages...)
+	stagesMu.Unlock()
+	require.Contains(t, capturedStages, "idle_timeout_triggered")
+	require.Contains(t, capturedStages, "relay_exit")
 }
 
 // errorOnWriteFrameConn 是一个写入总是失败的 FrameConn 实现，用于测试首包写入失败。

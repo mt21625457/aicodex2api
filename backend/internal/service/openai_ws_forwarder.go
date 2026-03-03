@@ -64,6 +64,7 @@ const (
 	openAIWSContinuationUnavailableReason        = "upstream continuation connection is unavailable; please restart the conversation"
 	openAIWSAutoAbortedToolOutputValue           = `{"error":"tool call aborted by gateway"}`
 	openAIWSClientReadIdleTimeoutDefault         = 30 * time.Minute
+	openAIWSPassthroughIdleTimeoutDefault        = time.Hour
 	openAIWSIngressClientDisconnectDrainTimeout  = 5 * time.Second
 	openAIWSUpstreamPumpInfoMinAlive             = 100 * time.Millisecond
 )
@@ -207,6 +208,13 @@ func (s *OpenAIGatewayService) openAIWSClientReadIdleTimeout() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.ClientReadIdleTimeoutSeconds) * time.Second
 	}
 	return openAIWSClientReadIdleTimeoutDefault
+}
+
+func (s *OpenAIGatewayService) openAIWSPassthroughIdleTimeout() time.Duration {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ClientReadIdleTimeoutSeconds > 0 {
+		return time.Duration(s.cfg.Gateway.OpenAIWS.ClientReadIdleTimeoutSeconds) * time.Second
+	}
+	return openAIWSPassthroughIdleTimeoutDefault
 }
 
 func (s *OpenAIGatewayService) openAIWSWriteTimeout() time.Duration {
@@ -1244,6 +1252,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		ReasoningEffort:   extractOpenAIReasoningEffort(reqBody, originalModel),
 		Stream:            reqStream,
 		OpenAIWSMode:      true,
+		WSIngressMode:     OpenAIWSIngressModeCtxPool,
 		Duration:          time.Since(startTime),
 		FirstTokenMs:      firstTokenMs,
 		TerminalEventType: strings.TrimSpace(lastEventType),
@@ -1870,6 +1879,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				ReasoningEffort:   extractOpenAIReasoningEffortFromBody(payload, originalModel),
 				Stream:            reqStream,
 				OpenAIWSMode:      true,
+				WSIngressMode:     OpenAIWSIngressModeCtxPool,
 				Duration:          time.Since(turnStart),
 				FirstTokenMs:      firstTokenMs,
 				TerminalEventType: strings.TrimSpace(terminalEventType),
@@ -2279,6 +2289,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					ReasoningEffort:        extractOpenAIReasoningEffortFromBody(payload, originalModel),
 					Stream:                 reqStream,
 					OpenAIWSMode:           true,
+					WSIngressMode:          OpenAIWSIngressModeCtxPool,
 					Duration:               time.Since(turnStart),
 					FirstTokenMs:           firstTokenMs,
 					TerminalEventType:      strings.TrimSpace(eventType),

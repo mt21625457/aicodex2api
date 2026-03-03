@@ -528,6 +528,80 @@ func TestOpenAIResponsesWebSocket_DoesNotEarlyRejectMessageIDPreviousResponseID(
 	require.Contains(t, strings.ToLower(closeErr.Reason), "too many concurrent requests")
 }
 
+func TestOpenAIResponsesWebSocket_CtxPoolRejectsMessageIDBeforeScheduling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = service.OpenAIWSIngressModeCtxPool
+
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+		acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+	}
+
+	h := &OpenAIGatewayHandler{
+		gatewayService:      &service.OpenAIGatewayService{},
+		billingCacheService: &service.BillingCacheService{},
+		apiKeyService:       &service.APIKeyService{},
+		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+		cfg:                 cfg,
+	}
+
+	var scheduleCalls atomic.Int32
+	var stickyBindCalls atomic.Int32
+	h.wsSelectAccountWithSchedulerFn = func(
+		ctx context.Context,
+		groupID *int64,
+		previousResponseID string,
+		sessionHash string,
+		requestedModel string,
+		excludedIDs map[int64]struct{},
+		requiredTransport service.OpenAIUpstreamTransport,
+	) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error) {
+		scheduleCalls.Add(1)
+		return nil, service.OpenAIAccountScheduleDecision{}, errors.New("should not be called")
+	}
+	h.wsBindStickySessionFn = func(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
+		stickyBindCalls.Add(1)
+		return nil
+	}
+
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"msg_abc123"}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, err = clientConn.Read(readCtx)
+	cancelRead()
+	require.Error(t, err)
+
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+	require.Contains(t, strings.ToLower(closeErr.Reason), "previous_response_id must be a response.id")
+	require.Equal(t, int32(0), scheduleCalls.Load())
+	require.Equal(t, int32(0), stickyBindCalls.Load())
+}
+
 func TestOpenAIResponsesWebSocket_RejectsEmptyModelInFirstPayload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

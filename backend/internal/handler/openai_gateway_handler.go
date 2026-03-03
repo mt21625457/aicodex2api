@@ -650,6 +650,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.Bool("has_previous_response_id", previousResponseID != ""),
 		zap.String("previous_response_id_kind", previousResponseIDKind),
 	)
+	if h.shouldRejectWSMessageIDPreviousResponseIDEarly(previousResponseIDKind) {
+		reqLog.Warn("openai.websocket_request_validation_failed",
+			zap.String("reason", "previous_response_id_looks_like_message_id"),
+			zap.String("openai_ws_ingress_mode_default", h.cfg.Gateway.OpenAIWS.IngressModeDefault),
+		)
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "previous_response_id must be a response.id (resp_*), not a message id")
+		return
+	}
 	setOpsRequestContext(c, reqModel, true, firstMessage)
 
 	var currentUserRelease func()
@@ -1224,6 +1232,19 @@ func (h *OpenAIGatewayHandler) resolveOpenAIWSIngressMode(account *service.Accou
 		resolvedMode = service.OpenAIWSIngressModeOff
 	}
 	return resolvedMode, true
+}
+
+func (h *OpenAIGatewayHandler) shouldRejectWSMessageIDPreviousResponseIDEarly(previousResponseIDKind string) bool {
+	if previousResponseIDKind != service.OpenAIPreviousResponseIDKindMessageID {
+		return false
+	}
+	if h == nil || h.cfg == nil {
+		return false
+	}
+	if !h.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled {
+		return false
+	}
+	return strings.TrimSpace(h.cfg.Gateway.OpenAIWS.IngressModeDefault) == service.OpenAIWSIngressModeCtxPool
 }
 
 func isOpenAIWSUpgradeRequest(r *http.Request) bool {
