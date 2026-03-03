@@ -1100,6 +1100,99 @@ func openAIWSExtractFunctionCallOutputCallIDsFromPayload(payload []byte) []strin
 	return callIDs
 }
 
+func openAIWSHasToolCallContextInPayload(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	input := gjson.GetBytes(payload, "input")
+	if !input.Exists() {
+		return false
+	}
+
+	hasContext := false
+	collect := func(item gjson.Result) {
+		if hasContext || item.Type != gjson.JSON {
+			return
+		}
+		itemType := strings.TrimSpace(item.Get("type").String())
+		if itemType != "tool_call" && itemType != "function_call" {
+			return
+		}
+		if strings.TrimSpace(item.Get("call_id").String()) == "" {
+			return
+		}
+		hasContext = true
+	}
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			collect(item)
+			return !hasContext
+		})
+		return hasContext
+	}
+	collect(input)
+	return hasContext
+}
+
+func openAIWSHasItemReferenceForAllFunctionCallOutputsInPayload(payload []byte, functionCallOutputCallIDs []string) bool {
+	requiredCallIDs := openAIWSNormalizeCallIDs(functionCallOutputCallIDs)
+	if len(payload) == 0 || len(requiredCallIDs) == 0 {
+		return false
+	}
+	input := gjson.GetBytes(payload, "input")
+	if !input.Exists() {
+		return false
+	}
+
+	referenceIDSet := make(map[string]struct{}, len(requiredCallIDs))
+	collect := func(item gjson.Result) {
+		if item.Type != gjson.JSON {
+			return
+		}
+		if strings.TrimSpace(item.Get("type").String()) != "item_reference" {
+			return
+		}
+		referenceID := strings.TrimSpace(item.Get("id").String())
+		if referenceID == "" {
+			return
+		}
+		referenceIDSet[referenceID] = struct{}{}
+	}
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			collect(item)
+			return true
+		})
+	} else {
+		collect(input)
+	}
+
+	if len(referenceIDSet) == 0 {
+		return false
+	}
+	for _, callID := range requiredCallIDs {
+		if _, ok := referenceIDSet[callID]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func shouldProactivelyRejectIngressToolOutputWithoutPreviousResponseID(
+	storeDisabled bool,
+	hasFunctionCallOutput bool,
+	previousResponseID string,
+	hasToolOutputContext bool,
+) bool {
+	if !storeDisabled || !hasFunctionCallOutput {
+		return false
+	}
+	if strings.TrimSpace(previousResponseID) != "" {
+		return false
+	}
+	return !hasToolOutputContext
+}
+
 func openAIWSFindMissingCallIDs(requiredCallIDs []string, actualCallIDs []string) []string {
 	required := openAIWSNormalizeCallIDs(requiredCallIDs)
 	if len(required) == 0 {
