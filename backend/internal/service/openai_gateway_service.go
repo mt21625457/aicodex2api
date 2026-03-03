@@ -1582,13 +1582,13 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return accessToken, "oauth", nil
 		}
 		// 降级：TokenProvider 未配置时直接从账号读取
-		accessToken := account.GetOpenAIAccessToken()
+		accessToken := strings.TrimSpace(account.GetOpenAIAccessToken())
 		if accessToken == "" {
 			return "", "", errors.New("access_token not found in credentials")
 		}
 		return accessToken, "oauth", nil
 	case AccountTypeAPIKey:
-		apiKey := account.GetOpenAIApiKey()
+		apiKey := strings.TrimSpace(account.GetOpenAIApiKey())
 		if apiKey == "" {
 			return "", "", errors.New("api_key not found in credentials")
 		}
