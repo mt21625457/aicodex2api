@@ -320,6 +320,8 @@ func TestRelay_IdleTimeout(t *testing.T) {
 	})
 	require.NotNil(t, relayExit, "应因 idle timeout 退出")
 	require.Equal(t, "idle_timeout", relayExit.Stage)
+	require.ErrorIs(t, relayExit.Err, ErrRelayIdleTimeout)
+	require.NotErrorIs(t, relayExit.Err, context.DeadlineExceeded)
 	require.Equal(t, "gpt-4o", result.RequestModel)
 }
 
@@ -349,6 +351,8 @@ func TestRelay_IdleTimeoutDoesNotCloseClientOnError(t *testing.T) {
 	})
 	require.NotNil(t, relayExit, "应因 idle timeout 退出")
 	require.Equal(t, "idle_timeout", relayExit.Stage)
+	require.ErrorIs(t, relayExit.Err, ErrRelayIdleTimeout)
+	require.NotErrorIs(t, relayExit.Err, context.DeadlineExceeded)
 	require.Zero(t, clientConn.CloseCalls(), "错误路径不应提前关闭客户端连接，交给上层决定 close code")
 	require.GreaterOrEqual(t, upstreamConn.CloseCalls(), int32(1))
 }
@@ -728,6 +732,7 @@ func TestRelay_TraceEvents_IdleTimeout(t *testing.T) {
 	})
 	require.NotNil(t, relayExit)
 	require.Equal(t, "idle_timeout", relayExit.Stage)
+	require.ErrorIs(t, relayExit.Err, ErrRelayIdleTimeout)
 	stagesMu.Lock()
 	capturedStages := append([]string(nil), stages...)
 	stagesMu.Unlock()

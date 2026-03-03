@@ -78,8 +78,9 @@ func (d *coderOpenAIWSClientDialer) Dial(
 	}
 
 	opts := &coderws.DialOptions{
-		HTTPHeader:      cloneHeader(headers),
-		CompressionMode: coderws.CompressionContextTakeover,
+		HTTPHeader: cloneHeader(headers),
+		// 高频长连接场景优先降低内存/CPU 抖动，避免 context takeover 带来的状态累积。
+		CompressionMode: coderws.CompressionNoContextTakeover,
 	}
 	if proxy := strings.TrimSpace(proxyURL); proxy != "" {
 		proxyClient, err := d.proxyHTTPClient(proxy)

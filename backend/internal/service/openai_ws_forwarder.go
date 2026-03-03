@@ -397,10 +397,12 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		headers.Set("user-agent", codexCLIUserAgent)
 	}
-	if account != nil && account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(headers.Get("user-agent")) {
+	userAgentIsCodexCLI := openai.IsCodexCLIRequest(headers.Get("user-agent"))
+	if account != nil && account.Type == AccountTypeOAuth && !userAgentIsCodexCLI {
 		headers.Set("user-agent", codexCLIUserAgent)
+		userAgentIsCodexCLI = true
 	}
-	if account != nil && account.Type == AccountTypeOAuth && openai.IsCodexCLIRequest(headers.Get("user-agent")) {
+	if account != nil && account.Type == AccountTypeOAuth && userAgentIsCodexCLI {
 		// 保持 OAuth 握手头的一致性：Codex 风格 UA 必须搭配 codex_cli_rs originator。
 		headers.Set("originator", "codex_cli_rs")
 	}
@@ -573,16 +575,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if err != nil {
 		return nil, wrapOpenAIWSFallback("build_ws_url", err)
 	}
-	wsHost := "-"
-	wsPath := "-"
-	if parsed, parseErr := url.Parse(wsURL); parseErr == nil && parsed != nil {
-		if h := strings.TrimSpace(parsed.Host); h != "" {
-			wsHost = normalizeOpenAIWSLogValue(h)
-		}
-		if p := strings.TrimSpace(parsed.Path); p != "" {
-			wsPath = normalizeOpenAIWSLogValue(p)
-		}
-	}
+	wsHost, wsPath := openAIWSHostPathForLogFromURL(wsURL)
 	logOpenAIWSModeDebug(
 		"dial_target account_id=%d account_type=%s ws_host=%s ws_path=%s",
 		account.ID,
@@ -1337,7 +1330,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
 	}
-	firstModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
+	firstModel, firstPreviousResponseID, firstPreviousResponseIDKind := ResolveOpenAIWSFirstMessageMeta(c, firstClientMessage)
 	if firstModel == "" {
 		return NewOpenAIWSClientCloseError(
 			coderws.StatusPolicyViolation,
@@ -1345,8 +1338,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			nil,
 		)
 	}
-	firstPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
-	firstPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(firstPreviousResponseID)
 	if ingressMode == OpenAIWSIngressModeCtxPool &&
 		firstPreviousResponseID != "" &&
 		firstPreviousResponseIDKind == OpenAIPreviousResponseIDKindMessageID {
@@ -1369,12 +1360,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if err != nil {
 		return fmt.Errorf("build ws url: %w", err)
 	}
-	wsHost := "-"
-	wsPath := "-"
-	if parsedURL, parseErr := url.Parse(wsURL); parseErr == nil && parsedURL != nil {
-		wsHost = normalizeOpenAIWSLogValue(parsedURL.Host)
-		wsPath = normalizeOpenAIWSLogValue(parsedURL.Path)
-	}
+	wsHost, wsPath := openAIWSHostPathForLogFromURL(wsURL)
 	debugEnabled := isOpenAIWSModeDebugEnabled()
 	logOpenAIWSModeInfo(
 		"ingress_ws_session_init account_id=%d ws_host=%s ws_path=%s ctx_pool=%v session_scope=%s debug=%v",

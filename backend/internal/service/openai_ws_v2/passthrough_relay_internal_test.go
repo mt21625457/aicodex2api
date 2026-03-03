@@ -430,3 +430,76 @@ func TestObserveUpstreamMessage_ResponseIDFallbackPolicy(t *testing.T) {
 	require.True(t, observed.terminal)
 	require.Equal(t, "resp_fallback", observed.responseID)
 }
+
+type writeCtxCaptureFrameConn struct {
+	writeHasDeadline atomic.Bool
+}
+
+func (c *writeCtxCaptureFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	<-ctx.Done()
+	return coderws.MessageText, nil, ctx.Err()
+}
+
+func (c *writeCtxCaptureFrameConn) WriteFrame(ctx context.Context, _ coderws.MessageType, _ []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, hasDeadline := ctx.Deadline()
+	c.writeHasDeadline.Store(hasDeadline)
+	return nil
+}
+
+func (c *writeCtxCaptureFrameConn) Close() error {
+	return nil
+}
+
+func TestRelay_WriteTimeoutDeadlineToggle(t *testing.T) {
+	t.Parallel()
+
+	run := func(disable bool) bool {
+		clientConn := newPassthroughTestFrameConn(nil, true)
+		upstreamConn := &writeCtxCaptureFrameConn{}
+		_, _ = Relay(context.Background(), clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.1","input":[]}`), RelayOptions{
+			WriteTimeout:         30 * time.Second,
+			DisableWriteTimeout:  disable,
+			UpstreamDrainTimeout: 20 * time.Millisecond,
+		})
+		return upstreamConn.writeHasDeadline.Load()
+	}
+
+	require.False(t, run(true))
+	require.True(t, run(false))
+}
+
+func TestRelay_InitialRequestModelOverride(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.completed","response":{"id":"resp_override","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+	}, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, []byte(`{"type":"response.create","input":[]}`), RelayOptions{
+		InitialRequestModel: "gpt-5.3-codex",
+	})
+	require.Nil(t, relayExit)
+	require.Equal(t, "gpt-5.3-codex", result.RequestModel)
+}
+
+func TestShouldTraceDroppedDownstreamFrame(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, shouldTraceDroppedDownstreamFrame(1, false))
+	require.True(t, shouldTraceDroppedDownstreamFrame(3, false))
+	require.False(t, shouldTraceDroppedDownstreamFrame(4, false))
+	require.True(t, shouldTraceDroppedDownstreamFrame(128, false))
+	require.True(t, shouldTraceDroppedDownstreamFrame(999, true))
+}

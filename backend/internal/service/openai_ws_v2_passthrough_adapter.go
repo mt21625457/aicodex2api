@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync/atomic"
 
@@ -14,7 +13,6 @@ import (
 	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 )
 
 type openAIWSClientFrameConn struct {
@@ -77,8 +75,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if strings.TrimSpace(token) == "" {
 		return errors.New("token is empty")
 	}
-	requestModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
-	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
+	requestModel, requestPreviousResponseID, _ := ResolveOpenAIWSFirstMessageMeta(c, firstClientMessage)
 	logOpenAIWSV2Passthrough(
 		"relay_start account_id=%d model=%s previous_response_id=%s first_message_type=%s first_message_bytes=%d",
 		account.ID,
@@ -92,12 +89,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if err != nil {
 		return fmt.Errorf("build ws url: %w", err)
 	}
-	wsHost := "-"
-	wsPath := "-"
-	if parsedURL, parseErr := url.Parse(wsURL); parseErr == nil && parsedURL != nil {
-		wsHost = normalizeOpenAIWSLogValue(parsedURL.Host)
-		wsPath = normalizeOpenAIWSLogValue(parsedURL.Path)
-	}
+	wsHost, wsPath := openAIWSHostPathForLogFromURL(wsURL)
 	logOpenAIWSV2Passthrough(
 		"relay_dial_start account_id=%d ws_host=%s ws_path=%s proxy_enabled=%v",
 		account.ID,
@@ -152,15 +144,35 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 
 	completedTurns := atomic.Int32{}
+	var onTrace func(event openaiwsv2.RelayTraceEvent)
+	if isOpenAIWSModeDebugEnabled() {
+		onTrace = func(event openaiwsv2.RelayTraceEvent) {
+			logOpenAIWSV2PassthroughDebug(
+				"relay_trace account_id=%d stage=%s direction=%s msg_type=%s bytes=%d graceful=%v wrote_downstream=%v err=%s",
+				account.ID,
+				truncateOpenAIWSLogValue(event.Stage, openAIWSLogValueMaxLen),
+				truncateOpenAIWSLogValue(event.Direction, openAIWSLogValueMaxLen),
+				truncateOpenAIWSLogValue(event.MessageType, openAIWSLogValueMaxLen),
+				event.PayloadBytes,
+				event.Graceful,
+				event.WroteDownstream,
+				truncateOpenAIWSLogValue(event.Error, openAIWSLogValueMaxLen),
+			)
+		}
+	}
 	relayResult, relayExit := openaiwsv2.RunEntry(openaiwsv2.EntryInput{
 		Ctx:                ctx,
 		ClientConn:         &openAIWSClientFrameConn{conn: clientConn},
 		UpstreamConn:       upstreamFrameConn,
 		FirstClientMessage: firstClientMessage,
 		Options: openaiwsv2.RelayOptions{
-			WriteTimeout:     s.openAIWSWriteTimeout(),
-			IdleTimeout:      s.openAIWSPassthroughIdleTimeout(),
-			FirstMessageType: firstClientMessageType,
+			WriteTimeout:        s.openAIWSWriteTimeout(),
+			IdleTimeout:         s.openAIWSPassthroughIdleTimeout(),
+			FirstMessageType:    firstClientMessageType,
+			InitialRequestModel: requestModel,
+			// passthrough 链路走大帧高频转发，避免每帧创建超时 context/timer。
+			// 由 relayCtx 取消 + idle watchdog 兜底释放。
+			DisableWriteTimeout: true,
 			OnUsageParseFailure: func(eventType string, usageRaw string) {
 				logOpenAIWSV2Passthrough(
 					"usage_parse_failed event_type=%s usage_raw=%s",
@@ -202,19 +214,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					hooks.AfterTurn(turnNo, turnResult, nil)
 				}
 			},
-			OnTrace: func(event openaiwsv2.RelayTraceEvent) {
-				logOpenAIWSV2Passthrough(
-					"relay_trace account_id=%d stage=%s direction=%s msg_type=%s bytes=%d graceful=%v wrote_downstream=%v err=%s",
-					account.ID,
-					truncateOpenAIWSLogValue(event.Stage, openAIWSLogValueMaxLen),
-					truncateOpenAIWSLogValue(event.Direction, openAIWSLogValueMaxLen),
-					truncateOpenAIWSLogValue(event.MessageType, openAIWSLogValueMaxLen),
-					event.PayloadBytes,
-					event.Graceful,
-					event.WroteDownstream,
-					truncateOpenAIWSLogValue(event.Error, openAIWSLogValueMaxLen),
-				)
-			},
+			OnTrace: onTrace,
 		},
 	})
 
@@ -377,7 +377,18 @@ func openAIWSFirstTokenMsForLog(firstTokenMs *int) int {
 func logOpenAIWSV2Passthrough(format string, args ...any) {
 	logger.LegacyPrintf(
 		"service.openai_ws_v2",
-		"[OpenAI WS v2 passthrough] %s "+format,
-		append([]any{openaiWSV2PassthroughModeFields}, args...)...,
+		"[OpenAI WS v2 passthrough] "+openaiWSV2PassthroughModeFields+" "+format,
+		args...,
+	)
+}
+
+func logOpenAIWSV2PassthroughDebug(format string, args ...any) {
+	if !isOpenAIWSModeDebugEnabled() {
+		return
+	}
+	logger.LegacyPrintf(
+		"service.openai_ws_v2",
+		"[debug] [OpenAI WS v2 passthrough] "+openaiWSV2PassthroughModeFields+" "+format,
+		args...,
 	)
 }

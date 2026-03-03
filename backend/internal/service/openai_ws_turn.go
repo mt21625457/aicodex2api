@@ -22,6 +22,57 @@ type OpenAIWSIngressHooks struct {
 	AfterTurn  func(turn int, result *OpenAIForwardResult, turnErr error)
 }
 
+const (
+	openAIWSCtxFirstModelKey                  = "openai_ws_first_model"
+	openAIWSCtxFirstPreviousResponseIDKey     = "openai_ws_first_previous_response_id"
+	openAIWSCtxFirstPreviousResponseIDKindKey = "openai_ws_first_previous_response_id_kind"
+)
+
+func SetOpenAIWSFirstMessageMeta(c *gin.Context, model, previousResponseID, previousResponseIDKind string) {
+	if c == nil {
+		return
+	}
+	c.Set(openAIWSCtxFirstModelKey, strings.TrimSpace(model))
+	c.Set(openAIWSCtxFirstPreviousResponseIDKey, strings.TrimSpace(previousResponseID))
+	c.Set(openAIWSCtxFirstPreviousResponseIDKindKey, strings.TrimSpace(previousResponseIDKind))
+}
+
+func ResolveOpenAIWSFirstMessageMeta(
+	c *gin.Context,
+	firstClientMessage []byte,
+) (model string, previousResponseID string, previousResponseIDKind string) {
+	if c != nil {
+		if v, ok := c.Get(openAIWSCtxFirstModelKey); ok {
+			if text, okText := v.(string); okText {
+				model = strings.TrimSpace(text)
+			}
+		}
+		if v, ok := c.Get(openAIWSCtxFirstPreviousResponseIDKey); ok {
+			if text, okText := v.(string); okText {
+				previousResponseID = strings.TrimSpace(text)
+			}
+		}
+		if v, ok := c.Get(openAIWSCtxFirstPreviousResponseIDKindKey); ok {
+			if text, okText := v.(string); okText {
+				previousResponseIDKind = strings.TrimSpace(text)
+			}
+		}
+	}
+	if model == "" || previousResponseID == "" {
+		values := gjson.GetManyBytes(firstClientMessage, "model", "previous_response_id")
+		if model == "" {
+			model = strings.TrimSpace(values[0].String())
+		}
+		if previousResponseID == "" {
+			previousResponseID = strings.TrimSpace(values[1].String())
+		}
+	}
+	if previousResponseIDKind == "" {
+		previousResponseIDKind = ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
+	}
+	return model, previousResponseID, previousResponseIDKind
+}
+
 func normalizeOpenAIWSLogValue(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -125,6 +176,33 @@ func openAIWSApplySessionScope(sessionHash, scope string) string {
 		return hash
 	}
 	return scope + "|" + hash
+}
+
+func openAIWSHostPathForLogFromURL(rawURL string) (host string, path string) {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return "-", "-"
+	}
+
+	withoutScheme := trimmed
+	if schemeIdx := strings.Index(withoutScheme, "://"); schemeIdx >= 0 {
+		withoutScheme = withoutScheme[schemeIdx+3:]
+	}
+	withoutScheme = strings.TrimPrefix(withoutScheme, "//")
+
+	rawHost := withoutScheme
+	rawPath := ""
+	if slashIdx := strings.IndexByte(withoutScheme, '/'); slashIdx >= 0 {
+		rawHost = withoutScheme[:slashIdx]
+		rawPath = withoutScheme[slashIdx:]
+	}
+	if queryIdx := strings.IndexByte(rawPath, '?'); queryIdx >= 0 {
+		rawPath = rawPath[:queryIdx]
+	}
+
+	host = normalizeOpenAIWSLogValue(rawHost)
+	path = normalizeOpenAIWSLogValue(rawPath)
+	return host, path
 }
 
 func shouldLogOpenAIWSEvent(idx int, eventType string) bool {

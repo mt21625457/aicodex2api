@@ -539,6 +539,8 @@ func classifyOpenAIWSIngressTurnAbortReason(err error) (openAIWSIngressTurnAbort
 	var turnErr *openAIWSIngressTurnError
 	if errors.As(err, &turnErr) && turnErr != nil {
 		switch strings.TrimSpace(turnErr.stage) {
+		case "idle_timeout":
+			return openAIWSIngressTurnAbortReasonContextDeadline, false
 		case "write_upstream":
 			return openAIWSIngressTurnAbortReasonWriteUpstream, false
 		case "read_upstream":

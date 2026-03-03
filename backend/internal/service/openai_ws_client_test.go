@@ -1,11 +1,15 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -109,4 +113,147 @@ func TestCoderOpenAIWSClientDialer_ProxyTransportTLSHandshakeTimeout(t *testing.
 	require.True(t, ok)
 	require.NotNil(t, transport)
 	require.Equal(t, 10*time.Second, transport.TLSHandshakeTimeout)
+}
+
+func TestCoderOpenAIWSClientDialer_Dial_EmptyURL(t *testing.T) {
+	t.Parallel()
+
+	dialer := newDefaultOpenAIWSClientDialer()
+	impl, ok := dialer.(*coderOpenAIWSClientDialer)
+	require.True(t, ok)
+
+	conn, status, headers, err := impl.Dial(context.Background(), " ", nil, "")
+	require.Error(t, err)
+	require.Nil(t, conn)
+	require.Equal(t, 0, status)
+	require.Nil(t, headers)
+}
+
+func TestCoderOpenAIWSClientDialer_Dial_InvalidProxyURL(t *testing.T) {
+	t.Parallel()
+
+	dialer := newDefaultOpenAIWSClientDialer()
+	impl, ok := dialer.(*coderOpenAIWSClientDialer)
+	require.True(t, ok)
+
+	conn, status, headers, err := impl.Dial(context.Background(), "ws://example.com", nil, "://bad-proxy")
+	require.Error(t, err)
+	require.Nil(t, conn)
+	require.Equal(t, 0, status)
+	require.Nil(t, headers)
+}
+
+func TestCoderOpenAIWSClientConn_NilGuards(t *testing.T) {
+	t.Parallel()
+
+	var nilConn *coderOpenAIWSClientConn
+	require.ErrorIs(t, nilConn.WriteJSON(context.Background(), map[string]any{"a": 1}), errOpenAIWSConnClosed)
+	_, err := nilConn.ReadMessage(context.Background())
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	_, _, err = nilConn.ReadFrame(context.Background())
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	require.ErrorIs(t, nilConn.WriteFrame(context.Background(), coderws.MessageText, []byte("x")), errOpenAIWSConnClosed)
+	require.ErrorIs(t, nilConn.Ping(context.Background()), errOpenAIWSConnClosed)
+	require.NoError(t, nilConn.Close())
+
+	empty := &coderOpenAIWSClientConn{}
+	var nilCtx context.Context
+	require.ErrorIs(t, empty.WriteJSON(nilCtx, map[string]any{"a": 1}), errOpenAIWSConnClosed)
+	_, err = empty.ReadMessage(nilCtx)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	_, _, err = empty.ReadFrame(nilCtx)
+	require.ErrorIs(t, err, errOpenAIWSConnClosed)
+	require.ErrorIs(t, empty.WriteFrame(nilCtx, coderws.MessageText, []byte("x")), errOpenAIWSConnClosed)
+	require.ErrorIs(t, empty.Ping(nilCtx), errOpenAIWSConnClosed)
+	require.NoError(t, empty.Close())
+}
+
+func TestCoderOpenAIWSClientDialer_DialAndConnWrappers(t *testing.T) {
+	t.Parallel()
+
+	serverErrCh := make(chan error, 1)
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer func() {
+			_ = conn.CloseNow()
+		}()
+
+		readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
+		_, _, err = conn.Read(readCtx)
+		cancelRead()
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+
+		writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
+		if err = conn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.output_text.delta","delta":"ok"}`)); err != nil {
+			cancelWrite()
+			serverErrCh <- err
+			return
+		}
+		if err = conn.Write(writeCtx, coderws.MessageBinary, []byte{0x01, 0x02, 0x03}); err != nil {
+			cancelWrite()
+			serverErrCh <- err
+			return
+		}
+		cancelWrite()
+
+		readCtx2, cancelRead2 := context.WithTimeout(r.Context(), 3*time.Second)
+		_, payload, err := conn.Read(readCtx2)
+		cancelRead2()
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		if len(payload) == 0 {
+			serverErrCh <- fmt.Errorf("expected client payload")
+			return
+		}
+		serverErrCh <- nil
+	}))
+	defer wsServer.Close()
+
+	dialer := newDefaultOpenAIWSClientDialer()
+	impl, ok := dialer.(*coderOpenAIWSClientDialer)
+	require.True(t, ok)
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	conn, status, headers, err := impl.Dial(
+		dialCtx,
+		"ws"+strings.TrimPrefix(wsServer.URL, "http"),
+		http.Header{"User-Agent": []string{"unit-test-agent/1.0"}},
+		"",
+	)
+	cancelDial()
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	require.Equal(t, 0, status)
+	_ = headers // 成功建连时状态码为 0；headers 仅用于握手失败诊断。
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	require.NoError(t, conn.WriteJSON(ctx, map[string]any{"type": "response.create"}))
+
+	msg, err := conn.ReadMessage(ctx)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"response.output_text.delta","delta":"ok"}`, string(msg))
+
+	typedConn, ok := conn.(*coderOpenAIWSClientConn)
+	require.True(t, ok)
+	msgType, payload, err := typedConn.ReadFrame(ctx)
+	require.NoError(t, err)
+	require.Equal(t, coderws.MessageBinary, msgType)
+	require.Equal(t, []byte{0x01, 0x02, 0x03}, payload)
+
+	require.NoError(t, typedConn.WriteFrame(ctx, coderws.MessageText, []byte(`{"client":"ack"}`)))
+	pingCtx, cancelPing := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	_ = typedConn.Ping(pingCtx)
+	cancelPing()
+	require.NoError(t, typedConn.Close())
+	require.NoError(t, <-serverErrCh)
 }

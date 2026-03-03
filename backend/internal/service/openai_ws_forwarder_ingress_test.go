@@ -167,6 +167,16 @@ func TestClassifyOpenAIWSIngressTurnAbortReason(t *testing.T) {
 			wantExpected: false,
 		},
 		{
+			name: "idle timeout stage",
+			err: wrapOpenAIWSIngressTurnError(
+				"idle_timeout",
+				errors.New("relay idle timeout"),
+				false,
+			),
+			wantReason:   openAIWSIngressTurnAbortReasonContextDeadline,
+			wantExpected: false,
+		},
+		{
 			name: "write client",
 			err: wrapOpenAIWSIngressTurnError(
 				"write_client",

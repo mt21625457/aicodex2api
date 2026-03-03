@@ -2,8 +2,10 @@ package service
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -63,8 +65,10 @@ func TestOpenAIWSErrorEventHelpers_ConsistentWithWrapper(t *testing.T) {
 }
 
 func TestOpenAIWSMessageLikelyContainsToolCalls(t *testing.T) {
+	require.False(t, openAIWSMessageLikelyContainsToolCalls(nil))
 	require.False(t, openAIWSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_text.delta","delta":"hello"}`)))
 	require.True(t, openAIWSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_item.added","item":{"tool_calls":[{"id":"tc1"}]}}`)))
+	require.True(t, openAIWSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_item.added","item":{"type":"tool_call"}}`)))
 	require.True(t, openAIWSMessageLikelyContainsToolCalls([]byte(`{"type":"response.output_item.added","item":{"type":"function_call"}}`)))
 }
 
@@ -129,4 +133,46 @@ func TestReplaceOpenAIWSMessageModel_OptimizedStillCorrect(t *testing.T) {
 
 	both := []byte(`{"model":"gpt-5.1","response":{"model":"gpt-5.1"}}`)
 	require.Equal(t, `{"model":"custom-model","response":{"model":"custom-model"}}`, string(replaceOpenAIWSMessageModel(both, "gpt-5.1", "custom-model")))
+}
+
+func TestResolveOpenAIWSFirstMessageMeta_ContextPreferred(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	SetOpenAIWSFirstMessageMeta(c, "ctx_model", "resp_ctx", OpenAIPreviousResponseIDKindResponseID)
+
+	model, prevID, prevKind := ResolveOpenAIWSFirstMessageMeta(
+		c,
+		[]byte(`{"model":"payload_model","previous_response_id":"resp_payload"}`),
+	)
+	require.Equal(t, "ctx_model", model)
+	require.Equal(t, "resp_ctx", prevID)
+	require.Equal(t, OpenAIPreviousResponseIDKindResponseID, prevKind)
+
+	require.NotPanics(t, func() {
+		SetOpenAIWSFirstMessageMeta(nil, "m", "resp_x", OpenAIPreviousResponseIDKindResponseID)
+	})
+}
+
+func TestResolveOpenAIWSFirstMessageMeta_FallbackParse(t *testing.T) {
+	model, prevID, prevKind := ResolveOpenAIWSFirstMessageMeta(
+		nil,
+		[]byte(`{"model":"payload_model","previous_response_id":"resp_payload"}`),
+	)
+	require.Equal(t, "payload_model", model)
+	require.Equal(t, "resp_payload", prevID)
+	require.Equal(t, OpenAIPreviousResponseIDKindResponseID, prevKind)
+}
+
+func TestOpenAIWSHostPathForLogFromURL(t *testing.T) {
+	host, path := openAIWSHostPathForLogFromURL("wss://api.openai.com/v1/responses?stream=true")
+	require.Equal(t, "api.openai.com", host)
+	require.Equal(t, "/v1/responses", path)
+
+	host, path = openAIWSHostPathForLogFromURL("api.openai.com/v1/responses")
+	require.Equal(t, "api.openai.com", host)
+	require.Equal(t, "/v1/responses", path)
+
+	host, path = openAIWSHostPathForLogFromURL(" ")
+	require.Equal(t, "-", host)
+	require.Equal(t, "-", path)
 }
