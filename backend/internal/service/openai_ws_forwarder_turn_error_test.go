@@ -40,6 +40,22 @@ func TestOpenAIWSIngressTurnPartialResult_DeepCopy(t *testing.T) {
 	require.Equal(t, "call_1", again.PendingFunctionCallIDs[0])
 }
 
+func TestWrapOpenAIWSIngressTurnErrorWithPartial_Exported(t *testing.T) {
+	partial := &OpenAIForwardResult{
+		RequestID: "resp_exported",
+		Usage: OpenAIUsage{
+			InputTokens: 7,
+		},
+	}
+	err := WrapOpenAIWSIngressTurnErrorWithPartial("client_disconnected", errors.New("boom"), false, partial)
+	require.Error(t, err)
+	got, ok := OpenAIWSIngressTurnPartialResult(err)
+	require.True(t, ok)
+	require.NotNil(t, got)
+	require.Equal(t, "resp_exported", got.RequestID)
+	require.Equal(t, 7, got.Usage.InputTokens)
+}
+
 func TestOpenAIWSClientReadIdleTimeout_DefaultAndConfig(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	require.Equal(t, 30*time.Minute, svc.openAIWSClientReadIdleTimeout())

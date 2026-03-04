@@ -49,6 +49,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			func() {},
 			nil,
 			nil,
+			nil,
 			exitCh,
 		)
 		sig := <-exitCh
@@ -67,6 +68,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			}, true),
 			func(_ coderws.MessageType, _ []byte) error { return errors.New("boom") },
 			func() {},
+			nil,
 			nil,
 			nil,
 			exitCh,
@@ -89,6 +91,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			}, true),
 			func(_ coderws.MessageType, _ []byte) error { return nil },
 			func() {},
+			nil,
 			forwarded,
 			func(event RelayTraceEvent) {
 				traces = append(traces, event)
@@ -99,6 +102,38 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 		require.Equal(t, "read_client", sig.stage)
 		require.Equal(t, int64(1), forwarded.Load())
 		require.NotEmpty(t, traces)
+	})
+
+	t.Run("before turn hook blocks second turn", func(t *testing.T) {
+		t.Parallel()
+
+		exitCh := make(chan relayExitSignal, 1)
+		forwarded := &atomic.Int64{}
+		turns := make([]int, 0, 2)
+		runClientToUpstream(
+			context.Background(),
+			newPassthroughTestFrameConn([]passthroughTestFrame{
+				{msgType: coderws.MessageText, payload: []byte(`{"turn":2}`)},
+				{msgType: coderws.MessageText, payload: []byte(`{"turn":3}`)},
+			}, true),
+			func(_ coderws.MessageType, _ []byte) error { return nil },
+			func() {},
+			func(turn int, _ coderws.MessageType, _ []byte) error {
+				turns = append(turns, turn)
+				if turn == 3 {
+					return errors.New("billing check failed")
+				}
+				return nil
+			},
+			forwarded,
+			nil,
+			exitCh,
+		)
+		sig := <-exitCh
+		require.Equal(t, "before_turn", sig.stage)
+		require.ErrorContains(t, sig.err, "billing check failed")
+		require.Equal(t, int64(1), forwarded.Load())
+		require.Equal(t, []int{2, 3}, turns)
 	})
 }
 
@@ -501,4 +536,16 @@ func TestShouldTraceDroppedDownstreamFrame(t *testing.T) {
 	require.False(t, shouldTraceDroppedDownstreamFrame(4, false))
 	require.True(t, shouldTraceDroppedDownstreamFrame(128, false))
 	require.True(t, shouldTraceDroppedDownstreamFrame(999, true))
+}
+
+func TestRelayDirectionFromStage(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "client_to_upstream", relayDirectionFromStage("read_client"))
+	require.Equal(t, "client_to_upstream", relayDirectionFromStage("before_turn"))
+	require.Equal(t, "client_to_upstream", relayDirectionFromStage("write_upstream"))
+	require.Equal(t, "upstream_to_client", relayDirectionFromStage("read_upstream"))
+	require.Equal(t, "upstream_to_client", relayDirectionFromStage("write_client"))
+	require.Equal(t, "watchdog", relayDirectionFromStage("idle_timeout"))
+	require.Equal(t, "", relayDirectionFromStage("unknown_stage"))
 }

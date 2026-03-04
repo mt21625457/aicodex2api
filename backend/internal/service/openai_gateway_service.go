@@ -59,6 +59,11 @@ const (
 var (
 	sseDataDone              = []byte("[DONE]")
 	sseResponseCompletedMark = []byte(`"response.completed"`)
+	sseResponseDoneMark      = []byte(`"response.done"`)
+	sseResponseFailedMark    = []byte(`"response.failed"`)
+	sseTypeResponseCompleted = []byte(`"type":"response.completed"`)
+	sseTypeResponseDone      = []byte(`"type":"response.done"`)
+	sseTypeResponseFailed    = []byte(`"type":"response.failed"`)
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -3355,15 +3360,62 @@ func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
 	s.parseSSEUsageString(data, usage)
 }
 
+func openAIResponsesSSEEventShouldParseUsage(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.completed", "response.done", "response.failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func openAIResponsesSSEStringMayContainUsageEvent(data string) bool {
+	if data == "" {
+		return false
+	}
+	return strings.Contains(data, `"response.completed"`) ||
+		strings.Contains(data, `"response.done"`) ||
+		strings.Contains(data, `"response.failed"`)
+}
+
+func openAIResponsesSSEBytesMayContainUsageEvent(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	return bytes.Contains(data, sseResponseCompletedMark) ||
+		bytes.Contains(data, sseResponseDoneMark) ||
+		bytes.Contains(data, sseResponseFailedMark)
+}
+
+func openAIResponsesSSEStringHasCanonicalTerminalType(data string) bool {
+	if data == "" {
+		return false
+	}
+	return strings.Contains(data, `"type":"response.completed"`) ||
+		strings.Contains(data, `"type":"response.done"`) ||
+		strings.Contains(data, `"type":"response.failed"`)
+}
+
+func openAIResponsesSSEBytesHasCanonicalTerminalType(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	return bytes.Contains(data, sseTypeResponseCompleted) ||
+		bytes.Contains(data, sseTypeResponseDone) ||
+		bytes.Contains(data, sseTypeResponseFailed)
+}
+
 // parseSSEUsageString 使用 gjson.Get（string 版本）解析 usage，避免 string→[]byte 转换
 func (s *OpenAIGatewayService) parseSSEUsageString(data string, usage *OpenAIUsage) {
 	if usage == nil || len(data) == 0 || data == "[DONE]" {
 		return
 	}
-	if len(data) < 80 || !strings.Contains(data, `"response.completed"`) {
+	if len(data) < 80 || !openAIResponsesSSEStringMayContainUsageEvent(data) {
 		return
 	}
-	if gjson.Get(data, "type").String() != "response.completed" {
+	// 高频路径优先按固定 type 字面量匹配，命中时跳过一次 gjson type 解析。
+	if !openAIResponsesSSEStringHasCanonicalTerminalType(data) &&
+		!openAIResponsesSSEEventShouldParseUsage(gjson.Get(data, "type").String()) {
 		return
 	}
 	usageFields := gjson.GetMany(data,
@@ -3380,11 +3432,13 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 	if usage == nil || len(data) == 0 || bytes.Equal(data, sseDataDone) {
 		return
 	}
-	// 选择性解析：仅在数据中包含 completed 事件标识时才进入字段提取。
-	if len(data) < 80 || !bytes.Contains(data, sseResponseCompletedMark) {
+	// 选择性解析：仅在数据包含 terminal usage 事件标识时才进入字段提取。
+	if len(data) < 80 || !openAIResponsesSSEBytesMayContainUsageEvent(data) {
 		return
 	}
-	if gjson.GetBytes(data, "type").String() != "response.completed" {
+	// 高频路径优先按固定 type 字面量匹配，命中时跳过一次 gjson type 解析。
+	if !openAIResponsesSSEBytesHasCanonicalTerminalType(data) &&
+		!openAIResponsesSSEEventShouldParseUsage(gjson.GetBytes(data, "type").String()) {
 		return
 	}
 	// 使用 GetManyBytes 一次提取 3 个 usage 字段

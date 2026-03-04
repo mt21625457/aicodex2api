@@ -833,6 +833,465 @@ func TestOpenAIResponsesWebSocket_PassthroughAndCtxPoolShareSchedulerInputsAndSt
 	require.Equal(t, passthroughCapture.stickyAccountID, ctxPoolCapture.stickyAccountID)
 }
 
+func TestOpenAIResponsesWebSocket_PassthroughBeforeTurnBillingCheckOnSecondTurn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = service.OpenAIWSIngressModePassthrough
+
+	billingCache := &billingCacheBalanceSequenceMock{
+		balances: []float64{10, 0},
+	}
+	billingSvc := service.NewBillingCacheService(billingCache, nil, nil, cfg)
+	t.Cleanup(func() {
+		billingSvc.Stop()
+	})
+
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+		acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+	}
+
+	h := &OpenAIGatewayHandler{
+		gatewayService:      &service.OpenAIGatewayService{},
+		billingCacheService: billingSvc,
+		apiKeyService:       &service.APIKeyService{},
+		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+		cfg:                 cfg,
+	}
+
+	account := &service.Account{
+		ID:          502,
+		Name:        "passthrough-before-turn",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_mode": service.OpenAIWSIngressModePassthrough,
+		},
+	}
+	h.wsSelectAccountWithSchedulerFn = func(
+		ctx context.Context,
+		groupID *int64,
+		previousResponseID string,
+		sessionHash string,
+		requestedModel string,
+		excludedIDs map[int64]struct{},
+		requiredTransport service.OpenAIUpstreamTransport,
+	) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error) {
+		return &service.AccountSelectionResult{
+			Account:     account,
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		}, service.OpenAIAccountScheduleDecision{Layer: "unit"}, nil
+	}
+	h.wsBindStickySessionFn = func(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
+		return nil
+	}
+	h.wsGetAccessTokenFn = func(ctx context.Context, account *service.Account) (string, string, error) {
+		return "sk-test", "apikey", nil
+	}
+	h.wsProxyResponsesWSFn = func(
+		ctx context.Context,
+		c *gin.Context,
+		clientConn *coderws.Conn,
+		account *service.Account,
+		token string,
+		firstClientMessageType coderws.MessageType,
+		firstClientMessage []byte,
+		hooks *service.OpenAIWSIngressHooks,
+	) error {
+		require.NotNil(t, hooks)
+		require.NotNil(t, hooks.BeforeTurn)
+		require.NoError(t, hooks.BeforeTurn(1))
+		return hooks.BeforeTurn(2)
+	}
+
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","model":"gpt-5.1","stream":false,"input":[]}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, err = clientConn.Read(readCtx)
+	cancelRead()
+	require.Error(t, err)
+
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+	require.Contains(t, strings.ToLower(closeErr.Reason), "billing check failed")
+	require.Equal(t, int32(2), billingCache.balanceCalls.Load())
+}
+
+func TestOpenAIResponsesWebSocket_PassthroughBeforeTurnConcurrencyCheckOnSecondTurn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = service.OpenAIWSIngressModePassthrough
+
+	type tc struct {
+		name             string
+		userAcquireFn    func(call int) (bool, error)
+		accountAcquireFn func(call int) (bool, error)
+		expectedCode     coderws.StatusCode
+		expectedReason   string
+	}
+	cases := []tc{
+		{
+			name: "user slot exhausted on second turn",
+			userAcquireFn: func(call int) (bool, error) {
+				if call == 1 {
+					return true, nil
+				}
+				return false, nil
+			},
+			accountAcquireFn: func(call int) (bool, error) {
+				return true, nil
+			},
+			expectedCode:   coderws.StatusTryAgainLater,
+			expectedReason: "too many concurrent requests",
+		},
+		{
+			name: "user slot acquire error on second turn",
+			userAcquireFn: func(call int) (bool, error) {
+				if call == 1 {
+					return true, nil
+				}
+				return false, errors.New("acquire user failed")
+			},
+			accountAcquireFn: func(call int) (bool, error) {
+				return true, nil
+			},
+			expectedCode:   coderws.StatusInternalError,
+			expectedReason: "failed to acquire user concurrency slot",
+		},
+		{
+			name: "account slot exhausted on second turn",
+			userAcquireFn: func(call int) (bool, error) {
+				return true, nil
+			},
+			accountAcquireFn: func(call int) (bool, error) {
+				return false, nil
+			},
+			expectedCode:   coderws.StatusTryAgainLater,
+			expectedReason: "account is busy",
+		},
+		{
+			name: "account slot acquire error on second turn",
+			userAcquireFn: func(call int) (bool, error) {
+				return true, nil
+			},
+			accountAcquireFn: func(call int) (bool, error) {
+				return false, errors.New("acquire account failed")
+			},
+			expectedCode:   coderws.StatusInternalError,
+			expectedReason: "failed to acquire account concurrency slot",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			billingCache := &billingCacheBalanceSequenceMock{
+				balances: []float64{10, 10},
+			}
+			billingSvc := service.NewBillingCacheService(billingCache, nil, nil, cfg)
+			t.Cleanup(func() {
+				billingSvc.Stop()
+			})
+
+			var userAcquireCalls atomic.Int32
+			var accountAcquireCalls atomic.Int32
+			cache := &concurrencyCacheMock{
+				acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+					call := int(userAcquireCalls.Add(1))
+					if tt.userAcquireFn == nil {
+						return true, nil
+					}
+					return tt.userAcquireFn(call)
+				},
+				acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+					call := int(accountAcquireCalls.Add(1))
+					if tt.accountAcquireFn == nil {
+						return true, nil
+					}
+					return tt.accountAcquireFn(call)
+				},
+			}
+
+			h := &OpenAIGatewayHandler{
+				gatewayService:      &service.OpenAIGatewayService{},
+				billingCacheService: billingSvc,
+				apiKeyService:       &service.APIKeyService{},
+				concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+				cfg:                 cfg,
+			}
+			var beforeTurnErr error
+
+			account := &service.Account{
+				ID:          503,
+				Name:        "passthrough-before-turn-concurrency",
+				Platform:    service.PlatformOpenAI,
+				Type:        service.AccountTypeAPIKey,
+				Status:      service.StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Credentials: map[string]any{"api_key": "sk-test"},
+				Extra: map[string]any{
+					"openai_apikey_responses_websockets_v2_mode": service.OpenAIWSIngressModePassthrough,
+				},
+			}
+			h.wsSelectAccountWithSchedulerFn = func(
+				ctx context.Context,
+				groupID *int64,
+				previousResponseID string,
+				sessionHash string,
+				requestedModel string,
+				excludedIDs map[int64]struct{},
+				requiredTransport service.OpenAIUpstreamTransport,
+			) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error) {
+				return &service.AccountSelectionResult{
+					Account:     account,
+					Acquired:    true,
+					ReleaseFunc: func() {},
+				}, service.OpenAIAccountScheduleDecision{Layer: "unit"}, nil
+			}
+			h.wsBindStickySessionFn = func(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
+				return nil
+			}
+			h.wsGetAccessTokenFn = func(ctx context.Context, account *service.Account) (string, string, error) {
+				return "sk-test", "apikey", nil
+			}
+			h.wsProxyResponsesWSFn = func(
+				ctx context.Context,
+				c *gin.Context,
+				clientConn *coderws.Conn,
+				account *service.Account,
+				token string,
+				firstClientMessageType coderws.MessageType,
+				firstClientMessage []byte,
+				hooks *service.OpenAIWSIngressHooks,
+			) error {
+				require.NotNil(t, hooks)
+				require.NotNil(t, hooks.BeforeTurn)
+				require.NoError(t, hooks.BeforeTurn(1))
+				beforeTurnErr = hooks.BeforeTurn(2)
+				return beforeTurnErr
+			}
+
+			wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+			defer wsServer.Close()
+
+			dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+			clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+			cancelDial()
+			require.NoError(t, err)
+			defer func() {
+				_ = clientConn.CloseNow()
+			}()
+
+			writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+			err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+				`{"type":"response.create","model":"gpt-5.1","stream":false,"input":[]}`,
+			))
+			cancelWrite()
+			require.NoError(t, err)
+
+			readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+			_, _, err = clientConn.Read(readCtx)
+			cancelRead()
+			require.Error(t, err)
+			require.Error(t, beforeTurnErr)
+
+			var wsCloseErr *service.OpenAIWSClientCloseError
+			require.ErrorAs(t, beforeTurnErr, &wsCloseErr)
+			require.Equal(t, tt.expectedCode, wsCloseErr.StatusCode())
+			require.Contains(t, strings.ToLower(wsCloseErr.Reason()), tt.expectedReason)
+			require.Equal(t, int32(2), billingCache.balanceCalls.Load())
+		})
+	}
+}
+
+func TestOpenAIResponsesWebSocket_PassthroughAfterTurnRecordsUsageForPartialAndSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = service.OpenAIWSIngressModePassthrough
+
+	billingCache := &billingCacheBalanceSequenceMock{
+		balances: []float64{10, 10},
+	}
+	billingSvc := service.NewBillingCacheService(billingCache, nil, nil, cfg)
+	t.Cleanup(func() {
+		billingSvc.Stop()
+	})
+
+	usageRepo := &openAIWSUsageLogCreateOnlyStub{}
+	gatewaySvc := service.NewOpenAIGatewayService(
+		nil,
+		usageRepo,
+		nil,
+		nil,
+		nil,
+		cfg,
+		nil,
+		nil,
+		service.NewBillingService(cfg, nil),
+		nil,
+		nil,
+		nil,
+		&service.DeferredService{},
+		nil,
+	)
+	t.Cleanup(func() {
+		gatewaySvc.CloseOpenAIWSCtxPool()
+	})
+
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+		acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+	}
+
+	h := &OpenAIGatewayHandler{
+		gatewayService:      gatewaySvc,
+		billingCacheService: billingSvc,
+		apiKeyService:       &service.APIKeyService{},
+		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+		cfg:                 cfg,
+	}
+
+	account := &service.Account{
+		ID:          504,
+		Name:        "passthrough-after-turn",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_mode": service.OpenAIWSIngressModePassthrough,
+		},
+	}
+	h.wsSelectAccountWithSchedulerFn = func(
+		ctx context.Context,
+		groupID *int64,
+		previousResponseID string,
+		sessionHash string,
+		requestedModel string,
+		excludedIDs map[int64]struct{},
+		requiredTransport service.OpenAIUpstreamTransport,
+	) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error) {
+		return &service.AccountSelectionResult{
+			Account:     account,
+			Acquired:    true,
+			ReleaseFunc: func() {},
+		}, service.OpenAIAccountScheduleDecision{Layer: "unit"}, nil
+	}
+	h.wsBindStickySessionFn = func(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
+		return nil
+	}
+	h.wsGetAccessTokenFn = func(ctx context.Context, account *service.Account) (string, string, error) {
+		return "sk-test", "apikey", nil
+	}
+	h.wsProxyResponsesWSFn = func(
+		ctx context.Context,
+		c *gin.Context,
+		clientConn *coderws.Conn,
+		account *service.Account,
+		token string,
+		firstClientMessageType coderws.MessageType,
+		firstClientMessage []byte,
+		hooks *service.OpenAIWSIngressHooks,
+	) error {
+		require.NotNil(t, hooks)
+		require.NotNil(t, hooks.BeforeTurn)
+		require.NotNil(t, hooks.AfterTurn)
+		require.NoError(t, hooks.BeforeTurn(1))
+		require.NoError(t, hooks.BeforeTurn(2))
+
+		partial := &service.OpenAIForwardResult{
+			RequestID:     "",
+			Usage:         service.OpenAIUsage{InputTokens: 1, OutputTokens: 1},
+			Model:         "gpt-5.1",
+			Stream:        true,
+			OpenAIWSMode:  true,
+			WSIngressMode: service.OpenAIWSIngressModePassthrough,
+		}
+		turnErr := service.WrapOpenAIWSIngressTurnErrorWithPartial(
+			"client_disconnected",
+			errors.New("downstream disconnected"),
+			false,
+			partial,
+		)
+		hooks.AfterTurn(2, nil, turnErr)
+
+		firstToken := 7
+		hooks.AfterTurn(3, &service.OpenAIForwardResult{
+			RequestID:         "",
+			Usage:             service.OpenAIUsage{InputTokens: 2, OutputTokens: 3},
+			Model:             "gpt-5.1",
+			Stream:            true,
+			OpenAIWSMode:      true,
+			WSIngressMode:     service.OpenAIWSIngressModePassthrough,
+			FirstTokenMs:      &firstToken,
+			TerminalEventType: "response.completed",
+		}, nil)
+		return nil
+	}
+
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		`{"type":"response.create","model":"gpt-5.1","stream":true,"input":[]}`,
+	))
+	cancelWrite()
+	require.NoError(t, err)
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, _ = clientConn.Read(readCtx)
+	cancelRead()
+
+	require.Equal(t, int32(2), usageRepo.createCalls.Load())
+}
+
 func TestOpenAIResponsesWebSocket_PreviousResponseIDKindLoggedBeforeAcquireFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -868,6 +1327,15 @@ func TestOpenAIResponsesWebSocket_PreviousResponseIDKindLoggedBeforeAcquireFailu
 	require.ErrorAs(t, err, &closeErr)
 	require.Equal(t, coderws.StatusInternalError, closeErr.Code)
 	require.Contains(t, strings.ToLower(closeErr.Reason), "failed to acquire user concurrency slot")
+}
+
+func TestOpenAIWSTurnScopedFallbackRequestID(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "req_123", openAIWSTurnScopedFallbackRequestID("req_123", 0))
+	require.Equal(t, "req_123", openAIWSTurnScopedFallbackRequestID("req_123", -1))
+	require.Equal(t, "req_123:turn:2", openAIWSTurnScopedFallbackRequestID("req_123", 2))
+	require.Equal(t, ":turn:3", openAIWSTurnScopedFallbackRequestID("", 3))
 }
 
 func TestSetOpenAIClientTransportHTTP(t *testing.T) {
@@ -976,6 +1444,67 @@ func TestOpenAIHandler_InstructionsInjection(t *testing.T) {
 	result, setErr := sjson.SetBytes(validBody, "instructions", "hello")
 	require.NoError(t, setErr)
 	require.True(t, gjson.ValidBytes(result))
+}
+
+type billingCacheBalanceSequenceMock struct {
+	balances     []float64
+	balanceCalls atomic.Int32
+}
+
+type openAIWSUsageLogCreateOnlyStub struct {
+	service.UsageLogRepository
+	createCalls atomic.Int32
+}
+
+func (s *openAIWSUsageLogCreateOnlyStub) Create(ctx context.Context, log *service.UsageLog) (bool, error) {
+	s.createCalls.Add(1)
+	return false, nil
+}
+
+func (m *billingCacheBalanceSequenceMock) nextBalance() float64 {
+	if len(m.balances) == 0 {
+		return 0
+	}
+	idx := int(m.balanceCalls.Add(1)) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(m.balances) {
+		return m.balances[len(m.balances)-1]
+	}
+	return m.balances[idx]
+}
+
+func (m *billingCacheBalanceSequenceMock) GetUserBalance(ctx context.Context, userID int64) (float64, error) {
+	return m.nextBalance(), nil
+}
+
+func (m *billingCacheBalanceSequenceMock) SetUserBalance(ctx context.Context, userID int64, balance float64) error {
+	return nil
+}
+
+func (m *billingCacheBalanceSequenceMock) DeductUserBalance(ctx context.Context, userID int64, amount float64) error {
+	return nil
+}
+
+func (m *billingCacheBalanceSequenceMock) InvalidateUserBalance(ctx context.Context, userID int64) error {
+	return nil
+}
+
+func (m *billingCacheBalanceSequenceMock) GetSubscriptionCache(ctx context.Context, userID, groupID int64) (*service.SubscriptionCacheData, error) {
+	return nil, nil
+}
+
+func (m *billingCacheBalanceSequenceMock) SetSubscriptionCache(ctx context.Context, userID, groupID int64, data *service.SubscriptionCacheData) error {
+	return nil
+}
+
+func (m *billingCacheBalanceSequenceMock) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error {
+	return nil
+}
+
+func (m *billingCacheBalanceSequenceMock) InvalidateSubscriptionCache(ctx context.Context, userID, groupID int64) error {
+	return nil
 }
 
 func newOpenAIHandlerForPreviousResponseIDValidation(t *testing.T, cache *concurrencyCacheMock) *OpenAIGatewayHandler {

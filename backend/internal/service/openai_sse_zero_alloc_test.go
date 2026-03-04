@@ -12,6 +12,11 @@ import (
 func TestSSEPackageLevelConstants(t *testing.T) {
 	require.Equal(t, []byte("[DONE]"), sseDataDone)
 	require.Equal(t, []byte(`"response.completed"`), sseResponseCompletedMark)
+	require.Equal(t, []byte(`"response.done"`), sseResponseDoneMark)
+	require.Equal(t, []byte(`"response.failed"`), sseResponseFailedMark)
+	require.Equal(t, []byte(`"type":"response.completed"`), sseTypeResponseCompleted)
+	require.Equal(t, []byte(`"type":"response.done"`), sseTypeResponseDone)
+	require.Equal(t, []byte(`"type":"response.failed"`), sseTypeResponseFailed)
 }
 
 func TestSSEDataDone_UsedInBytesEqual(t *testing.T) {
@@ -20,12 +25,62 @@ func TestSSEDataDone_UsedInBytesEqual(t *testing.T) {
 	require.False(t, bytes.Equal([]byte(""), sseDataDone))
 }
 
-func TestSSEResponseCompletedMark_UsedInBytesContains(t *testing.T) {
-	data := []byte(`{"type":"response.completed","response":{"usage":{}}}`)
-	require.True(t, bytes.Contains(data, sseResponseCompletedMark))
+func TestSSEResponseTypeMarks_UsedInBytesContains(t *testing.T) {
+	completed := []byte(`{"type":"response.completed","response":{"usage":{}}}`)
+	require.True(t, bytes.Contains(completed, sseResponseCompletedMark))
+	require.False(t, bytes.Contains(completed, sseResponseDoneMark))
+	require.False(t, bytes.Contains(completed, sseResponseFailedMark))
+
+	done := []byte(`{"type":"response.done","response":{"usage":{}}}`)
+	require.True(t, bytes.Contains(done, sseResponseDoneMark))
+
+	failed := []byte(`{"type":"response.failed","response":{"usage":{}}}`)
+	require.True(t, bytes.Contains(failed, sseResponseFailedMark))
 
 	unrelated := []byte(`{"type":"response.in_progress"}`)
 	require.False(t, bytes.Contains(unrelated, sseResponseCompletedMark))
+	require.False(t, bytes.Contains(unrelated, sseResponseDoneMark))
+	require.False(t, bytes.Contains(unrelated, sseResponseFailedMark))
+}
+
+func TestOpenAIResponsesSSEUsageEventHelpers(t *testing.T) {
+	t.Run("event type selector", func(t *testing.T) {
+		require.True(t, openAIResponsesSSEEventShouldParseUsage("response.completed"))
+		require.True(t, openAIResponsesSSEEventShouldParseUsage(" response.done "))
+		require.True(t, openAIResponsesSSEEventShouldParseUsage("response.failed"))
+		require.False(t, openAIResponsesSSEEventShouldParseUsage("response.in_progress"))
+		require.False(t, openAIResponsesSSEEventShouldParseUsage(""))
+	})
+
+	t.Run("string marker selector", func(t *testing.T) {
+		require.True(t, openAIResponsesSSEStringMayContainUsageEvent(`{"type":"response.completed"}`))
+		require.True(t, openAIResponsesSSEStringMayContainUsageEvent(`{"type":"response.done"}`))
+		require.True(t, openAIResponsesSSEStringMayContainUsageEvent(`{"type":"response.failed"}`))
+		require.False(t, openAIResponsesSSEStringMayContainUsageEvent(`{"type":"response.in_progress"}`))
+		require.False(t, openAIResponsesSSEStringMayContainUsageEvent(""))
+	})
+
+	t.Run("bytes marker selector", func(t *testing.T) {
+		require.True(t, openAIResponsesSSEBytesMayContainUsageEvent([]byte(`{"type":"response.completed"}`)))
+		require.True(t, openAIResponsesSSEBytesMayContainUsageEvent([]byte(`{"type":"response.done"}`)))
+		require.True(t, openAIResponsesSSEBytesMayContainUsageEvent([]byte(`{"type":"response.failed"}`)))
+		require.False(t, openAIResponsesSSEBytesMayContainUsageEvent([]byte(`{"type":"response.in_progress"}`)))
+		require.False(t, openAIResponsesSSEBytesMayContainUsageEvent(nil))
+	})
+
+	t.Run("canonical terminal type selector", func(t *testing.T) {
+		require.True(t, openAIResponsesSSEStringHasCanonicalTerminalType(`{"type":"response.completed"}`))
+		require.True(t, openAIResponsesSSEStringHasCanonicalTerminalType(`{"type":"response.done"}`))
+		require.True(t, openAIResponsesSSEStringHasCanonicalTerminalType(`{"type":"response.failed"}`))
+		require.False(t, openAIResponsesSSEStringHasCanonicalTerminalType(`{"type":"response.in_progress"}`))
+		require.False(t, openAIResponsesSSEStringHasCanonicalTerminalType(""))
+
+		require.True(t, openAIResponsesSSEBytesHasCanonicalTerminalType([]byte(`{"type":"response.completed"}`)))
+		require.True(t, openAIResponsesSSEBytesHasCanonicalTerminalType([]byte(`{"type":"response.done"}`)))
+		require.True(t, openAIResponsesSSEBytesHasCanonicalTerminalType([]byte(`{"type":"response.failed"}`)))
+		require.False(t, openAIResponsesSSEBytesHasCanonicalTerminalType([]byte(`{"type":"response.in_progress"}`)))
+		require.False(t, openAIResponsesSSEBytesHasCanonicalTerminalType(nil))
+	})
 }
 
 // --- parseSSEUsageString 测试 ---
@@ -42,16 +97,52 @@ func TestParseSSEUsageString_CompletedEvent(t *testing.T) {
 	require.Equal(t, 20, usage.CacheReadInputTokens)
 }
 
-func TestParseSSEUsageString_NonCompletedEvent(t *testing.T) {
+func TestParseSSEUsageString_NonTerminalUsageEvent(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	usage := &OpenAIUsage{InputTokens: 99, OutputTokens: 88}
 
 	data := `{"type":"response.in_progress","response":{"usage":{"input_tokens":1,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}`
 	svc.parseSSEUsageString(data, usage)
 
-	// 非 completed 事件不应修改 usage
+	// 非 terminal usage 事件不应修改 usage
 	require.Equal(t, 99, usage.InputTokens)
 	require.Equal(t, 88, usage.OutputTokens)
+}
+
+func TestParseSSEUsageString_DoneTerminalEvent(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+
+	data := `{"type":"response.done","response":{"usage":{"input_tokens":8,"output_tokens":5,"input_tokens_details":{"cached_tokens":2}}}}`
+	svc.parseSSEUsageString(data, usage)
+
+	require.Equal(t, 8, usage.InputTokens)
+	require.Equal(t, 5, usage.OutputTokens)
+	require.Equal(t, 2, usage.CacheReadInputTokens)
+}
+
+func TestParseSSEUsageString_FailedTerminalEvent(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+
+	data := `{"type":"response.failed","response":{"usage":{"input_tokens":6,"output_tokens":4,"input_tokens_details":{"cached_tokens":1}}}}`
+	svc.parseSSEUsageString(data, usage)
+
+	require.Equal(t, 6, usage.InputTokens)
+	require.Equal(t, 4, usage.OutputTokens)
+	require.Equal(t, 1, usage.CacheReadInputTokens)
+}
+
+func TestParseSSEUsageString_SpacedTypeFallbackToGJSON(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+
+	data := `{"type" : "response.done","response":{"usage":{"input_tokens":16,"output_tokens":9,"input_tokens_details":{"cached_tokens":4}}}}`
+	svc.parseSSEUsageString(data, usage)
+
+	require.Equal(t, 16, usage.InputTokens)
+	require.Equal(t, 9, usage.OutputTokens)
+	require.Equal(t, 4, usage.CacheReadInputTokens)
 }
 
 func TestParseSSEUsageString_DoneEvent(t *testing.T) {
@@ -172,7 +263,7 @@ func TestParseSSEUsageBytes_ShortData(t *testing.T) {
 	require.Equal(t, 7, usage.InputTokens)
 }
 
-func TestParseSSEUsageBytes_NonCompletedEvent(t *testing.T) {
+func TestParseSSEUsageBytes_NonTerminalUsageEvent(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	usage := &OpenAIUsage{InputTokens: 99}
 
@@ -180,6 +271,42 @@ func TestParseSSEUsageBytes_NonCompletedEvent(t *testing.T) {
 	svc.parseSSEUsageBytes(data, usage)
 
 	require.Equal(t, 99, usage.InputTokens)
+}
+
+func TestParseSSEUsageBytes_DoneTerminalEvent(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+
+	data := []byte(`{"type":"response.done","response":{"usage":{"input_tokens":21,"output_tokens":13,"input_tokens_details":{"cached_tokens":5}}}}`)
+	svc.parseSSEUsageBytes(data, usage)
+
+	require.Equal(t, 21, usage.InputTokens)
+	require.Equal(t, 13, usage.OutputTokens)
+	require.Equal(t, 5, usage.CacheReadInputTokens)
+}
+
+func TestParseSSEUsageBytes_FailedTerminalEvent(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+
+	data := []byte(`{"type":"response.failed","response":{"usage":{"input_tokens":9,"output_tokens":3,"input_tokens_details":{"cached_tokens":1}}}}`)
+	svc.parseSSEUsageBytes(data, usage)
+
+	require.Equal(t, 9, usage.InputTokens)
+	require.Equal(t, 3, usage.OutputTokens)
+	require.Equal(t, 1, usage.CacheReadInputTokens)
+}
+
+func TestParseSSEUsageBytes_SpacedTypeFallbackToGJSON(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+
+	data := []byte(`{"type" : "response.failed","response":{"usage":{"input_tokens":12,"output_tokens":7,"input_tokens_details":{"cached_tokens":3}}}}`)
+	svc.parseSSEUsageBytes(data, usage)
+
+	require.Equal(t, 12, usage.InputTokens)
+	require.Equal(t, 7, usage.OutputTokens)
+	require.Equal(t, 3, usage.CacheReadInputTokens)
 }
 
 func TestParseSSEUsageBytes_GetManyBytesExtraction(t *testing.T) {
@@ -244,7 +371,7 @@ func TestParseSSEUsage_StringAndBytesConsistency(t *testing.T) {
 	require.Equal(t, usageStr.CacheReadInputTokens, usageBytes.CacheReadInputTokens)
 }
 
-func TestParseSSEUsage_StringAndBytesConsistency_NonCompleted(t *testing.T) {
+func TestParseSSEUsage_StringAndBytesConsistency_NonTerminalUsageEvent(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 
 	inProgressData := `{"type":"response.in_progress","response":{"usage":{"input_tokens":1,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}},"pad":"xxx"}`

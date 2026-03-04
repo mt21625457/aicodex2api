@@ -1851,26 +1851,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		terminateOnErrorMessage := ""
 		mappedModel := ""
 		var mappedModelBytes []byte
-		buildPartialResult := func(terminalEventType string) *OpenAIForwardResult {
-			if usage.InputTokens <= 0 &&
-				usage.OutputTokens <= 0 &&
-				usage.CacheCreationInputTokens <= 0 &&
-				usage.CacheReadInputTokens <= 0 {
-				return nil
-			}
-			return &OpenAIForwardResult{
-				RequestID:         responseID,
-				Usage:             usage,
-				Model:             originalModel,
-				ReasoningEffort:   extractOpenAIReasoningEffortFromBody(payload, originalModel),
-				Stream:            reqStream,
-				OpenAIWSMode:      true,
-				WSIngressMode:     OpenAIWSIngressModeCtxPool,
-				Duration:          time.Since(turnStart),
-				FirstTokenMs:      firstTokenMs,
-				TerminalEventType: strings.TrimSpace(terminalEventType),
-			}
-		}
+		buildPartialResult := newOpenAIWSIngressPartialResultBuilder(
+			&responseID,
+			&usage,
+			originalModel,
+			payload,
+			reqStream,
+			turnStart,
+			&firstTokenMs,
+		)
 		if originalModel != "" {
 			mappedModel = account.GetMappedModel(originalModel)
 			if normalizedModel := normalizeCodexModel(mappedModel); normalizedModel != "" {

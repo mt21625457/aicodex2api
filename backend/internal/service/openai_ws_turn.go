@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
@@ -378,6 +379,69 @@ func parseOpenAIWSResponseUsageFromCompletedEvent(message []byte, usage *OpenAIU
 	usage.InputTokens = int(values[0].Int())
 	usage.OutputTokens = int(values[1].Int())
 	usage.CacheReadInputTokens = int(values[2].Int())
+}
+
+func buildOpenAIWSIngressPartialResult(
+	responseID string,
+	usage OpenAIUsage,
+	model string,
+	requestPayload []byte,
+	reqStream bool,
+	turnStart time.Time,
+	firstTokenMs *int,
+	terminalEventType string,
+) *OpenAIForwardResult {
+	duration := time.Since(turnStart)
+	if duration < 0 {
+		duration = 0
+	}
+	return &OpenAIForwardResult{
+		RequestID:         responseID,
+		Usage:             usage,
+		Model:             model,
+		ReasoningEffort:   extractOpenAIReasoningEffortFromBody(requestPayload, model),
+		Stream:            reqStream,
+		OpenAIWSMode:      true,
+		WSIngressMode:     OpenAIWSIngressModeCtxPool,
+		Duration:          duration,
+		FirstTokenMs:      firstTokenMs,
+		TerminalEventType: strings.TrimSpace(terminalEventType),
+	}
+}
+
+func newOpenAIWSIngressPartialResultBuilder(
+	responseID *string,
+	usage *OpenAIUsage,
+	model string,
+	requestPayload []byte,
+	reqStream bool,
+	turnStart time.Time,
+	firstTokenMs **int,
+) func(terminalEventType string) *OpenAIForwardResult {
+	return func(terminalEventType string) *OpenAIForwardResult {
+		currentResponseID := ""
+		if responseID != nil {
+			currentResponseID = *responseID
+		}
+		currentUsage := OpenAIUsage{}
+		if usage != nil {
+			currentUsage = *usage
+		}
+		var currentFirstTokenMs *int
+		if firstTokenMs != nil {
+			currentFirstTokenMs = *firstTokenMs
+		}
+		return buildOpenAIWSIngressPartialResult(
+			currentResponseID,
+			currentUsage,
+			model,
+			requestPayload,
+			reqStream,
+			turnStart,
+			currentFirstTokenMs,
+			terminalEventType,
+		)
+	}
 }
 
 func parseOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {

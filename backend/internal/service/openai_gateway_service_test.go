@@ -1678,6 +1678,18 @@ func TestParseSSEUsage_SelectiveParsing(t *testing.T) {
 	require.Equal(t, 3, usage.InputTokens)
 	require.Equal(t, 5, usage.OutputTokens)
 	require.Equal(t, 2, usage.CacheReadInputTokens)
+
+	// done 事件也应提取 usage
+	svc.parseSSEUsage(`{"type":"response.done","response":{"usage":{"input_tokens":4,"output_tokens":6,"input_tokens_details":{"cached_tokens":1}}}}`, usage)
+	require.Equal(t, 4, usage.InputTokens)
+	require.Equal(t, 6, usage.OutputTokens)
+	require.Equal(t, 1, usage.CacheReadInputTokens)
+
+	// failed 事件也应提取 usage
+	svc.parseSSEUsage(`{"type":"response.failed","response":{"usage":{"input_tokens":2,"output_tokens":9,"input_tokens_details":{"cached_tokens":3}}}}`, usage)
+	require.Equal(t, 2, usage.InputTokens)
+	require.Equal(t, 9, usage.OutputTokens)
+	require.Equal(t, 3, usage.CacheReadInputTokens)
 }
 
 func TestExtractCodexFinalResponse_SampleReplay(t *testing.T) {

@@ -61,6 +61,7 @@ type RelayOptions struct {
 	FirstMessageType     coderws.MessageType
 	InitialRequestModel  string
 	DisableWriteTimeout  bool
+	BeforeClientFrame    func(turn int, msgType coderws.MessageType, payload []byte) error
 	OnUsageParseFailure  func(eventType string, usageRaw string)
 	OnTurnComplete       func(turn RelayTurnResult)
 	OnTrace              func(event RelayTraceEvent)
@@ -209,7 +210,16 @@ func Relay(
 
 	exitCh := make(chan relayExitSignal, 3)
 	dropDownstreamWrites := atomic.Bool{}
-	go runClientToUpstream(relayCtx, clientConn, writeUpstream, markActivity, clientToUpstreamFrames, onTrace, exitCh)
+	go runClientToUpstream(
+		relayCtx,
+		clientConn,
+		writeUpstream,
+		markActivity,
+		options.BeforeClientFrame,
+		clientToUpstreamFrames,
+		onTrace,
+		exitCh,
+	)
 	go runUpstreamToClient(
 		relayCtx,
 		upstreamConn,
@@ -349,10 +359,12 @@ func runClientToUpstream(
 	clientConn FrameConn,
 	writeUpstream func(msgType coderws.MessageType, payload []byte) error,
 	markActivity func(),
+	beforeClientFrame func(turn int, msgType coderws.MessageType, payload []byte) error,
 	forwardedFrames *atomic.Int64,
 	onTrace func(event RelayTraceEvent),
 	exitCh chan<- relayExitSignal,
 ) {
+	turn := 2
 	for {
 		msgType, payload, err := clientConn.ReadFrame(ctx)
 		if err != nil {
@@ -365,6 +377,19 @@ func runClientToUpstream(
 			})
 			exitCh <- relayExitSignal{stage: "read_client", err: err, graceful: graceful}
 			return
+		}
+		if beforeClientFrame != nil {
+			if beforeErr := beforeClientFrame(turn, msgType, payload); beforeErr != nil {
+				emitRelayTrace(onTrace, RelayTraceEvent{
+					Stage:        "before_turn_failed",
+					Direction:    "client_to_upstream",
+					MessageType:  relayMessageTypeString(msgType),
+					PayloadBytes: len(payload),
+					Error:        beforeErr.Error(),
+				})
+				exitCh <- relayExitSignal{stage: "before_turn", err: beforeErr}
+				return
+			}
 		}
 		if err := writeUpstream(msgType, payload); err != nil {
 			emitRelayTrace(onTrace, RelayTraceEvent{
@@ -380,6 +405,7 @@ func runClientToUpstream(
 		if forwardedFrames != nil {
 			forwardedFrames.Add(1)
 		}
+		turn++
 		markActivity()
 	}
 }
@@ -532,7 +558,7 @@ func relayMessageTypeString(msgType coderws.MessageType) string {
 
 func relayDirectionFromStage(stage string) string {
 	switch stage {
-	case "read_client", "write_upstream":
+	case "read_client", "before_turn", "write_upstream":
 		return "client_to_upstream"
 	case "read_upstream", "write_client", "drain_terminal":
 		return "upstream_to_client"

@@ -176,6 +176,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// passthrough 链路走大帧高频转发，避免每帧创建超时 context/timer。
 			// 由 relayCtx 取消 + idle watchdog 兜底释放。
 			DisableWriteTimeout: true,
+			BeforeClientFrame:   openAIWSPassthroughBeforeClientFrameHook(hooks),
 			OnUsageParseFailure: func(eventType string, usageRaw string) {
 				logOpenAIWSV2Passthrough(
 					"usage_parse_failed event_type=%s usage_raw=%s",
@@ -350,6 +351,15 @@ func (s *OpenAIGatewayService) mapOpenAIWSPassthroughDialError(
 		)
 	}
 	return fmt.Errorf("openai ws passthrough dial: %w", wrappedErr)
+}
+
+func openAIWSPassthroughBeforeClientFrameHook(hooks *OpenAIWSIngressHooks) func(turn int, msgType coderws.MessageType, payload []byte) error {
+	if hooks == nil || hooks.BeforeTurn == nil {
+		return nil
+	}
+	return func(turn int, _ coderws.MessageType, _ []byte) error {
+		return hooks.BeforeTurn(turn)
+	}
 }
 
 func openaiwsv2RelayMessageTypeName(msgType coderws.MessageType) string {

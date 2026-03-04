@@ -145,40 +145,79 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken:     0.2e-6, // $0.20 per MTok
 		SupportsCacheBreakdown:     false,
 	}
+
+	// OpenAI GPT-5.1（本地兜底，防止动态定价不可用时拒绝计费）
+	s.fallbackPrices["gpt-5.1"] = &ModelPricing{
+		InputPricePerToken:         1.25e-6, // $1.25 per MTok
+		OutputPricePerToken:        10e-6,   // $10 per MTok
+		CacheCreationPricePerToken: 1.25e-6, // $1.25 per MTok
+		CacheReadPricePerToken:     0.125e-6,
+		SupportsCacheBreakdown:     false,
+	}
+	// Codex 族兜底统一按 GPT-5.1 Codex 价格计费
+	s.fallbackPrices["gpt-5.1-codex"] = &ModelPricing{
+		InputPricePerToken:         1.5e-6, // $1.5 per MTok
+		OutputPricePerToken:        12e-6,  // $12 per MTok
+		CacheCreationPricePerToken: 1.5e-6, // $1.5 per MTok
+		CacheReadPricePerToken:     0.15e-6,
+		SupportsCacheBreakdown:     false,
+	}
+	s.fallbackPrices["gpt-5.3-codex"] = s.fallbackPrices["gpt-5.1-codex"]
 }
 
 // getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
-	modelLower := strings.ToLower(model)
+	modelLower := strings.TrimSpace(strings.ToLower(model))
+	if modelLower == "" {
+		return nil
+	}
 
-	// 按模型系列匹配
-	if strings.Contains(modelLower, "opus") {
-		if strings.Contains(modelLower, "4.6") || strings.Contains(modelLower, "4-6") {
-			return s.fallbackPrices["claude-opus-4.6"]
+	// 仅对可识别的 Claude 系列执行回退，避免跨平台误计费。
+	if strings.Contains(modelLower, "claude") {
+		if strings.Contains(modelLower, "opus") {
+			if strings.Contains(modelLower, "4.6") || strings.Contains(modelLower, "4-6") {
+				return s.fallbackPrices["claude-opus-4.6"]
+			}
+			if strings.Contains(modelLower, "4.5") || strings.Contains(modelLower, "4-5") {
+				return s.fallbackPrices["claude-opus-4.5"]
+			}
+			return s.fallbackPrices["claude-3-opus"]
 		}
-		if strings.Contains(modelLower, "4.5") || strings.Contains(modelLower, "4-5") {
-			return s.fallbackPrices["claude-opus-4.5"]
+		if strings.Contains(modelLower, "sonnet") {
+			if strings.Contains(modelLower, "4") && !strings.Contains(modelLower, "3") {
+				return s.fallbackPrices["claude-sonnet-4"]
+			}
+			return s.fallbackPrices["claude-3-5-sonnet"]
 		}
-		return s.fallbackPrices["claude-3-opus"]
+		if strings.Contains(modelLower, "haiku") {
+			if strings.Contains(modelLower, "3-5") || strings.Contains(modelLower, "3.5") {
+				return s.fallbackPrices["claude-3-5-haiku"]
+			}
+			return s.fallbackPrices["claude-3-haiku"]
+		}
+		// Claude 未知型号统一回退到 Sonnet，避免计费中断。
+		return s.fallbackPrices["claude-sonnet-4"]
 	}
-	if strings.Contains(modelLower, "sonnet") {
-		if strings.Contains(modelLower, "4") && !strings.Contains(modelLower, "3") {
-			return s.fallbackPrices["claude-sonnet-4"]
-		}
-		return s.fallbackPrices["claude-3-5-sonnet"]
-	}
-	if strings.Contains(modelLower, "haiku") {
-		if strings.Contains(modelLower, "3-5") || strings.Contains(modelLower, "3.5") {
-			return s.fallbackPrices["claude-3-5-haiku"]
-		}
-		return s.fallbackPrices["claude-3-haiku"]
-	}
+
+	// Gemini 仅匹配已内置的回退型号，未知 Gemini 不做回退。
 	if strings.Contains(modelLower, "gemini-3.1-pro") || strings.Contains(modelLower, "gemini-3-1-pro") {
 		return s.fallbackPrices["gemini-3.1-pro"]
 	}
 
-	// 默认使用Sonnet价格
-	return s.fallbackPrices["claude-sonnet-4"]
+	// OpenAI 仅匹配已知 GPT-5/Codex 族，避免未知 OpenAI 型号误计价。
+	if strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "codex") {
+		normalized := normalizeCodexModel(modelLower)
+		switch normalized {
+		case "gpt-5.3-codex":
+			return s.fallbackPrices["gpt-5.3-codex"]
+		case "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "codex-mini-latest":
+			return s.fallbackPrices["gpt-5.1-codex"]
+		case "gpt-5.1":
+			return s.fallbackPrices["gpt-5.1"]
+		}
+	}
+
+	return nil
 }
 
 // GetModelPricing 获取模型价格配置

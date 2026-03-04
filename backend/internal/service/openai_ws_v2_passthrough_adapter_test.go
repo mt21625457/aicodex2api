@@ -1192,3 +1192,25 @@ func TestMapOpenAIWSPassthroughDialError_StatusMapping(t *testing.T) {
 		require.False(t, errors.As(err, &closeErr), "context.Canceled 不应封装为 CloseError")
 	})
 }
+
+func TestOpenAIWSPassthroughBeforeClientFrameHook(t *testing.T) {
+	t.Parallel()
+
+	require.Nil(t, openAIWSPassthroughBeforeClientFrameHook(nil))
+	require.Nil(t, openAIWSPassthroughBeforeClientFrameHook(&OpenAIWSIngressHooks{}))
+
+	var turns []int
+	hook := openAIWSPassthroughBeforeClientFrameHook(&OpenAIWSIngressHooks{
+		BeforeTurn: func(turn int) error {
+			turns = append(turns, turn)
+			if turn == 3 {
+				return errors.New("billing check failed")
+			}
+			return nil
+		},
+	})
+	require.NotNil(t, hook)
+	require.NoError(t, hook(2, coderws.MessageText, []byte(`{"type":"response.create"}`)))
+	require.ErrorContains(t, hook(3, coderws.MessageText, []byte(`{"type":"response.create"}`)), "billing check failed")
+	require.Equal(t, []int{2, 3}, turns)
+}

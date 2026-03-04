@@ -118,6 +118,12 @@ func wrapOpenAIWSIngressTurnErrorWithPartial(stage string, cause error, wroteDow
 	}
 }
 
+// WrapOpenAIWSIngressTurnErrorWithPartial wraps turn abort cause with optional partial result.
+// It is intended for cross-package call sites that need to preserve partial usage semantics.
+func WrapOpenAIWSIngressTurnErrorWithPartial(stage string, cause error, wroteDownstream bool, partialResult *OpenAIForwardResult) error {
+	return wrapOpenAIWSIngressTurnErrorWithPartial(stage, cause, wroteDownstream, partialResult)
+}
+
 // OpenAIWSIngressTurnPartialResult returns usage-bearing partial turn result
 // when WS ingress turn aborts after receiving upstream events.
 func OpenAIWSIngressTurnPartialResult(err error) (*OpenAIForwardResult, bool) {
