@@ -2228,6 +2228,10 @@ import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import {
+  getAPIErrorMessage,
+  isMixedChannelWarningError
+} from '@/utils/apiError'
+import {
   OPENAI_WS_MODE_PASSTHROUGH,
   OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF,
@@ -2949,7 +2953,7 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
     })
     return false
   } catch (error: any) {
-    appStore.showError(error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    appStore.showError(getAPIErrorMessage(error, t('admin.accounts.failedToCreate')))
     return false
   }
 }
@@ -2962,9 +2966,9 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
     emit('created')
     handleClose()
   } catch (error: any) {
-    if (error.response?.status === 409 && error.response?.data?.error === 'mixed_channel_warning' && needsMixedChannelCheck(form.platform)) {
+    if (isMixedChannelWarningError(error) && needsMixedChannelCheck(form.platform)) {
       openMixedChannelDialog({
-        message: error.response?.data?.message,
+        message: getAPIErrorMessage(error, t('admin.accounts.failedToCreate')),
         onConfirm: async () => {
           antigravityMixedChannelConfirmed.value = true
           await submitCreateAccount(payload)
@@ -2972,7 +2976,7 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
       })
       return
     }
-    appStore.showError(error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    appStore.showError(getAPIErrorMessage(error, t('admin.accounts.failedToCreate')))
   } finally {
     submitting.value = false
   }
