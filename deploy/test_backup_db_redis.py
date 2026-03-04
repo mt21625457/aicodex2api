@@ -16,6 +16,26 @@ SPEC.loader.exec_module(backup)
 
 
 class BackupScriptTests(unittest.TestCase):
+    def test_external_db_conn_defaults_to_loopback_and_keeps_custom_port(self) -> None:
+        host, port = backup.external_db_conn({"DATABASE_PORT": "15432"})
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, "15432")
+
+    def test_external_redis_conn_normalizes_localhost_to_loopback(self) -> None:
+        host, port = backup.external_redis_conn({"REDIS_HOST": "localhost", "REDIS_PORT": "16379"})
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, "16379")
+
+    def test_external_db_conn_rejects_non_loopback_host(self) -> None:
+        with self.assertRaises(backup.BackupError) as ctx:
+            backup.external_db_conn({"DATABASE_HOST": "10.0.0.8", "DATABASE_PORT": "5432"})
+        self.assertIn("DATABASE_HOST 必须是 127.0.0.1", str(ctx.exception))
+
+    def test_external_redis_conn_rejects_invalid_port(self) -> None:
+        with self.assertRaises(backup.BackupError) as ctx:
+            backup.external_redis_conn({"REDIS_HOST": "127.0.0.1", "REDIS_PORT": "70000"})
+        self.assertIn("REDIS_PORT 端口超出范围", str(ctx.exception))
+
     def test_redact_cmd_masks_sensitive_values(self) -> None:
         cmd = [
             "docker",

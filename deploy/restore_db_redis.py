@@ -531,6 +531,7 @@ def main() -> int:
             )
             print(f"Redis 恢复目标: {redis_service} ({args.redis_rdb_path})")
         else:
+            redis_host, redis_port = common.external_redis_conn(env_map)
             restore_redis_external(
                 archive_file=archive_file,
                 member=redis_member,
@@ -538,7 +539,7 @@ def main() -> int:
                 redis_external_restart_cmd=args.redis_external_restart_cmd,
                 dry_run=args.dry_run,
             )
-            print("Redis 恢复目标: 外部模式")
+            print(f"Redis 恢复目标: {redis_host}:{redis_port} (external RDB file mode)")
 
     print("恢复流程完成")
     return 0

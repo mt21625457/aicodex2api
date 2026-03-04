@@ -285,19 +285,37 @@ def postgres_creds(service_env: Dict[str, str], env_map: Dict[str, str]) -> Tupl
     return user, password, dbname
 
 
+def normalize_loopback_host(host: str, env_key: str) -> str:
+    raw = host.strip()
+    if not raw:
+        return "127.0.0.1"
+    normalized = raw.lower()
+    if normalized in {"127.0.0.1", "localhost", "::1"}:
+        return "127.0.0.1"
+    raise BackupError(f"{env_key} 必须是 127.0.0.1（当前: {host}）")
+
+
+def normalize_port(port: str, env_key: str, default_port: str) -> str:
+    raw = str(port).strip()
+    if not raw:
+        raw = default_port
+    if not raw.isdigit():
+        raise BackupError(f"{env_key} 端口不合法: {port}")
+    parsed = int(raw)
+    if parsed < 1 or parsed > 65535:
+        raise BackupError(f"{env_key} 端口超出范围: {port}")
+    return str(parsed)
+
+
 def external_db_conn(env_map: Dict[str, str]) -> Tuple[str, str]:
-    host = env_map.get("DATABASE_HOST", "")
-    port = env_map.get("DATABASE_PORT", "5432")
-    if not host:
-        raise BackupError("未找到外部数据库主机（DATABASE_HOST）")
+    host = normalize_loopback_host(env_map.get("DATABASE_HOST", ""), "DATABASE_HOST")
+    port = normalize_port(env_map.get("DATABASE_PORT", "5432"), "DATABASE_PORT", "5432")
     return host, port
 
 
 def external_redis_conn(env_map: Dict[str, str]) -> Tuple[str, str]:
-    host = env_map.get("REDIS_HOST", "")
-    port = env_map.get("REDIS_PORT", "6379")
-    if not host:
-        raise BackupError("未找到外部 Redis 主机（REDIS_HOST）")
+    host = normalize_loopback_host(env_map.get("REDIS_HOST", ""), "REDIS_HOST")
+    port = normalize_port(env_map.get("REDIS_PORT", "6379"), "REDIS_PORT", "6379")
     return host, port
 
 
