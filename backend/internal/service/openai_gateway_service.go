@@ -64,6 +64,8 @@ var (
 	sseTypeResponseCompleted = []byte(`"type":"response.completed"`)
 	sseTypeResponseDone      = []byte(`"type":"response.done"`)
 	sseTypeResponseFailed    = []byte(`"type":"response.failed"`)
+	sseTokenDeltaMark        = []byte(".delta")
+	sseTypeResponseOutput    = []byte(`"type":"response.output`)
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -2621,7 +2623,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if trimmedData == "[DONE]" {
 				sawDone = true
 			}
-			if firstTokenMs == nil && trimmedData != "" && trimmedData != "[DONE]" {
+			if firstTokenMs == nil && openAIResponsesSSEBytesIsTokenEvent(dataBytes) {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
@@ -3139,6 +3141,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
+			isTokenEvent := openAIResponsesSSEStringIsTokenEvent(data)
 
 			// Replace model in response if needed.
 			// Fast path: most events do not contain model field values.
@@ -3159,7 +3162,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {
 				shouldFlush := queueDrained
-				if firstTokenMs == nil && data != "" && data != "[DONE]" {
+				if firstTokenMs == nil && isTokenEvent {
 					// 保证首个 token 事件尽快出站，避免影响 TTFT。
 					shouldFlush = true
 				}
@@ -3178,7 +3181,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 
 			// Record first token time
-			if firstTokenMs == nil && data != "" && data != "[DONE]" {
+			if firstTokenMs == nil && isTokenEvent {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
@@ -3403,6 +3406,55 @@ func openAIResponsesSSEBytesHasCanonicalTerminalType(data []byte) bool {
 	return bytes.Contains(data, sseTypeResponseCompleted) ||
 		bytes.Contains(data, sseTypeResponseDone) ||
 		bytes.Contains(data, sseTypeResponseFailed)
+}
+
+func openAIResponsesSSEEventIsTokenEvent(eventType string) bool {
+	normalized := strings.TrimSpace(eventType)
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "response.created", "response.in_progress", "response.output_item.added", "response.output_item.done", "response.completed", "response.done":
+		return false
+	}
+	if strings.Contains(normalized, ".delta") {
+		return true
+	}
+	if strings.HasPrefix(normalized, "response.output_text") {
+		return true
+	}
+	if strings.HasPrefix(normalized, "response.output") {
+		return true
+	}
+	return false
+}
+
+func openAIResponsesSSEStringMayContainTokenEvent(data string) bool {
+	if data == "" {
+		return false
+	}
+	return strings.Contains(data, ".delta") || strings.Contains(data, `"type":"response.output`)
+}
+
+func openAIResponsesSSEBytesMayContainTokenEvent(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	return bytes.Contains(data, sseTokenDeltaMark) || bytes.Contains(data, sseTypeResponseOutput)
+}
+
+func openAIResponsesSSEStringIsTokenEvent(data string) bool {
+	if data == "" || data == "[DONE]" || !openAIResponsesSSEStringMayContainTokenEvent(data) {
+		return false
+	}
+	return openAIResponsesSSEEventIsTokenEvent(gjson.Get(data, "type").String())
+}
+
+func openAIResponsesSSEBytesIsTokenEvent(data []byte) bool {
+	if len(data) == 0 || bytes.Equal(data, sseDataDone) || !openAIResponsesSSEBytesMayContainTokenEvent(data) {
+		return false
+	}
+	return openAIResponsesSSEEventIsTokenEvent(gjson.GetBytes(data, "type").String())
 }
 
 // parseSSEUsageString 使用 gjson.Get（string 版本）解析 usage，避免 string→[]byte 转换

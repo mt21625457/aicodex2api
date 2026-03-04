@@ -83,6 +83,42 @@ func TestOpenAIResponsesSSEUsageEventHelpers(t *testing.T) {
 	})
 }
 
+func TestOpenAIResponsesSSETokenEventHelpers(t *testing.T) {
+	t.Run("event type selector", func(t *testing.T) {
+		require.False(t, openAIResponsesSSEEventIsTokenEvent("response.created"))
+		require.False(t, openAIResponsesSSEEventIsTokenEvent("response.in_progress"))
+		require.False(t, openAIResponsesSSEEventIsTokenEvent("response.output_item.added"))
+		require.False(t, openAIResponsesSSEEventIsTokenEvent("response.output_item.done"))
+		require.False(t, openAIResponsesSSEEventIsTokenEvent("response.completed"))
+		require.False(t, openAIResponsesSSEEventIsTokenEvent("response.done"))
+		require.True(t, openAIResponsesSSEEventIsTokenEvent("response.output_text.delta"))
+		require.True(t, openAIResponsesSSEEventIsTokenEvent("response.output_audio.delta"))
+		require.True(t, openAIResponsesSSEEventIsTokenEvent("response.output_text.done"))
+	})
+
+	t.Run("string and bytes selector", func(t *testing.T) {
+		require.True(t, openAIResponsesSSEStringMayContainTokenEvent(`{"type":"response.output_text.delta","delta":"h"}`))
+		require.True(t, openAIResponsesSSEBytesMayContainTokenEvent([]byte(`{"type":"response.output_text.delta","delta":"h"}`)))
+		require.False(t, openAIResponsesSSEStringMayContainTokenEvent(`{"type":"response.created"}`))
+		require.False(t, openAIResponsesSSEBytesMayContainTokenEvent([]byte(`{"type":"response.created"}`)))
+		require.False(t, openAIResponsesSSEStringMayContainTokenEvent(""))
+		require.False(t, openAIResponsesSSEBytesMayContainTokenEvent(nil))
+	})
+
+	t.Run("payload detector", func(t *testing.T) {
+		require.True(t, openAIResponsesSSEStringIsTokenEvent(`{"type":"response.output_text.delta","delta":"h"}`))
+		require.True(t, openAIResponsesSSEBytesIsTokenEvent([]byte(`{"type":"response.output_text.delta","delta":"h"}`)))
+		require.False(t, openAIResponsesSSEStringIsTokenEvent(`{"type":"response.created"}`))
+		require.False(t, openAIResponsesSSEBytesIsTokenEvent([]byte(`{"type":"response.created"}`)))
+		require.False(t, openAIResponsesSSEStringIsTokenEvent(`{"type":"response.completed"}`))
+		require.False(t, openAIResponsesSSEBytesIsTokenEvent([]byte(`{"type":"response.completed"}`)))
+		require.False(t, openAIResponsesSSEStringIsTokenEvent("[DONE]"))
+		require.False(t, openAIResponsesSSEBytesIsTokenEvent([]byte("[DONE]")))
+		require.False(t, openAIResponsesSSEStringIsTokenEvent(""))
+		require.False(t, openAIResponsesSSEBytesIsTokenEvent(nil))
+	})
+}
+
 // --- parseSSEUsageString 测试 ---
 
 func TestParseSSEUsageString_CompletedEvent(t *testing.T) {
