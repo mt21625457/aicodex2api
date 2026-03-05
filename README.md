@@ -61,6 +61,8 @@ Sub2API is an AI API gateway platform designed to distribute and manage API quot
 
 To enable OpenAI WebSocket Mode v2 in Codex CLI with Sub2API, add the following to `~/.codex/config.toml`:
 
+Important for remote compaction (`/v1/responses/compact`): Codex decides whether to use remote compact from local `model_providers.<id>.name` (must be exactly `OpenAI`), not from any gateway response field.
+
 ```toml
 model_provider = "aicodx2api"
 model = "gpt-5.3-codex"
@@ -71,7 +73,7 @@ network_access = "enabled"
 windows_wsl_setup_acknowledged = true
 
 [model_providers.aicodx2api]
-name = "aicodx2api"
+name = "OpenAI"
 base_url = "https://api.sub2api.ai"
 wire_api = "responses"
 supports_websockets = true

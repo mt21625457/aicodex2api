@@ -1397,6 +1397,160 @@ func TestOpenAIBuildUpstreamRequestSetsHTTPUpstreamProfile(t *testing.T) {
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(req.Context()))
 }
 
+func TestOpenAIBuildUpstreamRequest_CompactEndpointFromRequestPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
+
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", req.URL.String())
+}
+
+func TestOpenAIBuildUpstreamRequest_OAuthCompactEndpointFromRequestPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
+
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses/compact", req.URL.String())
+}
+
+func TestOpenAIBuildUpstreamRequest_DefaultResponsesEndpointFromRequestPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/responses", req.URL.String())
+}
+
+func TestOpenAIBuildUpstreamRequest_OAuthDefaultResponsesEndpointFromRequestPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses", req.URL.String())
+}
+
+func TestOpenAIBuildUpstreamRequest_OAuthSetsPromptCacheAndForceCodexUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				ForceCodexCLI: true,
+			},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "chatgpt-acc",
+			"user_agent":         "custom-ua/1.0",
+		},
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "pcache-123", false)
+	require.NoError(t, err)
+	require.Equal(t, "pcache-123", req.Header.Get("conversation_id"))
+	require.Equal(t, "pcache-123", req.Header.Get("session_id"))
+	require.Equal(t, codexCLIUserAgent, req.Header.Get("user-agent"))
+}
+
+func TestOpenAIBuildUpstreamRequest_DefaultAccountTypeFallsBackToPlatformEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     "unknown",
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", req.URL.String())
+}
+
+func TestOpenAIBuildUpstreamRequest_APIKeyWithoutOpenAIPlatformFallsBackToDefaultEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
+
+	// Defensive branch coverage: account type is APIKey but platform is not OpenAI,
+	// so GetOpenAIBaseURL returns empty string and should fallback to default endpoint.
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+	}
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", req.URL.String())
+}
+
 func TestOpenAIBuildUpstreamPassthroughRequestSetsHTTPUpstreamProfile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
@@ -1419,6 +1573,289 @@ func TestOpenAIBuildUpstreamPassthroughRequestSetsHTTPUpstreamProfile(t *testing
 	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
 	require.NoError(t, err)
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(req.Context()))
+}
+
+func TestOpenAIBuildUpstreamPassthroughRequest_CompactEndpointFromRequestPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
+	}
+
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", req.URL.String())
+}
+
+func TestOpenAIBuildUpstreamPassthroughRequest_OAuthCompactEndpointFromRequestPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
+	require.NoError(t, err)
+	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses/compact", req.URL.String())
+}
+
+func TestOpenAIBuildUpstreamPassthroughRequest_OAuthSetsPromptCacheAndForceCodexUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				ForceCodexCLI: true,
+			},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "chatgpt-acc",
+			"user_agent":         "custom-ua/1.0",
+		},
+	}
+
+	body := []byte(`{"prompt_cache_key":"pcache-456"}`)
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, body, "token")
+	require.NoError(t, err)
+	require.Equal(t, "pcache-456", req.Header.Get("conversation_id"))
+	require.Equal(t, "pcache-456", req.Header.Get("session_id"))
+	require.Equal(t, codexCLIUserAgent, req.Header.Get("user-agent"))
+}
+
+func TestOpenAIBuildUpstreamPassthroughRequest_APIKeyWithoutOpenAIPlatformFallsBackToDefaultEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// Defensive branch coverage: account type is APIKey but platform is not OpenAI.
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+	}
+
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", req.URL.String())
+}
+
+func TestResolveOpenAIResponsesEndpointFromPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "v1 responses", path: "/v1/responses", want: openAIResponsesEndpoint},
+		{name: "v1 compact", path: "/v1/responses/compact", want: openAICompactEndpoint},
+		{name: "alias compact with trailing slash", path: "/responses/compact/", want: openAICompactEndpoint},
+		{name: "empty defaults responses", path: "", want: openAIResponsesEndpoint},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, resolveOpenAIResponsesEndpointFromPath(tc.path))
+		})
+	}
+}
+
+func TestBuildOpenAIResponsesURL_WithEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		base     string
+		endpoint string
+		want     string
+	}{
+		{
+			name:     "default responses endpoint",
+			base:     "https://api.openai.com",
+			endpoint: openAIResponsesEndpoint,
+			want:     "https://api.openai.com/v1/responses",
+		},
+		{
+			name:     "compact from v1 base",
+			base:     "https://api.openai.com/v1",
+			endpoint: openAICompactEndpoint,
+			want:     "https://api.openai.com/v1/responses/compact",
+		},
+		{
+			name:     "compact from responses base",
+			base:     "https://api.openai.com/v1/responses",
+			endpoint: openAICompactEndpoint,
+			want:     "https://api.openai.com/v1/responses/compact",
+		},
+		{
+			name:     "responses from compact base",
+			base:     "https://api.openai.com/v1/responses/compact",
+			endpoint: openAIResponsesEndpoint,
+			want:     "https://api.openai.com/v1/responses",
+		},
+		{
+			name:     "compact from alias responses base",
+			base:     "https://proxy.example.com/responses",
+			endpoint: openAICompactEndpoint,
+			want:     "https://proxy.example.com/responses/compact",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, buildOpenAIResponsesURL(tc.base, tc.endpoint))
+		})
+	}
+}
+
+func TestBuildOpenAIResponsesWSURL_NilAccount(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	_, err := svc.buildOpenAIResponsesWSURL(nil)
+	require.Error(t, err)
+}
+
+func TestBuildOpenAIResponsesWSURL_OAuthCompactPathSafe(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+
+	target, err := svc.buildOpenAIResponsesWSURL(account)
+	require.NoError(t, err)
+	require.Equal(t, "wss://chatgpt.com/backend-api/codex/responses", target)
+}
+
+func TestBuildOpenAIResponsesWSURL_APIKeyCustomHTTPSBaseURL(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://proxy.example.com/v1"},
+	}
+
+	target, err := svc.buildOpenAIResponsesWSURL(account)
+	require.NoError(t, err)
+	require.Equal(t, "wss://proxy.example.com/v1/responses", target)
+}
+
+func TestBuildOpenAIResponsesWSURL_APIKeyCustomHTTPBaseURL(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{
+					Enabled:           false,
+					AllowInsecureHTTP: true,
+				},
+			},
+		},
+	}
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "http://proxy.example.com/v1"},
+	}
+
+	target, err := svc.buildOpenAIResponsesWSURL(account)
+	require.NoError(t, err)
+	require.Equal(t, "ws://proxy.example.com/v1/responses", target)
+}
+
+func TestBuildOpenAIResponsesWSURL_APIKeyDefaultBaseURL(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}
+
+	target, err := svc.buildOpenAIResponsesWSURL(account)
+	require.NoError(t, err)
+	require.Equal(t, "wss://api.openai.com/v1/responses", target)
+}
+
+func TestBuildOpenAIResponsesWSURL_APIKeyNonOpenAIPlatformFallsBackToDefaultURL(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+	}
+
+	target, err := svc.buildOpenAIResponsesWSURL(account)
+	require.NoError(t, err)
+	require.Equal(t, "wss://api.openai.com/v1/responses", target)
+}
+
+func TestBuildOpenAIResponsesWSURL_APIKeyInvalidBaseURLReturnsError(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "://invalid-url"},
+	}
+
+	_, err := svc.buildOpenAIResponsesWSURL(account)
+	require.Error(t, err)
+}
+
+func TestBuildOpenAIResponsesWSURL_DefaultAccountTypeUsesPlatformURL(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     "unknown",
+	}
+
+	target, err := svc.buildOpenAIResponsesWSURL(account)
+	require.NoError(t, err)
+	require.Equal(t, "wss://api.openai.com/v1/responses", target)
 }
 
 func TestOpenAIValidateUpstreamBaseURLDisabledRequiresHTTPS(t *testing.T) {

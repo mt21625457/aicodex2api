@@ -66,6 +66,8 @@ Sub2API 是一个 AI API 网关平台，用于分发和管理 AI 产品订阅（
 
 如需在 Codex CLI 中通过 Sub2API 启用 OpenAI WebSocket Mode v2，可将以下配置写入 `~/.codex/config.toml`：
 
+远程压缩（`/v1/responses/compact`）关键说明：Codex 是否走 remote compact 取决于本地 `model_providers.<id>.name`，且必须严格等于 `OpenAI`；不是由网关返回字段决定。
+
 ```toml
 model_provider = "aicodx2api"
 model = "gpt-5.3-codex"
@@ -76,7 +78,7 @@ network_access = "enabled"
 windows_wsl_setup_acknowledged = true
 
 [model_providers.aicodx2api]
-name = "aicodx2api"
+name = "OpenAI"
 base_url = "https://api.sub2api.ai"
 wire_api = "responses"
 supports_websockets = true

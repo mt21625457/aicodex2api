@@ -35,9 +35,11 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.104.0"
+	openaiPlatformAPIURL    = "https://api.openai.com/v1/responses"
+	openAIResponsesEndpoint = "responses"
+	openAICompactEndpoint   = "responses/compact"
+	openaiStickySessionTTL  = time.Hour // 粘性会话TTL
+	codexCLIUserAgent       = "codex_cli_rs/0.104.0"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -2395,10 +2397,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
-	targetURL := openaiPlatformAPIURL
+	endpoint := resolveOpenAIResponsesEndpoint(c)
+	targetURL := buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
 	switch account.Type {
 	case AccountTypeOAuth:
-		targetURL = chatgptCodexURL
+		targetURL = buildOpenAIResponsesURL(chatgptCodexURL, endpoint)
 	case AccountTypeAPIKey:
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL != "" {
@@ -2406,7 +2409,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			if err != nil {
 				return nil, err
 			}
-			targetURL = buildOpenAIResponsesURL(validatedURL)
+			targetURL = buildOpenAIResponsesURL(validatedURL, endpoint)
 		}
 	}
 
@@ -2769,26 +2772,27 @@ func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, fil
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	endpoint := resolveOpenAIResponsesEndpoint(c)
 	// Determine target URL based on account type
 	var targetURL string
 	switch account.Type {
 	case AccountTypeOAuth:
 		// OAuth accounts use ChatGPT internal API
-		targetURL = chatgptCodexURL
+		targetURL = buildOpenAIResponsesURL(chatgptCodexURL, endpoint)
 	case AccountTypeAPIKey:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL == "" {
-			targetURL = openaiPlatformAPIURL
+			targetURL = buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
 		} else {
 			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 			if err != nil {
 				return nil, err
 			}
-			targetURL = buildOpenAIResponsesURL(validatedURL)
+			targetURL = buildOpenAIResponsesURL(validatedURL, endpoint)
 		}
 	default:
-		targetURL = openaiPlatformAPIURL
+		targetURL = buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
@@ -3684,19 +3688,46 @@ func (s *OpenAIGatewayService) validateUpstreamBaseURL(raw string) (string, erro
 	return normalized, nil
 }
 
+func resolveOpenAIResponsesEndpoint(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return openAIResponsesEndpoint
+	}
+	return resolveOpenAIResponsesEndpointFromPath(c.Request.URL.Path)
+}
+
+func resolveOpenAIResponsesEndpointFromPath(path string) string {
+	normalizedPath := strings.TrimRight(strings.TrimSpace(path), "/")
+	if strings.HasSuffix(normalizedPath, "/"+openAICompactEndpoint) {
+		return openAICompactEndpoint
+	}
+	return openAIResponsesEndpoint
+}
+
 // buildOpenAIResponsesURL 组装 OpenAI Responses 端点。
-// - base 以 /v1 结尾：追加 /responses
-// - base 已是 /responses：原样返回
-// - 其他情况：追加 /v1/responses
-func buildOpenAIResponsesURL(base string) string {
+// - endpoint=responses: 兼容已有 /responses 语义
+// - endpoint=responses/compact: 输出 compact 端点
+// - base 以 /v1 结尾：追加 endpoint
+// - 其他情况：追加 /v1/{endpoint}
+func buildOpenAIResponsesURL(base, endpoint string) string {
 	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
-	if strings.HasSuffix(normalized, "/responses") {
+	normalizedEndpoint := strings.Trim(strings.TrimSpace(endpoint), "/")
+	if normalizedEndpoint == "" {
+		normalizedEndpoint = openAIResponsesEndpoint
+	}
+	endpointSuffix := "/" + normalizedEndpoint
+	if strings.HasSuffix(normalized, endpointSuffix) {
 		return normalized
 	}
-	if strings.HasSuffix(normalized, "/v1") {
-		return normalized + "/responses"
+	if normalizedEndpoint == openAICompactEndpoint && strings.HasSuffix(normalized, "/"+openAIResponsesEndpoint) {
+		return normalized + "/compact"
 	}
-	return normalized + "/v1/responses"
+	if normalizedEndpoint == openAIResponsesEndpoint && strings.HasSuffix(normalized, "/"+openAICompactEndpoint) {
+		return strings.TrimSuffix(normalized, "/compact")
+	}
+	if strings.HasSuffix(normalized, "/v1") {
+		return normalized + endpointSuffix
+	}
+	return normalized + "/v1" + endpointSuffix
 }
 
 func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel, toModel string) []byte {
