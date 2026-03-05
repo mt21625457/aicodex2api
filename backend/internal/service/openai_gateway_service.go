@@ -2239,12 +2239,15 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
 		}
 
-		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body)
+		forceStream := resolveOpenAIResponsesEndpoint(c) != openAICompactEndpoint
+		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, forceStream)
 		if err != nil {
 			return nil, err
 		}
 		if normalized {
 			body = normalizedBody
+		}
+		if forceStream {
 			reqStream = true
 		}
 	}
@@ -4432,9 +4435,11 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 	return model, stream, promptCacheKey
 }
 
-// normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
-// 1) store=false 2) stream=true
-func normalizeOpenAIPassthroughOAuthBody(body []byte) ([]byte, bool, error) {
+// normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛到兼容行为：
+// 1) store=false
+// 2) forceStream=true 时强制 stream=true（/responses）
+// 3) forceStream=false 时保持调用方 stream 语义（/responses/compact）
+func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
@@ -4451,13 +4456,15 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte) ([]byte, bool, error) {
 		changed = true
 	}
 
-	if stream := gjson.GetBytes(normalized, "stream"); !stream.Exists() || stream.Type != gjson.True {
-		next, err := sjson.SetBytes(normalized, "stream", true)
-		if err != nil {
-			return body, false, fmt.Errorf("normalize passthrough body stream=true: %w", err)
+	if forceStream {
+		if stream := gjson.GetBytes(normalized, "stream"); !stream.Exists() || stream.Type != gjson.True {
+			next, err := sjson.SetBytes(normalized, "stream", true)
+			if err != nil {
+				return body, false, fmt.Errorf("normalize passthrough body stream=true: %w", err)
+			}
+			normalized = next
+			changed = true
 		}
-		normalized = next
-		changed = true
 	}
 
 	return normalized, changed, nil
