@@ -880,7 +880,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_WarnOnTimeoutHeadersForStream(t *
 	require.True(t, logSink.ContainsFieldValue("timeout_headers", "x-stainless-timeout=10000"))
 }
 
-func TestOpenAIGatewayService_OAuthPassthrough_InfoWhenStreamEndsWithoutDone(t *testing.T) {
+func TestOpenAIGatewayService_OAuthPassthrough_NoInfoWhenStreamEndsWithoutDone(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logSink, restore := captureStructuredLog(t)
 	defer restore()
@@ -917,9 +917,8 @@ func TestOpenAIGatewayService_OAuthPassthrough_InfoWhenStreamEndsWithoutDone(t *
 
 	_, err := svc.Forward(context.Background(), c, account, originalBody)
 	require.NoError(t, err)
-	require.True(t, logSink.ContainsMessage("上游流在未收到 [DONE] 时结束，疑似断流"))
-	require.True(t, logSink.ContainsMessageAtLevel("上游流在未收到 [DONE] 时结束，疑似断流", "info"))
-	require.True(t, logSink.ContainsFieldValue("upstream_request_id", "rid-truncate"))
+	require.False(t, logSink.ContainsMessage("上游流在未收到 [DONE] 时结束，疑似断流"))
+	require.False(t, logSink.ContainsMessageAtLevel("上游流在未收到 [DONE] 时结束，疑似断流", "info"))
 }
 
 func TestOpenAIGatewayService_OAuthPassthrough_DefaultFiltersTimeoutHeaders(t *testing.T) {

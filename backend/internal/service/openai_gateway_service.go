@@ -2606,7 +2606,6 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	usage := &OpenAIUsage{}
 	var firstTokenMs *int
 	clientDisconnected := false
-	sawDone := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -2622,10 +2621,6 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		line := scanner.Text()
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
-			trimmedData := strings.TrimSpace(data)
-			if trimmedData == "[DONE]" {
-				sawDone = true
-			}
 			if firstTokenMs == nil && openAIResponsesSSEBytesIsTokenEvent(dataBytes) {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
@@ -2669,14 +2664,6 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		)
 		return &openaiStreamingResultPassthrough{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", err)
 	}
-	if !clientDisconnected && !sawDone && ctx.Err() == nil {
-		logger.FromContext(ctx).With(
-			zap.String("component", "service.openai_gateway"),
-			zap.Int64("account_id", account.ID),
-			zap.String("upstream_request_id", upstreamRequestID),
-		).Info("OpenAI passthrough 上游流在未收到 [DONE] 时结束，疑似断流")
-	}
-
 	return &openaiStreamingResultPassthrough{usage: usage, firstTokenMs: firstTokenMs}, nil
 }
 
