@@ -33,6 +33,7 @@ type OpenAIGatewayHandler struct {
 	errorPassthroughService *service.ErrorPassthroughService
 	concurrencyHelper       *ConcurrencyHelper
 	maxAccountSwitches      int
+	cfg                     *config.Config
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -61,6 +62,7 @@ func NewOpenAIGatewayHandler(
 		errorPassthroughService: errorPassthroughService,
 		concurrencyHelper:       NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		maxAccountSwitches:      maxAccountSwitches,
+		cfg:                     cfg,
 	}
 }
 
