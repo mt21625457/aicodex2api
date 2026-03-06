@@ -235,6 +235,40 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BuildCountTokensRequestInject
 	require.Equal(t, claude.APIKeyBetaHeader, req.Header.Get("anthropic-beta"))
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_BuildRequestNormalizesEndpointLikeBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["base_url"] = "https://api.anthropic.com/v1/messages"
+
+	svc := &GatewayService{cfg: &config.Config{}}
+	req, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "upstream-anthropic-key")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.anthropic.com/v1/messages?beta=true", req.URL.String())
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_BuildCountTokensRequestNormalizesEndpointLikeBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["base_url"] = "https://api.anthropic.com/v1/messages/count_tokens"
+
+	svc := &GatewayService{cfg: &config.Config{}}
+	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "upstream-anthropic-key")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.anthropic.com/v1/messages/count_tokens?beta=true", req.URL.String())
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
