@@ -1817,6 +1817,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if codexResult.PromptCacheKey != "" {
 			promptCacheKey = codexResult.PromptCacheKey
 		}
+		if v, ok := reqBody["stream"].(bool); ok {
+			reqStream = v
+		}
+		if isCompactEndpoint {
+			reqStream = false
+		}
 	}
 
 	// Handle max_output_tokens based on platform and account type
@@ -2250,7 +2256,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		if normalized {
 			body = normalizedBody
 		}
-		if forceStream {
+		if isCompactEndpoint {
+			reqStream = false
+		} else if forceStream {
 			reqStream = true
 		}
 	}
@@ -2284,7 +2292,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(ctx, c, account, body, token)
+	upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(ctx, c, account, body, token, reqStream)
 	if err != nil {
 		return nil, err
 	}
@@ -2339,7 +2347,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		usage = result.usage
 		firstTokenMs = result.firstTokenMs
 	} else {
-		usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c)
+		usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel)
 		if err != nil {
 			return nil, err
 		}
@@ -2402,6 +2410,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	account *Account,
 	body []byte,
 	token string,
+	isStream bool,
 ) (*http.Request, error) {
 	endpoint := resolveOpenAIResponsesEndpoint(c)
 	targetURL := buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
@@ -2452,9 +2461,6 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		if req.Header.Get("accept") == "" {
-			req.Header.Set("accept", "text/event-stream")
-		}
 		if req.Header.Get("OpenAI-Beta") == "" {
 			req.Header.Set("OpenAI-Beta", "responses=experimental")
 		}
@@ -2469,6 +2475,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 				req.Header.Set("session_id", promptCacheKey)
 			}
 		}
+	}
+	if isStream {
+		req.Header.Set("accept", "text/event-stream")
+	} else {
+		req.Header.Set("accept", "application/json")
 	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
@@ -2677,6 +2688,8 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
+	originalModel string,
 ) (*OpenAIUsage, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
@@ -2691,6 +2704,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 			})
 		}
 		return nil, err
+	}
+
+	if account != nil && account.Type == AccountTypeOAuth {
+		bodyLooksLikeSSE := bytes.Contains(body, []byte("data:")) || bytes.Contains(body, []byte("event:"))
+		if isEventStreamResponse(resp.Header) || bodyLooksLikeSSE {
+			return s.handleOAuthSSEToJSON(resp, c, body, originalModel, originalModel)
+		}
 	}
 
 	usage := &OpenAIUsage{}
@@ -2824,7 +2844,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		} else {
 			req.Header.Set("originator", "opencode")
 		}
-		req.Header.Set("accept", "text/event-stream")
+		if isStream {
+			req.Header.Set("accept", "text/event-stream")
+		} else {
+			req.Header.Set("accept", "application/json")
+		}
 		if promptCacheKey != "" {
 			req.Header.Set("conversation_id", promptCacheKey)
 			req.Header.Set("session_id", promptCacheKey)
@@ -3588,10 +3612,19 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 		body = s.correctToolCallsInResponseBody(body)
 	} else {
 		usage = s.parseSSEUsageFromBody(bodyText)
-		if originalModel != mappedModel {
-			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
+		terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
+		if terminalOK && terminalType == "response.failed" {
+			msg := extractOpenAISSEErrorMessage(terminalPayload)
+			if msg == "" {
+				msg = "Upstream compact response failed"
+			}
+			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 		}
-		body = []byte(bodyText)
+		msg := "Upstream returned an incomplete event-stream response"
+		if terminalOK {
+			msg = fmt.Sprintf("Upstream returned unsupported terminal event: %s", terminalType)
+		}
+		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -3606,6 +3639,51 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 	c.Data(resp.StatusCode, contentType, body)
 
 	return usage, nil
+}
+
+func extractOpenAISSETerminalEvent(body string) (string, []byte, bool) {
+	lines := strings.Split(body, "\n")
+	for _, line := range lines {
+		data, ok := extractOpenAISSEDataLine(line)
+		if !ok || data == "" || data == "[DONE]" {
+			continue
+		}
+		eventType := strings.TrimSpace(gjson.Get(data, "type").String())
+		switch eventType {
+		case "response.completed", "response.done", "response.failed":
+			return eventType, []byte(data), true
+		}
+	}
+	return "", nil, false
+}
+
+func extractOpenAISSEErrorMessage(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	for _, path := range []string{"response.error.message", "error.message", "message"} {
+		if msg := strings.TrimSpace(gjson.GetBytes(payload, path).String()); msg != "" {
+			return sanitizeUpstreamErrorMessage(msg)
+		}
+	}
+	return sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(payload)))
+}
+
+func (s *OpenAIGatewayService) writeOpenAINonStreamingProtocolError(resp *http.Response, c *gin.Context, message string) error {
+	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
+	if message == "" {
+		message = "Upstream returned an invalid non-streaming response"
+	}
+	setOpsUpstreamError(c, http.StatusBadGateway, message, "")
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.JSON(http.StatusBadGateway, gin.H{
+		"error": gin.H{
+			"type":    "upstream_error",
+			"message": message,
+		},
+	})
+	return fmt.Errorf("non-streaming openai protocol error: %s", message)
 }
 
 func extractCodexFinalResponse(body string) ([]byte, bool) {
@@ -4442,7 +4520,7 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 // 1) /responses 保持历史语义：store=false
 // 2) /responses/compact 删除 store，避免上游返回 unknown_parameter
 // 3) forceStream=true 时强制 stream=true（/responses）
-// 4) forceStream=false 时保持调用方 stream 语义（/responses/compact）
+// 4) forceStream=false 时对 /responses/compact 强制 stream=false，避免返回 SSE
 func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool, stripStore bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
@@ -4478,6 +4556,13 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool, stripSto
 			normalized = next
 			changed = true
 		}
+	} else if stream := gjson.GetBytes(normalized, "stream"); stream.Exists() && stream.Type != gjson.False {
+		next, err := sjson.SetBytes(normalized, "stream", false)
+		if err != nil {
+			return body, false, fmt.Errorf("normalize passthrough body stream=false: %w", err)
+		}
+		normalized = next
+		changed = true
 	}
 
 	return normalized, changed, nil

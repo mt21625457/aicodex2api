@@ -19,6 +19,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // 编译期接口断言
@@ -1513,6 +1514,29 @@ func TestOpenAIBuildUpstreamRequest_OAuthSetsPromptCacheAndForceCodexUA(t *testi
 	require.Equal(t, codexCLIUserAgent, req.Header.Get("user-agent"))
 }
 
+func TestOpenAIBuildUpstreamRequest_OAuthCompactAcceptFollowsStreamFlag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{}`))
+
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	jsonReq, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "application/json", jsonReq.Header.Get("accept"))
+
+	streamReq, err := svc.buildUpstreamRequest(context.Background(), c, account, []byte(`{}`), "token", true, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "text/event-stream", streamReq.Header.Get("accept"))
+}
+
 func TestOpenAIBuildUpstreamRequest_DefaultAccountTypeFallsBackToPlatformEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{}
@@ -1570,7 +1594,7 @@ func TestOpenAIBuildUpstreamPassthroughRequestSetsHTTPUpstreamProfile(t *testing
 		Type:     AccountTypeAPIKey,
 	}
 
-	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token", false)
 	require.NoError(t, err)
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(req.Context()))
 }
@@ -1595,9 +1619,10 @@ func TestOpenAIBuildUpstreamPassthroughRequest_CompactEndpointFromRequestPath(t 
 		Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
 	}
 
-	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token", false)
 	require.NoError(t, err)
 	require.Equal(t, "https://api.openai.com/v1/responses/compact", req.URL.String())
+	require.Equal(t, "application/json", req.Header.Get("accept"))
 }
 
 func TestOpenAIBuildUpstreamPassthroughRequest_OAuthCompactEndpointFromRequestPath(t *testing.T) {
@@ -1615,9 +1640,10 @@ func TestOpenAIBuildUpstreamPassthroughRequest_OAuthCompactEndpointFromRequestPa
 		Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
 	}
 
-	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token", false)
 	require.NoError(t, err)
 	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses/compact", req.URL.String())
+	require.Equal(t, "application/json", req.Header.Get("accept"))
 }
 
 func TestOpenAIBuildUpstreamPassthroughRequest_OAuthSetsPromptCacheAndForceCodexUA(t *testing.T) {
@@ -1645,11 +1671,12 @@ func TestOpenAIBuildUpstreamPassthroughRequest_OAuthSetsPromptCacheAndForceCodex
 	}
 
 	body := []byte(`{"prompt_cache_key":"pcache-456"}`)
-	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, body, "token")
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, body, "token", false)
 	require.NoError(t, err)
 	require.Equal(t, "pcache-456", req.Header.Get("conversation_id"))
 	require.Equal(t, "pcache-456", req.Header.Get("session_id"))
 	require.Equal(t, codexCLIUserAgent, req.Header.Get("user-agent"))
+	require.Equal(t, "application/json", req.Header.Get("accept"))
 }
 
 func TestOpenAIBuildUpstreamPassthroughRequest_APIKeyWithoutOpenAIPlatformFallsBackToDefaultEndpoint(t *testing.T) {
@@ -1667,7 +1694,7 @@ func TestOpenAIBuildUpstreamPassthroughRequest_APIKeyWithoutOpenAIPlatformFallsB
 		Type:     AccountTypeAPIKey,
 	}
 
-	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token")
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, []byte(`{}`), "token", false)
 	require.NoError(t, err)
 	require.Equal(t, "https://api.openai.com/v1/responses/compact", req.URL.String())
 }
@@ -2249,7 +2276,7 @@ func TestHandleOAuthSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "data:")
 }
 
-func TestHandleOAuthSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
+func TestHandleOAuthSSEToJSON_NoFinalResponseReturnsProtocolError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -2266,9 +2293,107 @@ func TestHandleOAuthSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
 	}, "\n"))
 
 	usage, err := svc.handleOAuthSSEToJSON(resp, c, body, "gpt-4o", "gpt-4o")
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+	require.Contains(t, rec.Body.String(), `"type":"upstream_error"`)
+	require.Contains(t, rec.Body.String(), `incomplete event-stream response`)
+}
+
+func TestHandleOAuthSSEToJSON_FailedEventReturnsProtocolError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	body := []byte(strings.Join([]string{
+		`data: {"type":"response.in_progress","response":{"id":"resp_4"}}`,
+		`data: {"type":"response.failed","response":{"error":{"message":"compact failed upstream"}}}`,
+		`data: [DONE]`,
+	}, "\n"))
+
+	usage, err := svc.handleOAuthSSEToJSON(resp, c, body, "gpt-4o", "gpt-4o")
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), `compact failed upstream`)
+}
+
+func TestHandleNonStreamingResponsePassthrough_OAuthSSECompletedReturnsJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.in_progress","response":{"id":"resp_pass_1"}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_pass_1","usage":{"input_tokens":5,"output_tokens":6,"input_tokens_details":{"cached_tokens":2}}}}`,
+			`data: [DONE]`,
+		}, "\n"))),
+	}
+
+	account := &Account{Type: AccountTypeOAuth}
+	usage, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, account, "gpt-4o")
 	require.NoError(t, err)
 	require.NotNil(t, usage)
-	require.Equal(t, 0, usage.InputTokens)
-	require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
-	require.Contains(t, rec.Body.String(), `data: {"type":"response.in_progress"`)
+	require.Equal(t, 5, usage.InputTokens)
+	require.Equal(t, 6, usage.OutputTokens)
+	require.Equal(t, 2, usage.CacheReadInputTokens)
+	require.Contains(t, rec.Body.String(), `"id":"resp_pass_1"`)
+	require.NotContains(t, rec.Body.String(), `data:`)
+}
+
+func TestHandleNonStreamingResponsePassthrough_OAuthIncompleteSSEReturnsBadGateway(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.in_progress","response":{"id":"resp_pass_2"}}`,
+			`data: [DONE]`,
+		}, "\n"))),
+	}
+
+	account := &Account{Type: AccountTypeOAuth}
+	usage, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, account, "gpt-4o")
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+	require.Contains(t, rec.Body.String(), `"type":"upstream_error"`)
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_CompactForcesNonStreamAndRemovesStore(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.2","stream":true,"store":true}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false, true)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(normalized, "store").Exists())
+	require.False(t, gjson.GetBytes(normalized, "stream").Bool())
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_ResponsesForcesStreamAndStoreDefaults(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.2","stream":false,"store":true}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, true, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.True(t, gjson.GetBytes(normalized, "stream").Bool())
+	require.False(t, gjson.GetBytes(normalized, "store").Bool())
 }

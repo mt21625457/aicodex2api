@@ -79,8 +79,6 @@ type codexTransformResult struct {
 
 func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact bool) codexTransformResult {
 	result := codexTransformResult{}
-	// 工具续链需求会影响存储策略与 input 过滤逻辑。
-	needsToolContinuation := NeedsToolContinuation(reqBody)
 
 	model := ""
 	if v, ok := reqBody["model"].(string); ok {
@@ -97,10 +95,14 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 
 	// OAuth 走 ChatGPT internal API 时：
 	// - /responses 保持历史语义：store=false 且 stream=true
-	// - /responses/compact 删除 store，并保留调用方 stream 语义，避免上游拒绝不支持字段
+	// - /responses/compact 删除 store，并强制 stream=false，收敛到官方同步 JSON 协议
 	if isCompact {
 		if _, ok := reqBody["store"]; ok {
 			delete(reqBody, "store")
+			result.Modified = true
+		}
+		if v, ok := reqBody["stream"].(bool); ok && v {
+			reqBody["stream"] = false
 			result.Modified = true
 		}
 	} else {
@@ -142,9 +144,10 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 		result.Modified = true
 	}
 
-	// 续链场景保留 item_reference 与 id，避免 call_id 上下文丢失。
+	// 保留调用方 input 的 canonical 结构（尤其是 compact output 回放场景），
+	// 仅在 tool call 缺失 call_id 时补齐，避免改写官方 compaction output。
 	if input, ok := reqBody["input"].([]any); ok {
-		input = filterCodexInput(input, needsToolContinuation)
+		input = filterCodexInput(input, false)
 		reqBody["input"] = input
 		result.Modified = true
 	}
@@ -312,9 +315,9 @@ func isInstructionsEmpty(reqBody map[string]any) bool {
 	return strings.TrimSpace(str) == ""
 }
 
-// filterCodexInput 按需过滤 item_reference 与 id。
-// preserveReferences 为 true 时保持引用与 id，以满足续链请求对上下文的依赖。
-func filterCodexInput(input []any, preserveReferences bool) []any {
+// filterCodexInput 保留调用方输入的 canonical 结构，仅在必要时补齐 call_id。
+// 第二个参数保留给历史调用点，当前不再用于删除字段，避免改写 compact output。
+func filterCodexInput(input []any, _ bool) []any {
 	filtered := make([]any, 0, len(input))
 	for _, item := range input {
 		m, ok := item.(map[string]any)
@@ -323,18 +326,6 @@ func filterCodexInput(input []any, preserveReferences bool) []any {
 			continue
 		}
 		typ, _ := m["type"].(string)
-		if typ == "item_reference" {
-			if !preserveReferences {
-				continue
-			}
-			newItem := make(map[string]any, len(m))
-			for key, value := range m {
-				newItem[key] = value
-			}
-			filtered = append(filtered, newItem)
-			continue
-		}
-
 		newItem := m
 		copied := false
 		// 仅在需要修改字段时创建副本，避免直接改写原始输入。
@@ -355,14 +346,6 @@ func filterCodexInput(input []any, preserveReferences bool) []any {
 					ensureCopy()
 					newItem["call_id"] = id
 				}
-			}
-		}
-
-		if !preserveReferences {
-			ensureCopy()
-			delete(newItem, "id")
-			if !isCodexToolCallItemType(typ) {
-				delete(newItem, "call_id")
 			}
 		}
 
