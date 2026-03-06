@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -26,6 +27,7 @@ type SchedulerSnapshotService struct {
 	accountRepo   AccountRepository
 	groupRepo     GroupRepository
 	cfg           *config.Config
+	startupWarm   atomic.Bool
 	stopCh        chan struct{}
 	stopOnce      sync.Once
 	wg            sync.WaitGroup
@@ -45,7 +47,7 @@ func NewSchedulerSnapshotService(
 	if cfg != nil {
 		maxQPS = cfg.Gateway.Scheduling.DbFallbackMaxQPS
 	}
-	return &SchedulerSnapshotService{
+	svc := &SchedulerSnapshotService{
 		cache:         cache,
 		outboxRepo:    outboxRepo,
 		accountRepo:   accountRepo,
@@ -54,16 +56,20 @@ func NewSchedulerSnapshotService(
 		stopCh:        make(chan struct{}),
 		fallbackLimit: newFallbackLimiter(maxQPS),
 	}
+	svc.startupWarm.Store(true)
+	return svc
 }
 
 func (s *SchedulerSnapshotService) Start() {
 	if s == nil || s.cache == nil {
 		return
 	}
+	s.startupWarm.Store(false)
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer s.startupWarm.Store(true)
 		s.runInitialRebuild()
 	}()
 
@@ -101,7 +107,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
 
-	if s.cache != nil {
+	if s.cache != nil && s.startupWarm.Load() {
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
