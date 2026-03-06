@@ -38,8 +38,8 @@ import (
 )
 
 const (
-	claudeAPIURL            = "https://api.anthropic.com/v1/messages?beta=true"
-	claudeAPICountTokensURL = "https://api.anthropic.com/v1/messages/count_tokens?beta=true"
+	claudeAPIURL            = "https://api.anthropic.com/v1/messages"
+	claudeAPICountTokensURL = "https://api.anthropic.com/v1/messages/count_tokens"
 	stickySessionTTL        = time.Hour // 粘性会话TTL
 	defaultMaxLineSize      = 40 * 1024 * 1024
 	// Canonical Claude Code banner. Keep it EXACT (no trailing whitespace/newlines)
@@ -4468,7 +4468,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if req.Header.Get("anthropic-version") == "" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
-	s.injectAnthropicBetaForAPIKeyIfNeeded(req, body)
+	s.normalizeAnthropicBetaForAPIKey(req, body)
 
 	return req, nil
 }
@@ -4905,7 +4905,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			req.Header.Set("anthropic-beta", stripBetaTokensWithSet(s.getBetaHeader(modelID, clientBetaHeader), defaultDroppedBetasSet))
 		}
 	} else {
-		s.injectAnthropicBetaForAPIKeyIfNeeded(req, body)
+		s.normalizeAnthropicBetaForAPIKey(req, body)
 	}
 
 	// Always capture a compact fingerprint line for later error diagnostics.
@@ -4967,39 +4967,51 @@ func (s *GatewayService) getBetaHeader(modelID string, clientBetaHeader string) 
 	return claude.DefaultBetaHeader
 }
 
-func requestNeedsBetaFeatures(body []byte) bool {
+func requestHasTools(body []byte) bool {
 	tools := gjson.GetBytes(body, "tools")
-	if tools.Exists() && tools.IsArray() && len(tools.Array()) > 0 {
-		return true
-	}
+	return tools.Exists() && tools.IsArray() && len(tools.Array()) > 0
+}
+
+func requestThinkingEnabled(body []byte) bool {
 	thinkingType := gjson.GetBytes(body, "thinking.type").String()
-	if strings.EqualFold(thinkingType, "enabled") || strings.EqualFold(thinkingType, "adaptive") {
-		return true
-	}
-	return false
+	return strings.EqualFold(thinkingType, "enabled") || strings.EqualFold(thinkingType, "adaptive")
 }
 
-func defaultAPIKeyBetaHeader(body []byte) string {
-	modelID := gjson.GetBytes(body, "model").String()
-	if strings.Contains(strings.ToLower(modelID), "haiku") {
-		return claude.APIKeyHaikuBetaHeader
-	}
-	return claude.APIKeyBetaHeader
+func requestStreamEnabled(body []byte) bool {
+	stream := gjson.GetBytes(body, "stream")
+	return stream.Exists() && stream.Bool()
 }
 
-func (s *GatewayService) injectAnthropicBetaForAPIKeyIfNeeded(req *http.Request, body []byte) {
-	if req == nil || s == nil || s.cfg == nil || !s.cfg.Gateway.InjectBetaForAPIKey {
+func defaultAPIKeyBetaTokens(body []byte) []string {
+	if !requestHasTools(body) {
+		return nil
+	}
+
+	tokens := make([]string, 0, 2)
+	if requestThinkingEnabled(body) {
+		tokens = append(tokens, claude.BetaInterleavedThinking)
+	}
+	if requestStreamEnabled(body) {
+		tokens = append(tokens, claude.BetaFineGrainedToolStreaming)
+	}
+	return tokens
+}
+
+func (s *GatewayService) normalizeAnthropicBetaForAPIKey(req *http.Request, body []byte) {
+	if req == nil {
 		return
 	}
-	if req.Header.Get("anthropic-beta") != "" {
+
+	beta := stripBetaTokensWithSet(req.Header.Get("anthropic-beta"), apiKeyDroppedBetasSet)
+	if s != nil && s.cfg != nil && s.cfg.Gateway.InjectBetaForAPIKey {
+		beta = mergeAnthropicBetaDropping(defaultAPIKeyBetaTokens(body), beta, apiKeyDroppedBetasSet)
+	}
+
+	if strings.TrimSpace(beta) == "" {
+		req.Header.Del("anthropic-beta")
 		return
 	}
-	if !requestNeedsBetaFeatures(body) {
-		return
-	}
-	if beta := defaultAPIKeyBetaHeader(body); beta != "" {
-		req.Header.Set("anthropic-beta", beta)
-	}
+	req.Header.Set("anthropic-beta", beta)
 }
 
 func applyClaudeOAuthHeaderDefaults(req *http.Request, isStream bool) {
@@ -5122,6 +5134,7 @@ func buildBetaTokenSet(tokens []string) map[string]struct{} {
 var (
 	defaultDroppedBetasSet        = buildBetaTokenSet(claude.DroppedBetas)
 	droppedBetasWithClaudeCodeSet = droppedBetaSet(claude.BetaClaudeCode)
+	apiKeyDroppedBetasSet         = droppedBetaSet(claude.BetaClaudeCode, claude.BetaOAuth)
 )
 
 // applyClaudeCodeMimicHeaders forces "Claude Code-like" request headers.
@@ -6916,7 +6929,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	if req.Header.Get("anthropic-version") == "" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
-	s.injectAnthropicBetaForAPIKeyIfNeeded(req, body)
+	s.normalizeAnthropicBetaForAPIKey(req, body)
 
 	return req, nil
 }
@@ -7018,7 +7031,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 		}
 	} else {
-		s.injectAnthropicBetaForAPIKeyIfNeeded(req, body)
+		s.normalizeAnthropicBetaForAPIKey(req, body)
 	}
 
 	if c != nil && tokenType == "oauth" {

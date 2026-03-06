@@ -29,11 +29,11 @@ func TestNormalizeClaudeBaseURL(t *testing.T) {
 }
 
 func TestBuildClaudeMessagesURL(t *testing.T) {
-	require.Equal(t, "https://api.anthropic.com/v1/messages?beta=true", buildClaudeMessagesURL("https://api.anthropic.com/v1/messages"))
-	require.Equal(t, "https://proxy.example.com/anthropic/v1/messages?beta=true", buildClaudeMessagesURL("https://proxy.example.com/anthropic/v1"))
+	require.Equal(t, "https://api.anthropic.com/v1/messages", buildClaudeMessagesURL("https://api.anthropic.com/v1/messages"))
+	require.Equal(t, "https://proxy.example.com/anthropic/v1/messages", buildClaudeMessagesURL("https://proxy.example.com/anthropic/v1"))
 }
 
 func TestBuildClaudeCountTokensURL(t *testing.T) {
-	require.Equal(t, "https://api.anthropic.com/v1/messages/count_tokens?beta=true", buildClaudeCountTokensURL("https://api.anthropic.com/v1/messages/count_tokens"))
-	require.Equal(t, "https://proxy.example.com/anthropic/v1/messages/count_tokens?beta=true", buildClaudeCountTokensURL("https://proxy.example.com/anthropic/v1/messages"))
+	require.Equal(t, "https://api.anthropic.com/v1/messages/count_tokens", buildClaudeCountTokensURL("https://api.anthropic.com/v1/messages/count_tokens"))
+	require.Equal(t, "https://proxy.example.com/anthropic/v1/messages/count_tokens", buildClaudeCountTokensURL("https://proxy.example.com/anthropic/v1/messages"))
 }

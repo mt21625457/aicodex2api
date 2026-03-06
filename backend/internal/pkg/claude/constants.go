@@ -38,10 +38,10 @@ const CountTokensBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInter
 // HaikuBetaHeader Haiku 模型使用的 anthropic-beta header（不需要 claude-code beta）
 const HaikuBetaHeader = BetaOAuth + "," + BetaInterleavedThinking
 
-// APIKeyBetaHeader API-key 账号建议使用的 anthropic-beta header（不包含 oauth）
-const APIKeyBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
+// APIKeyBetaHeader API-key 账号可用的公开 anthropic-beta header 组合（不包含私有 claude-code / oauth beta）
+const APIKeyBetaHeader = BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
 
-// APIKeyHaikuBetaHeader Haiku 模型在 API-key 账号下使用的 anthropic-beta header（不包含 oauth / claude-code）
+// APIKeyHaikuBetaHeader Haiku 模型在 API-key 账号下可用的公开 anthropic-beta header
 const APIKeyHaikuBetaHeader = BetaInterleavedThinking
 
 // DefaultHeaders 是 Claude Code 客户端默认请求头。

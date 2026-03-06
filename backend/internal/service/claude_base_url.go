@@ -42,14 +42,14 @@ func normalizeClaudeBaseURL(raw string) string {
 
 func buildClaudeMessagesURL(baseURL string) string {
 	if normalized := normalizeClaudeBaseURL(baseURL); normalized != "" {
-		return normalized + "/v1/messages?beta=true"
+		return normalized + "/v1/messages"
 	}
 	return claudeAPIURL
 }
 
 func buildClaudeCountTokensURL(baseURL string) string {
 	if normalized := normalizeClaudeBaseURL(baseURL); normalized != "" {
-		return normalized + "/v1/messages/count_tokens?beta=true"
+		return normalized + "/v1/messages/count_tokens"
 	}
 	return claudeAPICountTokensURL
 }
