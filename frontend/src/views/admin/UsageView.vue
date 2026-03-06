@@ -81,6 +81,7 @@ import { useI18n } from 'vue-i18n'
 import { saveAs } from 'file-saver'
 import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admin'; import { adminUsageAPI } from '@/api/admin/usage'
 import { formatReasoningEffort } from '@/utils/format'
+import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import Select from '@/components/common/Select.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
@@ -200,10 +201,10 @@ const exportToExcel = async () => {
       t('usage.time'), t('admin.usage.user'), t('usage.apiKeyFilter'),
       t('admin.usage.account'), t('usage.model'), t('usage.reasoningEffort'), t('admin.usage.group'),
       t('usage.type'),
-      t('admin.usage.inputTokens'), t('admin.usage.outputTokens'),
-      t('admin.usage.cacheReadTokens'), t('admin.usage.cacheCreationTokens'),
-      t('admin.usage.inputCost'), t('admin.usage.outputCost'),
-      t('admin.usage.cacheReadCost'), t('admin.usage.cacheCreationCost'),
+      t('admin.usage.inputTokens'), t('admin.usage.inputCost'), `${t('usage.inputTokenPrice')} ($/1M)`,
+      t('admin.usage.outputTokens'), t('admin.usage.outputCost'), `${t('usage.outputTokenPrice')} ($/1M)`,
+      t('admin.usage.cacheReadTokens'), t('admin.usage.cacheReadCost'),
+      t('admin.usage.cacheCreationTokens'), t('admin.usage.cacheCreationCost'),
       t('usage.rate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
       t('usage.firstToken'), t('usage.duration'),
       t('admin.usage.requestId'), t('usage.userAgent'), t('admin.usage.ipAddress')
@@ -217,9 +218,10 @@ const exportToExcel = async () => {
       const rows = (res.items || []).map((log: AdminUsageLog) => [
         log.created_at, log.user?.email || '', log.api_key?.name || '', log.account?.name || '', log.model,
         formatReasoningEffort(log.reasoning_effort), log.group?.name || '', getRequestTypeLabel(log),
-        log.input_tokens, log.output_tokens, log.cache_read_tokens, log.cache_creation_tokens,
-        log.input_cost?.toFixed(6) || '0.000000', log.output_cost?.toFixed(6) || '0.000000',
-        log.cache_read_cost?.toFixed(6) || '0.000000', log.cache_creation_cost?.toFixed(6) || '0.000000',
+        log.input_tokens, log.input_cost?.toFixed(6) || '0.000000', formatTokenPricePerMillion(log.input_cost, log.input_tokens, { withCurrencySymbol: false }),
+        log.output_tokens, log.output_cost?.toFixed(6) || '0.000000', formatTokenPricePerMillion(log.output_cost, log.output_tokens, { withCurrencySymbol: false }),
+        log.cache_read_tokens, log.cache_read_cost?.toFixed(6) || '0.000000',
+        log.cache_creation_tokens, log.cache_creation_cost?.toFixed(6) || '0.000000',
         log.rate_multiplier?.toFixed(2) || '1.00', (log.account_rate_multiplier ?? 1).toFixed(2),
         log.total_cost?.toFixed(6) || '0.000000', log.actual_cost?.toFixed(6) || '0.000000',
         (log.total_cost * (log.account_rate_multiplier ?? 1)).toFixed(6), log.first_token_ms ?? '', log.duration_ms,
