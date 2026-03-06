@@ -10,6 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func i64p(v int64) *int64 {
+	return &v
+}
+
 type openAIRecordUsageLogRepoStub struct {
 	UsageLogRepository
 
@@ -117,10 +121,12 @@ type openAIRecordUsageUserRepoStub struct {
 
 	deductCalls int
 	deductErr   error
+	lastAmount  float64
 }
 
 func (s *openAIRecordUsageUserRepoStub) DeductBalance(ctx context.Context, id int64, amount float64) error {
 	s.deductCalls++
+	s.lastAmount = amount
 	return s.deductErr
 }
 
@@ -179,6 +185,22 @@ func (s *openAIRecordUsageBillingCacheStub) InvalidateSubscriptionCache(context.
 type openAIRecordUsageAPIKeyQuotaStub struct {
 	calls int
 	err   error
+}
+
+type openAIUserGroupRateRepoStub struct {
+	UserGroupRateRepository
+
+	rate  *float64
+	err   error
+	calls int
+}
+
+func (s *openAIUserGroupRateRepoStub) GetByUserAndGroup(ctx context.Context, userID, groupID int64) (*float64, error) {
+	s.calls++
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.rate, nil
 }
 
 func (s *openAIRecordUsageAPIKeyQuotaStub) UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cost float64) error {
@@ -278,6 +300,205 @@ func TestOpenAIGatewayServiceRecordUsage_BillingWhenUsageLogInserted(t *testing.
 	require.Equal(t, 0, subRepo.incrementCalls)
 }
 
+func TestOpenAIGatewayServiceRecordUsage_UsesUserSpecificGroupMultiplier(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+	userRate := 2.5
+	repo := &openAIUserGroupRateRepoStub{rate: &userRate}
+	svc.userGroupRateResolver = newUserGroupRateResolver(repo, nil, resolveUserGroupRateCacheTTL(svc.cfg), nil, "service.openai_gateway")
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_user_group_rate",
+			Usage: OpenAIUsage{
+				InputTokens:  20,
+				OutputTokens: 10,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey: &APIKey{
+			ID:      10021,
+			GroupID: i64p(30021),
+			Group: &Group{
+				ID:             30021,
+				RateMultiplier: 1.4,
+			},
+		},
+		User:    &User{ID: 20021},
+		Account: &Account{ID: 40021},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, userRate, usageRepo.lastLog.RateMultiplier)
+
+	expectedCost, calcErr := svc.billingService.CalculateCost("gpt-5.1", UsageTokens{InputTokens: 20, OutputTokens: 10}, userRate)
+	require.NoError(t, calcErr)
+	require.InDelta(t, expectedCost.ActualCost, usageRepo.lastLog.ActualCost, 1e-10)
+	require.InDelta(t, expectedCost.ActualCost, userRepo.lastAmount, 1e-10)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_FallsBackToGroupDefaultWithoutUserSpecificRate(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+	svc.cfg.Default.RateMultiplier = 1.1
+	repo := &openAIUserGroupRateRepoStub{}
+	svc.userGroupRateResolver = newUserGroupRateResolver(repo, nil, resolveUserGroupRateCacheTTL(svc.cfg), nil, "service.openai_gateway")
+	groupRate := 1.8
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_group_default_rate",
+			Usage: OpenAIUsage{
+				InputTokens:  12,
+				OutputTokens: 6,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey: &APIKey{
+			ID:      10022,
+			GroupID: i64p(30022),
+			Group: &Group{
+				ID:             30022,
+				RateMultiplier: groupRate,
+			},
+		},
+		User:    &User{ID: 20022},
+		Account: &Account{ID: 40022},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, groupRate, usageRepo.lastLog.RateMultiplier)
+
+	expectedCost, calcErr := svc.billingService.CalculateCost("gpt-5.1", UsageTokens{InputTokens: 12, OutputTokens: 6}, groupRate)
+	require.NoError(t, calcErr)
+	require.InDelta(t, expectedCost.ActualCost, usageRepo.lastLog.ActualCost, 1e-10)
+	require.InDelta(t, expectedCost.ActualCost, userRepo.lastAmount, 1e-10)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_FallsBackToGroupDefaultOnUserRateLookupError(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+	repo := &openAIUserGroupRateRepoStub{err: errors.New("repo unavailable")}
+	svc.userGroupRateResolver = newUserGroupRateResolver(repo, nil, resolveUserGroupRateCacheTTL(svc.cfg), nil, "service.openai_gateway")
+	groupRate := 1.6
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_group_default_on_error",
+			Usage: OpenAIUsage{
+				InputTokens:  8,
+				OutputTokens: 4,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey: &APIKey{
+			ID:      10023,
+			GroupID: i64p(30023),
+			Group: &Group{
+				ID:             30023,
+				RateMultiplier: groupRate,
+			},
+		},
+		User:    &User{ID: 20023},
+		Account: &Account{ID: 40023},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, groupRate, usageRepo.lastLog.RateMultiplier)
+
+	expectedCost, calcErr := svc.billingService.CalculateCost("gpt-5.1", UsageTokens{InputTokens: 8, OutputTokens: 4}, groupRate)
+	require.NoError(t, calcErr)
+	require.InDelta(t, expectedCost.ActualCost, usageRepo.lastLog.ActualCost, 1e-10)
+	require.InDelta(t, expectedCost.ActualCost, userRepo.lastAmount, 1e-10)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_NilResolverFallsBackToGroupDefault(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+	groupRate := 1.75
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_nil_resolver_group_default",
+			Usage: OpenAIUsage{
+				InputTokens:  14,
+				OutputTokens: 7,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey: &APIKey{
+			ID:      10024,
+			GroupID: i64p(30024),
+			Group: &Group{
+				ID:             30024,
+				RateMultiplier: groupRate,
+			},
+		},
+		User:    &User{ID: 20024},
+		Account: &Account{ID: 40024},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, groupRate, usageRepo.lastLog.RateMultiplier)
+
+	expectedCost, calcErr := svc.billingService.CalculateCost("gpt-5.1", UsageTokens{InputTokens: 14, OutputTokens: 7}, groupRate)
+	require.NoError(t, calcErr)
+	require.InDelta(t, expectedCost.ActualCost, usageRepo.lastLog.ActualCost, 1e-10)
+	require.InDelta(t, expectedCost.ActualCost, userRepo.lastAmount, 1e-10)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_ClampsNegativeActualInputTokens(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_clamp_actual_input",
+			Usage: OpenAIUsage{
+				InputTokens:          5,
+				OutputTokens:         3,
+				CacheReadInputTokens: 9,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey:  &APIKey{ID: 10025},
+		User:    &User{ID: 20025},
+		Account: &Account{ID: 40025},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, 0, usageRepo.lastLog.InputTokens)
+	require.Equal(t, 9, usageRepo.lastLog.CacheReadTokens)
+
+	expectedCost, calcErr := svc.billingService.CalculateCost("gpt-5.1", UsageTokens{InputTokens: 0, OutputTokens: 3, CacheReadTokens: 9}, 1.0)
+	require.NoError(t, calcErr)
+	require.InDelta(t, expectedCost.ActualCost, usageRepo.lastLog.ActualCost, 1e-10)
+	require.InDelta(t, expectedCost.ActualCost, userRepo.lastAmount, 1e-10)
+}
+
 func TestOpenAIGatewayServiceRecordUsage_PricingFailureReturnsError(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{
 		inserted: true,
@@ -316,6 +537,74 @@ func TestOpenAIGatewayServiceRecordUsage_PricingFailureReturnsError(t *testing.T
 	require.Equal(t, 0, usageRepo.calls)
 	require.Equal(t, 0, userRepo.deductCalls)
 	require.Equal(t, 0, subRepo.incrementCalls)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_SimpleModePricingFailureFallsBackToZeroCost(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+	svc.cfg.RunMode = config.RunModeSimple
+	svc.billingService = &BillingService{cfg: &config.Config{RunMode: config.RunModeSimple}, fallbackPrices: map[string]*ModelPricing{}}
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_simple_mode_pricing_fallback",
+			Usage:     OpenAIUsage{InputTokens: 2, OutputTokens: 1},
+			Model:     "model_pricing_not_found_for_simple_mode_test",
+			Duration:  time.Second,
+		},
+		APIKey:  &APIKey{ID: 11021},
+		User:    &User{ID: 21021},
+		Account: &Account{ID: 31021},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, 0.0, usageRepo.lastLog.ActualCost)
+	require.Equal(t, 0.0, userRepo.lastAmount)
+	require.Equal(t, 0, userRepo.deductCalls)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_SetsOptionalFieldsForSubscriptionUsageLog(t *testing.T) {
+	groupID := int64(13021)
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+	userAgent := "codex-test-agent"
+	ipAddress := "127.0.0.1"
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_optional_fields",
+			Usage:     OpenAIUsage{InputTokens: 10, OutputTokens: 8},
+			Model:     "gpt-5.1",
+			Duration:  time.Second,
+		},
+		APIKey: &APIKey{
+			ID:      11022,
+			GroupID: &groupID,
+			Group:   &Group{ID: groupID, SubscriptionType: SubscriptionTypeSubscription},
+		},
+		User:         &User{ID: 21022},
+		Account:      &Account{ID: 31022},
+		Subscription: &UserSubscription{ID: 41022},
+		UserAgent:    userAgent,
+		IPAddress:    ipAddress,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.NotNil(t, usageRepo.lastLog.UserAgent)
+	require.NotNil(t, usageRepo.lastLog.IPAddress)
+	require.Equal(t, userAgent, *usageRepo.lastLog.UserAgent)
+	require.Equal(t, ipAddress, *usageRepo.lastLog.IPAddress)
+	require.NotNil(t, usageRepo.lastLog.SubscriptionID)
+	require.Equal(t, int64(41022), *usageRepo.lastLog.SubscriptionID)
+	require.NotNil(t, usageRepo.lastLog.GroupID)
+	require.Equal(t, groupID, *usageRepo.lastLog.GroupID)
+	require.Equal(t, 1, subRepo.incrementCalls)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_DeductBalanceFailureReturnsError(t *testing.T) {

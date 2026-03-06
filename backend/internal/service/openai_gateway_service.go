@@ -293,23 +293,24 @@ type openAIWSAbortMetrics struct {
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
-	accountRepo         AccountRepository
-	usageLogRepo        UsageLogRepository
-	userRepo            UserRepository
-	userSubRepo         UserSubscriptionRepository
-	cache               GatewayCache
-	cfg                 *config.Config
-	codexDetector       CodexClientRestrictionDetector
-	schedulerSnapshot   *SchedulerSnapshotService
-	concurrencyService  *ConcurrencyService
-	billingService      *BillingService
-	rateLimitService    *RateLimitService
-	billingCacheService *BillingCacheService
-	httpUpstream        HTTPUpstream
-	deferredService     *DeferredService
-	openAITokenProvider *OpenAITokenProvider
-	toolCorrector       *CodexToolCorrector
-	openaiWSResolver    OpenAIWSProtocolResolver
+	accountRepo           AccountRepository
+	usageLogRepo          UsageLogRepository
+	userRepo              UserRepository
+	userSubRepo           UserSubscriptionRepository
+	cache                 GatewayCache
+	cfg                   *config.Config
+	codexDetector         CodexClientRestrictionDetector
+	schedulerSnapshot     *SchedulerSnapshotService
+	concurrencyService    *ConcurrencyService
+	billingService        *BillingService
+	rateLimitService      *RateLimitService
+	billingCacheService   *BillingCacheService
+	userGroupRateResolver *userGroupRateResolver
+	httpUpstream          HTTPUpstream
+	deferredService       *DeferredService
+	openAITokenProvider   *OpenAITokenProvider
+	toolCorrector         *CodexToolCorrector
+	openaiWSResolver      OpenAIWSProtocolResolver
 
 	openaiWSIngressCtxOnce        sync.Once
 	openaiWSStateStoreOnce        sync.Once
@@ -341,6 +342,7 @@ func NewOpenAIGatewayService(
 	usageLogRepo UsageLogRepository,
 	userRepo UserRepository,
 	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
 	cache GatewayCache,
 	cfg *config.Config,
 	schedulerSnapshot *SchedulerSnapshotService,
@@ -353,18 +355,25 @@ func NewOpenAIGatewayService(
 	openAITokenProvider *OpenAITokenProvider,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
-		accountRepo:          accountRepo,
-		usageLogRepo:         usageLogRepo,
-		userRepo:             userRepo,
-		userSubRepo:          userSubRepo,
-		cache:                cache,
-		cfg:                  cfg,
-		codexDetector:        NewOpenAICodexClientRestrictionDetector(cfg),
-		schedulerSnapshot:    schedulerSnapshot,
-		concurrencyService:   concurrencyService,
-		billingService:       billingService,
-		rateLimitService:     rateLimitService,
-		billingCacheService:  billingCacheService,
+		accountRepo:         accountRepo,
+		usageLogRepo:        usageLogRepo,
+		userRepo:            userRepo,
+		userSubRepo:         userSubRepo,
+		cache:               cache,
+		cfg:                 cfg,
+		codexDetector:       NewOpenAICodexClientRestrictionDetector(cfg),
+		schedulerSnapshot:   schedulerSnapshot,
+		concurrencyService:  concurrencyService,
+		billingService:      billingService,
+		rateLimitService:    rateLimitService,
+		billingCacheService: billingCacheService,
+		userGroupRateResolver: newUserGroupRateResolver(
+			userGroupRateRepo,
+			nil,
+			resolveUserGroupRateCacheTTL(cfg),
+			nil,
+			"service.openai_gateway",
+		),
 		httpUpstream:         httpUpstream,
 		deferredService:      deferredService,
 		openAITokenProvider:  openAITokenProvider,
@@ -3611,7 +3620,6 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 		// Correct tool calls in final response
 		body = s.correctToolCallsInResponseBody(body)
 	} else {
-		usage = s.parseSSEUsageFromBody(bodyText)
 		terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 		if terminalOK && terminalType == "response.failed" {
 			msg := extractOpenAISSEErrorMessage(terminalPayload)
@@ -4061,7 +4069,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Get rate multiplier
 	multiplier := s.cfg.Default.RateMultiplier
 	if apiKey.GroupID != nil && apiKey.Group != nil {
-		multiplier = apiKey.Group.RateMultiplier
+		resolver := s.userGroupRateResolver
+		if resolver == nil {
+			resolver = newUserGroupRateResolver(nil, nil, resolveUserGroupRateCacheTTL(s.cfg), nil, "service.openai_gateway")
+		}
+		multiplier = resolver.Resolve(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
 	}
 
 	cost, err := s.billingService.CalculateCost(result.Model, tokens, multiplier)

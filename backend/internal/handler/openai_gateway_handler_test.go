@@ -1156,6 +1156,7 @@ func TestOpenAIResponsesWebSocket_PassthroughAfterTurnRecordsUsageForPartialAndS
 		nil,
 		nil,
 		nil,
+		nil,
 		cfg,
 		nil,
 		nil,
