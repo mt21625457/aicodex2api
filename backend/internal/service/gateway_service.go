@@ -501,33 +501,34 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 
 // GatewayService handles API gateway operations
 type GatewayService struct {
-	accountRepo           AccountRepository
-	groupRepo             GroupRepository
-	usageLogRepo          UsageLogRepository
-	userRepo              UserRepository
-	userSubRepo           UserSubscriptionRepository
-	userGroupRateRepo     UserGroupRateRepository
-	cache                 GatewayCache
-	digestStore           *DigestSessionStore
-	cfg                   *config.Config
-	schedulerSnapshot     *SchedulerSnapshotService
-	billingService        *BillingService
-	rateLimitService      *RateLimitService
-	billingCacheService   *BillingCacheService
-	identityService       *IdentityService
-	httpUpstream          HTTPUpstream
-	deferredService       *DeferredService
-	concurrencyService    *ConcurrencyService
-	claudeTokenProvider   *ClaudeTokenProvider
-	sessionLimitCache     SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
-	userGroupRateResolver *userGroupRateResolver
-	userGroupRateCache    *gocache.Cache
-	userGroupRateSF       singleflight.Group
-	modelsListCache       *gocache.Cache
-	modelsListCacheTTL    time.Duration
-	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
-	debugModelRouting     atomic.Bool
-	debugClaudeMimic      atomic.Bool
+	accountRepo            AccountRepository
+	groupRepo              GroupRepository
+	usageLogRepo           UsageLogRepository
+	userRepo               UserRepository
+	userSubRepo            UserSubscriptionRepository
+	userGroupRateRepo      UserGroupRateRepository
+	cache                  GatewayCache
+	digestStore            *DigestSessionStore
+	cfg                    *config.Config
+	schedulerSnapshot      *SchedulerSnapshotService
+	billingService         *BillingService
+	rateLimitService       *RateLimitService
+	billingCacheService    *BillingCacheService
+	identityService        *IdentityService
+	httpUpstream           HTTPUpstream
+	deferredService        *DeferredService
+	concurrencyService     *ConcurrencyService
+	claudeTokenProvider    *ClaudeTokenProvider
+	sessionLimitCache      SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+	usageSettlementService *UsageSettlementService
+	userGroupRateResolver  *userGroupRateResolver
+	userGroupRateCache     *gocache.Cache
+	userGroupRateSF        singleflight.Group
+	modelsListCache        *gocache.Cache
+	modelsListCacheTTL     time.Duration
+	responseHeaderFilter   *responseheaders.CompiledHeaderFilter
+	debugModelRouting      atomic.Bool
+	debugClaudeMimic       atomic.Bool
 }
 
 // NewGatewayService creates a new GatewayService
@@ -6193,6 +6194,22 @@ func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID,
 	return resolver.Resolve(ctx, userID, groupID, groupDefaultMultiplier)
 }
 
+func (s *GatewayService) usageSettlement() *UsageSettlementService {
+	if s == nil {
+		return nil
+	}
+	if s.usageSettlementService != nil {
+		return s.usageSettlementService
+	}
+	return NewUsageSettlementService(
+		s.usageLogRepo,
+		s.userRepo,
+		s.userSubRepo,
+		s.billingCacheService,
+		s.cfg,
+	)
+}
+
 // RecordUsageInput 记录使用量的输入参数
 type RecordUsageInput struct {
 	Result            *ForwardResult
@@ -6289,8 +6306,10 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		var err error
 		cost, err = s.billingService.CalculateCost(result.Model, tokens, multiplier)
 		if err != nil {
-			logger.LegacyPrintf("service.gateway", "Calculate cost failed: %v", err)
-			cost = &CostBreakdown{ActualCost: 0}
+			cost, err = resolveUsagePricingFailure(s.cfg, "service.gateway", result.Model, result.RequestID, err)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -6361,45 +6380,18 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		usageLog.SubscriptionID = &subscription.ID
 	}
 
-	inserted, err := s.usageLogRepo.Create(ctx, usageLog)
-	if err != nil {
-		return fmt.Errorf("create usage log: %w", err)
-	}
-
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
-		s.deferredService.ScheduleLastUsedUpdate(account.ID)
-		return nil
-	}
-
-	shouldBill := inserted
-
-	// 根据计费类型执行扣费
-	if isSubscriptionBilling {
-		// 订阅模式：更新订阅用量（使用 TotalCost 原始费用，不考虑倍率）
-		if shouldBill && cost.TotalCost > 0 {
-			if err := s.userSubRepo.IncrementUsage(ctx, subscription.ID, cost.TotalCost); err != nil {
-				logger.LegacyPrintf("service.gateway", "Increment subscription usage failed: %v", err)
-			}
-			// 异步更新订阅缓存
-			s.billingCacheService.QueueUpdateSubscriptionUsage(user.ID, *apiKey.GroupID, cost.TotalCost)
-		}
-	} else {
-		// 余额模式：扣除用户余额（使用 ActualCost 考虑倍率后的费用）
-		if shouldBill && cost.ActualCost > 0 {
-			if err := s.userRepo.DeductBalance(ctx, user.ID, cost.ActualCost); err != nil {
-				logger.LegacyPrintf("service.gateway", "Deduct balance failed: %v", err)
-			}
-			// 异步更新余额缓存
-			s.billingCacheService.QueueDeductBalance(user.ID, cost.ActualCost)
-		}
-	}
-
-	// 更新 API Key 配额（如果设置了配额限制）
-	if shouldBill && cost.ActualCost > 0 && apiKey.Quota > 0 && input.APIKeyService != nil {
-		if err := input.APIKeyService.UpdateQuotaUsed(ctx, apiKey.ID, cost.ActualCost); err != nil {
-			logger.LegacyPrintf("service.gateway", "Update API key quota failed: %v", err)
-		}
+	if _, err := s.usageSettlement().Record(ctx, &UsageSettlementInput{
+		UsageLog:             usageLog,
+		BillingType:          billingType,
+		BalanceDeltaUSD:      cost.ActualCost,
+		SubscriptionDeltaUSD: cost.TotalCost,
+		APIKeyID:             apiKey.ID,
+		APIKeyQuota:          apiKey.Quota,
+		APIKeyQuotaDeltaUSD:  cost.ActualCost,
+		APIKeyService:        input.APIKeyService,
+		LogComponent:         "service.gateway",
+	}); err != nil {
+		return err
 	}
 
 	// Schedule batch update for account last_used_at
@@ -6484,8 +6476,10 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 		var err error
 		cost, err = s.billingService.CalculateCostWithLongContext(result.Model, tokens, multiplier, input.LongContextThreshold, input.LongContextMultiplier)
 		if err != nil {
-			logger.LegacyPrintf("service.gateway", "Calculate cost failed: %v", err)
-			cost = &CostBreakdown{ActualCost: 0}
+			cost, err = resolveUsagePricingFailure(s.cfg, "service.gateway", result.Model, result.RequestID, err)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -6551,44 +6545,18 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 		usageLog.SubscriptionID = &subscription.ID
 	}
 
-	inserted, err := s.usageLogRepo.Create(ctx, usageLog)
-	if err != nil {
-		return fmt.Errorf("create usage log: %w", err)
-	}
-
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
-		s.deferredService.ScheduleLastUsedUpdate(account.ID)
-		return nil
-	}
-
-	shouldBill := inserted
-
-	// 根据计费类型执行扣费
-	if isSubscriptionBilling {
-		// 订阅模式：更新订阅用量（使用 TotalCost 原始费用，不考虑倍率）
-		if shouldBill && cost.TotalCost > 0 {
-			if err := s.userSubRepo.IncrementUsage(ctx, subscription.ID, cost.TotalCost); err != nil {
-				logger.LegacyPrintf("service.gateway", "Increment subscription usage failed: %v", err)
-			}
-			// 异步更新订阅缓存
-			s.billingCacheService.QueueUpdateSubscriptionUsage(user.ID, *apiKey.GroupID, cost.TotalCost)
-		}
-	} else {
-		// 余额模式：扣除用户余额（使用 ActualCost 考虑倍率后的费用）
-		if shouldBill && cost.ActualCost > 0 {
-			if err := s.userRepo.DeductBalance(ctx, user.ID, cost.ActualCost); err != nil {
-				logger.LegacyPrintf("service.gateway", "Deduct balance failed: %v", err)
-			}
-			// 异步更新余额缓存
-			s.billingCacheService.QueueDeductBalance(user.ID, cost.ActualCost)
-			// API Key 独立配额扣费
-			if input.APIKeyService != nil && apiKey.Quota > 0 {
-				if err := input.APIKeyService.UpdateQuotaUsed(ctx, apiKey.ID, cost.ActualCost); err != nil {
-					logger.LegacyPrintf("service.gateway", "Add API key quota used failed: %v", err)
-				}
-			}
-		}
+	if _, err := s.usageSettlement().Record(ctx, &UsageSettlementInput{
+		UsageLog:             usageLog,
+		BillingType:          billingType,
+		BalanceDeltaUSD:      cost.ActualCost,
+		SubscriptionDeltaUSD: cost.TotalCost,
+		APIKeyID:             apiKey.ID,
+		APIKeyQuota:          apiKey.Quota,
+		APIKeyQuotaDeltaUSD:  cost.ActualCost,
+		APIKeyService:        input.APIKeyService,
+		LogComponent:         "service.gateway",
+	}); err != nil {
+		return err
 	}
 
 	// Schedule batch update for account last_used_at

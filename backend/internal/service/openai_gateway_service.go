@@ -293,24 +293,25 @@ type openAIWSAbortMetrics struct {
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
-	accountRepo           AccountRepository
-	usageLogRepo          UsageLogRepository
-	userRepo              UserRepository
-	userSubRepo           UserSubscriptionRepository
-	cache                 GatewayCache
-	cfg                   *config.Config
-	codexDetector         CodexClientRestrictionDetector
-	schedulerSnapshot     *SchedulerSnapshotService
-	concurrencyService    *ConcurrencyService
-	billingService        *BillingService
-	rateLimitService      *RateLimitService
-	billingCacheService   *BillingCacheService
-	userGroupRateResolver *userGroupRateResolver
-	httpUpstream          HTTPUpstream
-	deferredService       *DeferredService
-	openAITokenProvider   *OpenAITokenProvider
-	toolCorrector         *CodexToolCorrector
-	openaiWSResolver      OpenAIWSProtocolResolver
+	accountRepo            AccountRepository
+	usageLogRepo           UsageLogRepository
+	userRepo               UserRepository
+	userSubRepo            UserSubscriptionRepository
+	cache                  GatewayCache
+	cfg                    *config.Config
+	codexDetector          CodexClientRestrictionDetector
+	schedulerSnapshot      *SchedulerSnapshotService
+	concurrencyService     *ConcurrencyService
+	billingService         *BillingService
+	rateLimitService       *RateLimitService
+	billingCacheService    *BillingCacheService
+	usageSettlementService *UsageSettlementService
+	userGroupRateResolver  *userGroupRateResolver
+	httpUpstream           HTTPUpstream
+	deferredService        *DeferredService
+	openAITokenProvider    *OpenAITokenProvider
+	toolCorrector          *CodexToolCorrector
+	openaiWSResolver       OpenAIWSProtocolResolver
 
 	openaiWSIngressCtxOnce        sync.Once
 	openaiWSStateStoreOnce        sync.Once
@@ -3834,112 +3835,20 @@ type OpenAIRecordUsageInput struct {
 	APIKeyService     APIKeyQuotaUpdater
 }
 
-func (s *OpenAIGatewayService) usageBillingEntryStore() UsageBillingEntryStore {
-	store, ok := s.usageLogRepo.(UsageBillingEntryStore)
-	if !ok {
+func (s *OpenAIGatewayService) usageSettlement() *UsageSettlementService {
+	if s == nil {
 		return nil
 	}
-	return store
-}
-
-func (s *OpenAIGatewayService) usageBillingTxRunner() UsageBillingTxRunner {
-	runner, ok := s.usageLogRepo.(UsageBillingTxRunner)
-	if !ok {
-		return nil
+	if s.usageSettlementService != nil {
+		return s.usageSettlementService
 	}
-	return runner
-}
-
-func (s *OpenAIGatewayService) runUsageBillingTx(ctx context.Context, fn func(txCtx context.Context) error) error {
-	runner := s.usageBillingTxRunner()
-	if runner == nil {
-		return fn(ctx)
-	}
-	return runner.WithUsageBillingTx(ctx, fn)
-}
-
-func (s *OpenAIGatewayService) prepareUsageBillingEntry(
-	ctx context.Context,
-	usageLog *UsageLog,
-	inserted bool,
-	billingType int8,
-	deltaUSD float64,
-) (*UsageBillingEntry, bool, error) {
-	if deltaUSD <= 0 {
-		return nil, false, nil
-	}
-
-	store := s.usageBillingEntryStore()
-	if store == nil {
-		if inserted {
-			return nil, true, nil
-		}
-		return nil, false, nil
-	}
-
-	if !inserted {
-		entry, err := store.GetUsageBillingEntryByUsageLogID(ctx, usageLog.ID)
-		if err != nil {
-			if errors.Is(err, ErrUsageBillingEntryNotFound) {
-				logger.LegacyPrintf(
-					"service.openai_gateway",
-					"[BillingReconcile] missing billing entry for duplicate usage log, skip immediate billing: usage_log=%d request_id=%s",
-					usageLog.ID,
-					usageLog.RequestID,
-				)
-				return nil, false, nil
-			}
-			logger.LegacyPrintf(
-				"service.openai_gateway",
-				"[BillingReconcile] load billing entry failed for duplicate usage log, skip immediate billing: usage_log=%d request_id=%s err=%v",
-				usageLog.ID,
-				usageLog.RequestID,
-				err,
-			)
-			return nil, false, nil
-		}
-		return entry, !entry.Applied, nil
-	}
-
-	entry, _, err := store.UpsertUsageBillingEntry(ctx, &UsageBillingEntry{
-		UsageLogID:     usageLog.ID,
-		UserID:         usageLog.UserID,
-		APIKeyID:       usageLog.APIKeyID,
-		SubscriptionID: usageLog.SubscriptionID,
-		BillingType:    billingType,
-		DeltaUSD:       deltaUSD,
-		Status:         UsageBillingEntryStatusPending,
-	})
-	if err != nil {
-		logger.LegacyPrintf(
-			"service.openai_gateway",
-			"[BillingReconcile] upsert billing entry failed, fallback to inline billing: usage_log=%d request_id=%s err=%v",
-			usageLog.ID,
-			usageLog.RequestID,
-			err,
-		)
-		return nil, true, nil
-	}
-
-	return entry, !entry.Applied, nil
-}
-
-func (s *OpenAIGatewayService) markUsageBillingRetry(ctx context.Context, entry *UsageBillingEntry, cause error) {
-	if entry == nil || cause == nil {
-		return
-	}
-	store := s.usageBillingEntryStore()
-	if store == nil {
-		return
-	}
-	errMsg := strings.TrimSpace(cause.Error())
-	if len(errMsg) > 500 {
-		errMsg = errMsg[:500]
-	}
-	nextRetryAt := time.Now().Add(usageBillingRetryBackoff(entry.AttemptCount + 1))
-	if err := store.MarkUsageBillingEntryRetry(ctx, entry.ID, nextRetryAt, errMsg); err != nil {
-		logger.LegacyPrintf("service.openai_gateway", "[BillingReconcile] mark retry failed: entry=%d err=%v", entry.ID, err)
-	}
+	return NewUsageSettlementService(
+		s.usageLogRepo,
+		s.userRepo,
+		s.userSubRepo,
+		s.billingCacheService,
+		s.cfg,
+	)
 }
 
 func resolveOpenAIUsageRequestID(input *OpenAIRecordUsageInput) string {
@@ -4078,24 +3987,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	cost, err := s.billingService.CalculateCost(result.Model, tokens, multiplier)
 	if err != nil {
-		if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-			logger.LegacyPrintf(
-				"service.openai_gateway",
-				"[PricingWarn] calculate cost failed in simple mode, fallback to zero cost: model=%s request_id=%s err=%v",
-				result.Model,
-				result.RequestID,
-				err,
-			)
-			cost = &CostBreakdown{}
-		} else {
-			logger.LegacyPrintf(
-				"service.openai_gateway",
-				"[PricingAlert] calculate cost failed, reject usage record: model=%s request_id=%s err=%v",
-				result.Model,
-				result.RequestID,
-				err,
-			)
-			return fmt.Errorf("calculate cost: %w", err)
+		cost, err = resolveUsagePricingFailure(s.cfg, "service.openai_gateway", result.Model, result.RequestID, err)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -4154,83 +4048,21 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		usageLog.SubscriptionID = &subscription.ID
 	}
 
-	inserted, err := s.usageLogRepo.Create(ctx, usageLog)
+	settlementResult, err := s.usageSettlement().Record(ctx, &UsageSettlementInput{
+		UsageLog:             usageLog,
+		BillingType:          billingType,
+		BalanceDeltaUSD:      cost.ActualCost,
+		SubscriptionDeltaUSD: cost.TotalCost,
+		APIKeyID:             apiKey.ID,
+		APIKeyQuota:          apiKey.Quota,
+		APIKeyQuotaDeltaUSD:  cost.ActualCost,
+		APIKeyService:        input.APIKeyService,
+		LogComponent:         "service.openai_gateway",
+	})
 	if err != nil {
-		return fmt.Errorf("create usage log: %w", err)
+		return err
 	}
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		logger.LegacyPrintf("service.openai_gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
-		logOpenAIWSUsageRecorded(result, usageLog, inserted, false, 0)
-		s.deferredService.ScheduleLastUsedUpdate(account.ID)
-		return nil
-	}
-
-	billAmount := cost.ActualCost
-	if isSubscriptionBilling {
-		billAmount = cost.TotalCost
-	}
-	billingEntry, shouldBill, err := s.prepareUsageBillingEntry(ctx, usageLog, inserted, billingType, billAmount)
-	if err != nil {
-		return fmt.Errorf("prepare usage billing entry: %w", err)
-	}
-
-	if shouldBill {
-		cacheDeducted := false
-		if !isSubscriptionBilling && billAmount > 0 && s.billingCacheService != nil {
-			// 同步扣减缓存，避免并发场景下仅靠“先查后扣”产生透支窗口。
-			if err := s.billingCacheService.DeductBalanceCache(ctx, user.ID, billAmount); err != nil {
-				s.markUsageBillingRetry(ctx, billingEntry, err)
-				return fmt.Errorf("deduct balance cache: %w", err)
-			}
-			cacheDeducted = true
-		}
-
-		applyErr := s.runUsageBillingTx(ctx, func(txCtx context.Context) error {
-			if isSubscriptionBilling {
-				if err := s.userSubRepo.IncrementUsage(txCtx, subscription.ID, cost.TotalCost); err != nil {
-					return fmt.Errorf("increment subscription usage: %w", err)
-				}
-			} else if billAmount > 0 {
-				if err := s.userRepo.DeductBalance(txCtx, user.ID, billAmount); err != nil {
-					return fmt.Errorf("deduct balance: %w", err)
-				}
-			}
-			if billingEntry == nil {
-				return nil
-			}
-			store := s.usageBillingEntryStore()
-			if store == nil {
-				return nil
-			}
-			if err := store.MarkUsageBillingEntryApplied(txCtx, billingEntry.ID); err != nil {
-				return fmt.Errorf("mark usage billing entry applied: %w", err)
-			}
-			return nil
-		})
-		if applyErr != nil {
-			if !isSubscriptionBilling && cacheDeducted && s.billingCacheService != nil {
-				_ = s.billingCacheService.InvalidateUserBalance(context.Background(), user.ID)
-			}
-			s.markUsageBillingRetry(ctx, billingEntry, applyErr)
-			return applyErr
-		}
-
-		if isSubscriptionBilling && s.billingCacheService != nil && apiKey.GroupID != nil && cost.TotalCost > 0 {
-			s.billingCacheService.QueueUpdateSubscriptionUsage(user.ID, *apiKey.GroupID, cost.TotalCost)
-		}
-	}
-
-	// Update API key quota if applicable (only for balance mode with quota set)
-	if shouldBill && cost.ActualCost > 0 && apiKey.Quota > 0 && input.APIKeyService != nil {
-		if err := input.APIKeyService.UpdateQuotaUsed(ctx, apiKey.ID, cost.ActualCost); err != nil {
-			logger.LegacyPrintf("service.openai_gateway", "Update API key quota failed: %v", err)
-		}
-	}
-	billedAmount := 0.0
-	if shouldBill {
-		billedAmount = billAmount
-	}
-	logOpenAIWSUsageRecorded(result, usageLog, inserted, shouldBill, billedAmount)
+	logOpenAIWSUsageRecorded(result, usageLog, settlementResult.Inserted, settlementResult.ShouldBill, settlementResult.BilledAmount)
 
 	// Schedule batch update for account last_used_at
 	s.deferredService.ScheduleLastUsedUpdate(account.ID)
