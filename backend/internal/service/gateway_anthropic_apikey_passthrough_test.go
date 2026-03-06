@@ -193,6 +193,48 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.Equal(t, body, bodyBytes)
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_BuildUpstreamRequestInjectsBetaWhenNeeded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-sonnet-4-6","thinking":{"type":"enabled"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				InjectBetaForAPIKey: true,
+			},
+		},
+	}
+
+	req, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, newAnthropicAPIKeyAccountForTest(), body, "upstream-anthropic-key")
+	require.NoError(t, err)
+	require.Equal(t, claude.APIKeyBetaHeader, req.Header.Get("anthropic-beta"))
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_BuildCountTokensRequestInjectsBetaWhenNeeded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+
+	body := []byte(`{"model":"claude-sonnet-4-6","thinking":{"type":"enabled"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				InjectBetaForAPIKey: true,
+			},
+		},
+	}
+
+	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, newAnthropicAPIKeyAccountForTest(), body, "upstream-anthropic-key")
+	require.NoError(t, err)
+	require.Equal(t, claude.APIKeyBetaHeader, req.Header.Get("anthropic-beta"))
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

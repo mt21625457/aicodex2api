@@ -48,6 +48,19 @@ func TestNormalizeRunMode(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultGatewayInjectBetaForAPIKey(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Gateway.InjectBetaForAPIKey {
+		t.Fatalf("Gateway.InjectBetaForAPIKey = false, want true")
+	}
+}
+
 func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

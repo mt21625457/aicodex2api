@@ -4460,6 +4460,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if req.Header.Get("anthropic-version") == "" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
+	s.injectAnthropicBetaForAPIKeyIfNeeded(req, body)
 
 	return req, nil
 }
@@ -4895,13 +4896,8 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			clientBetaHeader := req.Header.Get("anthropic-beta")
 			req.Header.Set("anthropic-beta", stripBetaTokensWithSet(s.getBetaHeader(modelID, clientBetaHeader), defaultDroppedBetasSet))
 		}
-	} else if s.cfg != nil && s.cfg.Gateway.InjectBetaForAPIKey && req.Header.Get("anthropic-beta") == "" {
-		// API-key：仅在请求显式使用 beta 特性且客户端未提供时，按需补齐（默认关闭）
-		if requestNeedsBetaFeatures(body) {
-			if beta := defaultAPIKeyBetaHeader(body); beta != "" {
-				req.Header.Set("anthropic-beta", beta)
-			}
-		}
+	} else {
+		s.injectAnthropicBetaForAPIKeyIfNeeded(req, body)
 	}
 
 	// Always capture a compact fingerprint line for later error diagnostics.
@@ -4981,6 +4977,21 @@ func defaultAPIKeyBetaHeader(body []byte) string {
 		return claude.APIKeyHaikuBetaHeader
 	}
 	return claude.APIKeyBetaHeader
+}
+
+func (s *GatewayService) injectAnthropicBetaForAPIKeyIfNeeded(req *http.Request, body []byte) {
+	if req == nil || s == nil || s.cfg == nil || !s.cfg.Gateway.InjectBetaForAPIKey {
+		return
+	}
+	if req.Header.Get("anthropic-beta") != "" {
+		return
+	}
+	if !requestNeedsBetaFeatures(body) {
+		return
+	}
+	if beta := defaultAPIKeyBetaHeader(body); beta != "" {
+		req.Header.Set("anthropic-beta", beta)
+	}
 }
 
 func applyClaudeOAuthHeaderDefaults(req *http.Request, isStream bool) {
@@ -6940,6 +6951,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	if req.Header.Get("anthropic-version") == "" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
+	s.injectAnthropicBetaForAPIKeyIfNeeded(req, body)
 
 	return req, nil
 }
@@ -7040,13 +7052,8 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 				req.Header.Set("anthropic-beta", stripBetaTokensWithSet(beta, defaultDroppedBetasSet))
 			}
 		}
-	} else if s.cfg != nil && s.cfg.Gateway.InjectBetaForAPIKey && req.Header.Get("anthropic-beta") == "" {
-		// API-key：与 messages 同步的按需 beta 注入（默认关闭）
-		if requestNeedsBetaFeatures(body) {
-			if beta := defaultAPIKeyBetaHeader(body); beta != "" {
-				req.Header.Set("anthropic-beta", beta)
-			}
-		}
+	} else {
+		s.injectAnthropicBetaForAPIKeyIfNeeded(req, body)
 	}
 
 	if c != nil && tokenType == "oauth" {
