@@ -423,6 +423,14 @@
               <span class="text-gray-400">{{ t('admin.usage.outputCost') }}</span>
               <span class="font-medium text-white">${{ tooltipData.output_cost.toFixed(6) }}</span>
             </div>
+            <div v-if="tooltipData && tooltipData.input_tokens > 0" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.inputTokenPrice') }}</span>
+              <span class="font-medium text-sky-300">{{ formatTokenPricePerMillion(tooltipData.input_cost, tooltipData.input_tokens) }} {{ t('usage.perMillionTokens') }}</span>
+            </div>
+            <div v-if="tooltipData && tooltipData.output_tokens > 0" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.outputTokenPrice') }}</span>
+              <span class="font-medium text-violet-300">{{ formatTokenPricePerMillion(tooltipData.output_cost, tooltipData.output_tokens) }} {{ t('usage.perMillionTokens') }}</span>
+            </div>
             <div v-if="tooltipData && tooltipData.cache_creation_cost > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.cacheCreationCost') }}</span>
               <span class="font-medium text-white">${{ tooltipData.cache_creation_cost.toFixed(6) }}</span>
@@ -475,6 +483,7 @@ import Icon from '@/components/icons/Icon.vue'
 import type { UsageLog, ApiKey, UsageQueryParams, UsageStatsResponse } from '@/types'
 import type { Column } from '@/components/common/types'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
+import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
 
 const { t } = useI18n()
@@ -774,9 +783,15 @@ const exportToCSV = async () => {
       'Reasoning Effort',
       'Type',
       'Input Tokens',
+      'Input Cost',
+      'Input Price ($/1M)',
       'Output Tokens',
+      'Output Cost',
+      'Output Price ($/1M)',
       'Cache Read Tokens',
+      'Cache Read Cost',
       'Cache Creation Tokens',
+      'Cache Creation Cost',
       'Rate Multiplier',
       'Billed Cost',
       'Original Cost',
@@ -791,9 +806,15 @@ const exportToCSV = async () => {
         formatReasoningEffort(log.reasoning_effort),
         getRequestTypeExportText(log),
         log.input_tokens,
+        log.input_cost.toFixed(8),
+        formatTokenPricePerMillion(log.input_cost, log.input_tokens, { withCurrencySymbol: false }),
         log.output_tokens,
+        log.output_cost.toFixed(8),
+        formatTokenPricePerMillion(log.output_cost, log.output_tokens, { withCurrencySymbol: false }),
         log.cache_read_tokens,
+        log.cache_read_cost.toFixed(8),
         log.cache_creation_tokens,
+        log.cache_creation_cost.toFixed(8),
         log.rate_multiplier,
         log.actual_cost.toFixed(8),
         log.total_cost.toFixed(8),
