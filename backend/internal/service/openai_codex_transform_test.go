@@ -18,7 +18,7 @@ func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
 		"tool_choice": "auto",
 	}
 
-	applyCodexOAuthTransform(reqBody, false)
+	applyCodexOAuthTransform(reqBody, false, false)
 
 	// 未显式设置 store=true，默认为 false。
 	store, ok := reqBody["store"].(bool)
@@ -53,7 +53,7 @@ func TestApplyCodexOAuthTransform_ExplicitStoreFalsePreserved(t *testing.T) {
 		"tool_choice": "auto",
 	}
 
-	applyCodexOAuthTransform(reqBody, false)
+	applyCodexOAuthTransform(reqBody, false, false)
 
 	store, ok := reqBody["store"].(bool)
 	require.True(t, ok)
@@ -72,11 +72,31 @@ func TestApplyCodexOAuthTransform_ExplicitStoreTrueForcedFalse(t *testing.T) {
 		"tool_choice": "auto",
 	}
 
-	applyCodexOAuthTransform(reqBody, false)
+	applyCodexOAuthTransform(reqBody, false, false)
 
 	store, ok := reqBody["store"].(bool)
 	require.True(t, ok)
 	require.False(t, store)
+}
+
+func TestApplyCodexOAuthTransform_CompactRemovesStoreAndPreservesStream(t *testing.T) {
+	reqBody := map[string]any{
+		"model":  "gpt-5.4",
+		"store":  true,
+		"stream": false,
+		"input": []any{
+			map[string]any{"type": "text", "text": "hi"},
+		},
+	}
+
+	applyCodexOAuthTransform(reqBody, true, true)
+
+	_, hasStore := reqBody["store"]
+	require.False(t, hasStore)
+
+	stream, ok := reqBody["stream"].(bool)
+	require.True(t, ok)
+	require.False(t, stream)
 }
 
 func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsIDs(t *testing.T) {
@@ -89,7 +109,7 @@ func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsIDs(
 		},
 	}
 
-	applyCodexOAuthTransform(reqBody, false)
+	applyCodexOAuthTransform(reqBody, false, false)
 
 	store, ok := reqBody["store"].(bool)
 	require.True(t, ok)
@@ -138,7 +158,7 @@ func TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunction
 		},
 	}
 
-	applyCodexOAuthTransform(reqBody, false)
+	applyCodexOAuthTransform(reqBody, false, false)
 
 	tools, ok := reqBody["tools"].([]any)
 	require.True(t, ok)
@@ -158,7 +178,7 @@ func TestApplyCodexOAuthTransform_EmptyInput(t *testing.T) {
 		"input": []any{},
 	}
 
-	applyCodexOAuthTransform(reqBody, false)
+	applyCodexOAuthTransform(reqBody, false, false)
 
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
@@ -193,7 +213,7 @@ func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *test
 		"instructions": "existing instructions",
 	}
 
-	result := applyCodexOAuthTransform(reqBody, true) // isCodexCLI=true
+	result := applyCodexOAuthTransform(reqBody, true, false) // isCodexCLI=true
 
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
@@ -210,7 +230,7 @@ func TestApplyCodexOAuthTransform_CodexCLI_SuppliesDefaultWhenEmpty(t *testing.T
 		// 没有 instructions 字段
 	}
 
-	result := applyCodexOAuthTransform(reqBody, true) // isCodexCLI=true
+	result := applyCodexOAuthTransform(reqBody, true, false) // isCodexCLI=true
 
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
@@ -226,7 +246,7 @@ func TestApplyCodexOAuthTransform_NonCodexCLI_OverridesInstructions(t *testing.T
 		"instructions": "old instructions",
 	}
 
-	result := applyCodexOAuthTransform(reqBody, false) // isCodexCLI=false
+	result := applyCodexOAuthTransform(reqBody, false, false) // isCodexCLI=false
 
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)

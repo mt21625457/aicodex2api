@@ -1803,8 +1803,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	isCompactEndpoint := resolveOpenAIResponsesEndpoint(c) == openAICompactEndpoint
+
 	if account.Type == AccountTypeOAuth {
-		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI)
+		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isCompactEndpoint)
 		if codexResult.Modified {
 			bodyModified = true
 			disablePatch()
@@ -2239,8 +2241,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
 		}
 
-		forceStream := resolveOpenAIResponsesEndpoint(c) != openAICompactEndpoint
-		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, forceStream)
+		isCompactEndpoint := resolveOpenAIResponsesEndpoint(c) == openAICompactEndpoint
+		forceStream := !isCompactEndpoint
+		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, forceStream, isCompactEndpoint)
 		if err != nil {
 			return nil, err
 		}
@@ -4436,10 +4439,11 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 }
 
 // normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛到兼容行为：
-// 1) store=false
-// 2) forceStream=true 时强制 stream=true（/responses）
-// 3) forceStream=false 时保持调用方 stream 语义（/responses/compact）
-func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool) ([]byte, bool, error) {
+// 1) /responses 保持历史语义：store=false
+// 2) /responses/compact 删除 store，避免上游返回 unknown_parameter
+// 3) forceStream=true 时强制 stream=true（/responses）
+// 4) forceStream=false 时保持调用方 stream 语义（/responses/compact）
+func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool, stripStore bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
@@ -4447,7 +4451,16 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool) ([]byte,
 	normalized := body
 	changed := false
 
-	if store := gjson.GetBytes(normalized, "store"); !store.Exists() || store.Type != gjson.False {
+	if stripStore {
+		if store := gjson.GetBytes(normalized, "store"); store.Exists() {
+			next, err := sjson.DeleteBytes(normalized, "store")
+			if err != nil {
+				return body, false, fmt.Errorf("normalize passthrough body remove store: %w", err)
+			}
+			normalized = next
+			changed = true
+		}
+	} else if store := gjson.GetBytes(normalized, "store"); !store.Exists() || store.Type != gjson.False {
 		next, err := sjson.SetBytes(normalized, "store", false)
 		if err != nil {
 			return body, false, fmt.Errorf("normalize passthrough body store=false: %w", err)
