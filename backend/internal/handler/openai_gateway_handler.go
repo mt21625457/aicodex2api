@@ -117,44 +117,29 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	setOpsRequestContext(c, "", false, body)
-	sessionHashBody := body
-	if service.IsOpenAIResponsesCompactPathForTest(c) {
-		if compactSeed := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); compactSeed != "" {
-			c.Set(service.OpenAICompactSessionSeedKeyForTest(), compactSeed)
-		}
-		normalizedCompactBody, normalizedCompact, compactErr := service.NormalizeOpenAICompactRequestBodyForTest(body)
-		if compactErr != nil {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to normalize compact request body")
-			return
-		}
-		if normalizedCompact {
-			body = normalizedCompactBody
-		}
-	}
-
-	// 校验请求体 JSON 合法性
+	// 校验请求体 JSON 合法性，避免畸形 JSON 被 gjson 部分解析后继续下游处理。
 	if !gjson.ValidBytes(body) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
 
-	// 使用 gjson 只读提取字段做校验，避免完整 Unmarshal
-	modelResult := gjson.GetBytes(body, "model")
+	// 使用 GetManyBytes 一次扫描提取所有字段，避免多次遍历大请求体
+	results := gjson.GetManyBytes(body, "model", "stream", "previous_response_id")
+	modelResult := results[0]
 	if !modelResult.Exists() || modelResult.Type != gjson.String || modelResult.String() == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
 	reqModel := modelResult.String()
 
-	streamResult := gjson.GetBytes(body, "stream")
+	streamResult := results[1]
 	if streamResult.Exists() && streamResult.Type != gjson.True && streamResult.Type != gjson.False {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "invalid stream field type")
 		return
 	}
 	reqStream := streamResult.Bool()
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
-	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+	previousResponseID := strings.TrimSpace(results[2].String())
 	if previousResponseID != "" {
 		previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
 		reqLog = reqLog.With(
@@ -172,6 +157,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
+
+	// 缓存已提取的 meta 到 context，供 Service 层复用，避免重复解析请求体。
+	// prompt_cache_key 也在此处提前提取，确保 meta 设置后只读不写，避免并发竞态。
+	promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	c.Set(service.OpenAIRequestMetaKey, &service.OpenAIRequestMeta{
+		Model:          reqModel,
+		Stream:         reqStream,
+		PromptCacheKey: promptCacheKey,
+	})
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
 	if !h.validateFunctionCallOutputRequest(c, body, reqLog) {
@@ -207,7 +201,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
-	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -410,35 +404,127 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 		zap.Bool("force_codex_cli", h != nil && h.cfg != nil && h.cfg.Gateway.ForceCodexCLI),
 	}
 
-	if c != nil {
-		if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); userAgent != "" {
-			fields = append(fields, zap.String("request_user_agent", userAgent))
-		}
-		if v, ok := c.Get(opsModelKey); ok {
-			if model, ok := v.(string); ok && strings.TrimSpace(model) != "" {
-				fields = append(fields, zap.String("request_model", strings.TrimSpace(model)))
-			}
-		}
-		if v, ok := c.Get(opsAccountIDKey); ok {
-			if accountID, ok := v.(int64); ok && accountID > 0 {
-				fields = append(fields, zap.Int64("account_id", accountID))
-			}
-		}
-		if c.Writer != nil {
-			if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("x-request-id")); upstreamRequestID != "" {
-				fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
-			} else if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("X-Request-Id")); upstreamRequestID != "" {
-				fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
-			}
-		}
-	}
+	fields = appendOpenAIRemoteCompactLogFields(fields, c)
 
 	log := logger.FromContext(ctx).With(fields...)
 	if outcome == "succeeded" {
-		log.Info("codex.remote_compact.succeeded")
 		return
 	}
 	log.Warn("codex.remote_compact.failed")
+}
+
+func appendOpenAIRemoteCompactLogFields(fields []zap.Field, c *gin.Context) []zap.Field {
+	if c == nil {
+		return fields
+	}
+	if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); userAgent != "" {
+		fields = append(fields, zap.String("request_user_agent", userAgent))
+	}
+	if v, ok := c.Get(opsModelKey); ok {
+		if model, ok := v.(string); ok && strings.TrimSpace(model) != "" {
+			fields = append(fields, zap.String("request_model", strings.TrimSpace(model)))
+		}
+	}
+	if v, ok := c.Get(opsAccountIDKey); ok {
+		if accountID, ok := v.(int64); ok && accountID > 0 {
+			fields = append(fields, zap.Int64("account_id", accountID))
+		}
+	}
+	if v, ok := c.Get(opsStreamKey); ok {
+		if stream, ok := v.(bool); ok {
+			fields = append(fields, zap.Bool("request_stream", stream))
+		}
+	}
+	if v, ok := c.Get(opsRequestBodyKey); ok {
+		switch raw := v.(type) {
+		case []byte:
+			fields = appendOpenAIRemoteCompactRequestBodyFields(fields, raw)
+		case string:
+			fields = appendOpenAIRemoteCompactRequestBodyFields(fields, []byte(raw))
+		}
+	}
+	if v, ok := c.Get("openai_passthrough"); ok {
+		if passthrough, ok := v.(bool); ok {
+			fields = append(fields, zap.Bool("passthrough", passthrough))
+		}
+	}
+	if msg, ok := c.Get(service.OpsUpstreamErrorMessageKey); ok {
+		if message, ok := msg.(string); ok && strings.TrimSpace(message) != "" {
+			fields = append(fields, zap.String("upstream_error_message", strings.TrimSpace(message)))
+		}
+	}
+	if detail, ok := c.Get(service.OpsUpstreamErrorDetailKey); ok {
+		if message, ok := detail.(string); ok && strings.TrimSpace(message) != "" {
+			fields = append(fields, zap.String("upstream_error_detail", strings.TrimSpace(message)))
+		}
+	}
+	if raw, ok := c.Get(service.OpsUpstreamErrorsKey); ok {
+		if events, ok := raw.([]*service.OpsUpstreamErrorEvent); ok {
+			fields = append(fields, zap.Int("upstream_error_count", len(events)))
+			if len(events) > 0 {
+				fields = append(fields, zap.Any("upstream_errors", events))
+			}
+		}
+	}
+	if c.Writer != nil {
+		if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("x-request-id")); upstreamRequestID != "" {
+			fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
+		} else if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("X-Request-Id")); upstreamRequestID != "" {
+			fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
+		}
+		if contentType := strings.TrimSpace(c.Writer.Header().Get("Content-Type")); contentType != "" {
+			fields = append(fields, zap.String("response_content_type", contentType))
+		}
+		if contentLength := strings.TrimSpace(c.Writer.Header().Get("Content-Length")); contentLength != "" {
+			fields = append(fields, zap.String("response_content_length", contentLength))
+		}
+		if capture, ok := c.Writer.(*opsCaptureWriter); ok && capture != nil && capture.buf.Len() > 0 {
+			fields = append(fields,
+				zap.Int("response_body_bytes", capture.buf.Len()),
+				zap.String("response_body_preview", compactLogPreview(capture.buf.Bytes(), 4096)),
+			)
+		}
+	}
+	return fields
+}
+
+func appendOpenAIRemoteCompactRequestBodyFields(fields []zap.Field, raw []byte) []zap.Field {
+	if len(raw) == 0 {
+		return fields
+	}
+	fields = append(fields,
+		zap.Int("request_body_bytes", len(raw)),
+		zap.String("request_body_preview", compactLogPreview(raw, 4096)),
+	)
+	if !gjson.ValidBytes(raw) {
+		return fields
+	}
+	if input := gjson.GetBytes(raw, "input"); input.Exists() && input.IsArray() {
+		fields = append(fields, zap.Int("request_input_items", len(input.Array())))
+	}
+	if instructions := strings.TrimSpace(gjson.GetBytes(raw, "instructions").String()); instructions != "" {
+		fields = append(fields, zap.Int("request_instructions_bytes", len(instructions)))
+	}
+	if promptCacheKey := strings.TrimSpace(gjson.GetBytes(raw, "prompt_cache_key").String()); promptCacheKey != "" {
+		fields = append(fields, zap.String("prompt_cache_key", truncateString(promptCacheKey, 256)))
+	}
+	if previousResponseID := strings.TrimSpace(gjson.GetBytes(raw, "previous_response_id").String()); previousResponseID != "" {
+		fields = append(fields, zap.String("previous_response_id", truncateString(previousResponseID, 256)))
+	}
+	if store := gjson.GetBytes(raw, "store"); store.Exists() {
+		fields = append(fields, zap.String("request_store", truncateString(strings.TrimSpace(store.Raw), 64)))
+	}
+	return fields
+}
+
+func compactLogPreview(raw []byte, max int) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	preview := truncateString(string(raw), max)
+	preview = strings.ReplaceAll(preview, "\n", "\\n")
+	preview = strings.ReplaceAll(preview, "\r", "\\r")
+	return preview
 }
 
 // Messages handles Anthropic Messages API requests routed to OpenAI platform.

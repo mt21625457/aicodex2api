@@ -565,13 +565,14 @@ const load = async () => {
   hasPendingListSync.value = false
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
+  const tableParams = params as Record<string, any>
   if (isFirstLoad.value) {
-    ;(params as any).lite = '1'
+    tableParams.lite = '1'
   }
   await baseLoad()
   if (isFirstLoad.value) {
     isFirstLoad.value = false
-    delete (params as any).lite
+    delete tableParams.lite
   }
   await refreshTodayStatsBatch()
 }

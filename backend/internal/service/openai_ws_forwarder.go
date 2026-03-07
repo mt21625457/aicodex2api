@@ -108,6 +108,15 @@ type openAIWSIngressTurnError struct {
 	wroteDownstream bool
 }
 
+// openAIWSUpstreamStatusError 为 WS 错误附加上游 HTTP 状态信息，
+// 供统一副作用处理链路（如账号限流/不可调度）复用。
+type openAIWSUpstreamStatusError struct {
+	statusCode   int
+	headers      http.Header
+	responseBody []byte
+	err          error
+}
+
 func (e *openAIWSIngressTurnError) Error() string {
 	if e == nil {
 		return ""
@@ -123,6 +132,42 @@ func (e *openAIWSIngressTurnError) Unwrap() error {
 		return nil
 	}
 	return e.cause
+}
+
+func (e *openAIWSUpstreamStatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.err != nil {
+		return e.err.Error()
+	}
+	if e.statusCode > 0 {
+		return fmt.Sprintf("openai ws upstream status: %d", e.statusCode)
+	}
+	return "openai ws upstream status error"
+}
+
+func (e *openAIWSUpstreamStatusError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func wrapOpenAIWSUpstreamStatusError(statusCode int, headers http.Header, responseBody []byte, err error) error {
+	if statusCode <= 0 {
+		return err
+	}
+	if err == nil {
+		err = fmt.Errorf("openai ws upstream status: %d", statusCode)
+	}
+	body := append([]byte(nil), responseBody...)
+	return &openAIWSUpstreamStatusError{
+		statusCode:   statusCode,
+		headers:      cloneHeader(headers),
+		responseBody: body,
+		err:          err,
+	}
 }
 
 func wrapOpenAIWSIngressTurnError(stage string, cause error, wroteDownstream bool) error {
@@ -1082,7 +1127,7 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
 			if err != nil {
 				return "", err
 			}
-			targetURL = buildOpenAIResponsesURL(validatedURL)
+			targetURL = buildOpenAIResponsesURL(validatedURL, openAIResponsesEndpoint)
 		}
 	default:
 		targetURL = openaiPlatformAPIURL
@@ -2185,6 +2230,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
+			s.handleOpenAIWSUpstreamStatusSideEffectsWithStatus(ctx, account, statusCode, nil, message)
 			setOpsUpstreamError(c, statusCode, errMsg, "")
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
@@ -2321,7 +2367,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	token string,
 	firstClientMessage []byte,
 	hooks *OpenAIWSIngressHooks,
-) error {
+) (err error) {
+	defer func() {
+		s.handleOpenAIWSUpstreamStatusSideEffects(ctx, account, err)
+	}()
 	if s == nil {
 		return errors.New("service is nil")
 	}
@@ -3932,13 +3981,13 @@ func openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw string) int {
 		strings.Contains(code, "insufficient_quota"):
 		return http.StatusTooManyRequests
 	default:
-		return http.StatusBadGateway
+		return http.StatusServiceUnavailable
 	}
 }
 
 func openAIWSErrorHTTPStatus(message []byte) int {
 	if len(message) == 0 {
-		return http.StatusBadGateway
+		return http.StatusServiceUnavailable
 	}
 	codeRaw, errTypeRaw, _ := parseOpenAIWSErrorEventFields(message)
 	return openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw)

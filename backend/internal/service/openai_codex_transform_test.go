@@ -79,24 +79,28 @@ func TestApplyCodexOAuthTransform_ExplicitStoreTrueForcedFalse(t *testing.T) {
 	require.False(t, store)
 }
 
-func TestApplyCodexOAuthTransform_CompactForcesNonStreaming(t *testing.T) {
+func TestApplyCodexOAuthTransform_CompactRemovesStoreAndForcesNonStream(t *testing.T) {
 	reqBody := map[string]any{
-		"model":  "gpt-5.1-codex",
+		"model":  "gpt-5.4",
 		"store":  true,
 		"stream": true,
+		"input": []any{
+			map[string]any{"type": "text", "text": "hi"},
+		},
 	}
 
-	result := applyCodexOAuthTransform(reqBody, true, true)
+	applyCodexOAuthTransform(reqBody, true, true)
 
 	_, hasStore := reqBody["store"]
 	require.False(t, hasStore)
-	_, hasStream := reqBody["stream"]
-	require.False(t, hasStream)
-	require.True(t, result.Modified)
+
+	stream, ok := reqBody["stream"].(bool)
+	require.True(t, ok)
+	require.False(t, stream)
 }
 
-func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsIDs(t *testing.T) {
-	// 非续链场景：未设置 store 时默认 false，并移除 input 中的 id。
+func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndPreservesIDs(t *testing.T) {
+	// 非续链场景：未设置 store 时默认 false，并保留 canonical input 中的 id。
 
 	reqBody := map[string]any{
 		"model": "gpt-5.1",
@@ -114,27 +118,28 @@ func TestApplyCodexOAuthTransform_NonContinuationDefaultsStoreFalseAndStripsIDs(
 	input, ok := reqBody["input"].([]any)
 	require.True(t, ok)
 	require.Len(t, input, 1)
-	// 校验 input[0] 为 map，避免类型不匹配触发 errcheck。
 	item, ok := input[0].(map[string]any)
 	require.True(t, ok)
-	_, hasID := item["id"]
-	require.False(t, hasID)
+	require.Equal(t, "t1", item["id"])
 }
 
-func TestFilterCodexInput_RemovesItemReferenceWhenNotPreserved(t *testing.T) {
+func TestFilterCodexInput_PreservesCanonicalItems(t *testing.T) {
 	input := []any{
 		map[string]any{"type": "item_reference", "id": "ref1"},
 		map[string]any{"type": "text", "id": "t1", "text": "hi"},
 	}
 
 	filtered := filterCodexInput(input, false)
-	require.Len(t, filtered, 1)
-	// 校验 filtered[0] 为 map，确保字段检查可靠。
-	item, ok := filtered[0].(map[string]any)
+	require.Len(t, filtered, 2)
+	first, ok := filtered[0].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "text", item["type"])
-	_, hasID := item["id"]
-	require.False(t, hasID)
+	require.Equal(t, "item_reference", first["type"])
+	require.Equal(t, "ref1", first["id"])
+
+	second, ok := filtered[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "text", second["type"])
+	require.Equal(t, "t1", second["id"])
 }
 
 func TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunctionTools(t *testing.T) {

@@ -25,7 +25,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
@@ -35,14 +34,18 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.104.0"
+	openaiPlatformAPIURL    = "https://api.openai.com/v1/responses"
+	openAIResponsesEndpoint = "responses"
+	openAICompactEndpoint   = "responses/compact"
+	openaiStickySessionTTL  = time.Hour // 粘性会话TTL
+	codexCLIUserAgent       = "codex_cli_rs/0.104.0"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
 	// OpenAIParsedRequestBodyKey 缓存 handler 侧已解析的请求体，避免重复解析。
 	OpenAIParsedRequestBodyKey = "openai_parsed_request_body"
+	// OpenAIRequestMetaKey 缓存 handler 已提取的请求元数据，供 Service 层复用。
+	OpenAIRequestMetaKey = "openai_request_meta"
 	// OpenAI WS Mode 失败后的重连次数上限（不含首次尝试）。
 	// 与 Codex 客户端保持一致：失败后最多重连 5 次。
 	openAIWSReconnectRetryLimit = 5
@@ -50,8 +53,6 @@ const (
 	openAIWSRetryBackoffInitialDefault = 120 * time.Millisecond
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
-	openAICompactSessionSeedKey        = "openai_compact_session_seed"
-	codexCLIVersion                    = "0.104.0"
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -497,6 +498,10 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 		if statusCode == 0 {
 			statusCode = http.StatusTooManyRequests
 		}
+	case "upstream_5xx", "upstream_error_event":
+		if statusCode == 0 {
+			statusCode = http.StatusServiceUnavailable
+		}
 	default:
 		if statusCode == 0 {
 			return 0, "", "", "", false
@@ -540,12 +545,12 @@ func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context
 	if !ok {
 		return false
 	}
-	if strings.TrimSpace(clientMessage) == "" {
-		clientMessage = "Upstream request failed"
+
+	var reqCtx context.Context
+	if c.Request != nil {
+		reqCtx = c.Request.Context()
 	}
-	if strings.TrimSpace(upstreamMessage) == "" {
-		upstreamMessage = clientMessage
-	}
+	s.handleOpenAIWSUpstreamStatusSideEffects(reqCtx, account, wsErr)
 
 	setOpsUpstreamError(c, statusCode, upstreamMessage, "")
 	if account != nil {
@@ -565,6 +570,79 @@ func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context
 		},
 	})
 	return true
+}
+
+func resolveOpenAIWSUpstreamStatusSideEffectInput(wsErr error) (statusCode int, headers http.Header, responseBody []byte, ok bool) {
+	if wsErr == nil {
+		return 0, nil, nil, false
+	}
+
+	var upstreamStatusErr *openAIWSUpstreamStatusError
+	if errors.As(wsErr, &upstreamStatusErr) && upstreamStatusErr != nil && upstreamStatusErr.statusCode > 0 {
+		statusCode = upstreamStatusErr.statusCode
+		headers = cloneHeader(upstreamStatusErr.headers)
+		responseBody = append([]byte(nil), upstreamStatusErr.responseBody...)
+		return statusCode, headers, responseBody, true
+	}
+
+	var dialErr *openAIWSDialError
+	if errors.As(wsErr, &dialErr) && dialErr != nil && dialErr.StatusCode > 0 {
+		statusCode = dialErr.StatusCode
+		headers = cloneHeader(dialErr.ResponseHeaders)
+		if dialErr.Err != nil {
+			responseBody = []byte(strings.TrimSpace(dialErr.Err.Error()))
+		}
+		return statusCode, headers, responseBody, true
+	}
+
+	var fallbackErr *openAIWSFallbackError
+	if !errors.As(wsErr, &fallbackErr) || fallbackErr == nil {
+		return 0, nil, nil, false
+	}
+	reason := strings.TrimSpace(strings.TrimPrefix(fallbackErr.Reason, "prewarm_"))
+	switch reason {
+	case "upstream_rate_limited":
+		statusCode = http.StatusTooManyRequests
+	case "upstream_5xx", "upstream_error_event":
+		statusCode = http.StatusServiceUnavailable
+	default:
+		return 0, nil, nil, false
+	}
+	if fallbackErr.Err != nil {
+		responseBody = []byte(strings.TrimSpace(fallbackErr.Err.Error()))
+	}
+	return statusCode, nil, responseBody, true
+}
+
+func (s *OpenAIGatewayService) handleOpenAIWSUpstreamStatusSideEffectsWithStatus(
+	ctx context.Context,
+	account *Account,
+	statusCode int,
+	headers http.Header,
+	responseBody []byte,
+) {
+	if s == nil || s.rateLimitService == nil || account == nil {
+		return
+	}
+	if statusCode <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, responseBody)
+}
+
+func (s *OpenAIGatewayService) handleOpenAIWSUpstreamStatusSideEffects(ctx context.Context, account *Account, wsErr error) {
+	if s == nil || s.rateLimitService == nil || account == nil || wsErr == nil {
+		return
+	}
+
+	statusCode, headers, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(wsErr)
+	if !ok {
+		return
+	}
+	s.handleOpenAIWSUpstreamStatusSideEffectsWithStatus(ctx, account, statusCode, headers, responseBody)
 }
 
 func (s *OpenAIGatewayService) openAIWSRetryBackoff(attempt int) time.Duration {
@@ -638,6 +716,16 @@ func (s *OpenAIGatewayService) openAIWSRetryTotalBudget() time.Duration {
 		return time.Duration(ms) * time.Millisecond
 	}
 	return 0
+}
+
+func openAIWSRetryContextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return wrapOpenAIWSFallback("retry_context_canceled", err)
+	}
+	return nil
 }
 
 func (s *OpenAIGatewayService) recordOpenAIWSRetryAttempt(backoff time.Duration) {
@@ -1477,8 +1565,19 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 	}
 }
 
-func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+func (s *OpenAIGatewayService) handleFailoverSideEffects(
+	ctx context.Context,
+	resp *http.Response,
+	account *Account,
+	respBody []byte,
+) {
+	if s == nil || s.rateLimitService == nil || resp == nil || account == nil {
+		return
+	}
+	body := respBody
+	if len(body) == 0 && resp.Body != nil {
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	}
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 }
 
@@ -1500,7 +1599,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	originalBody := body
-	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
+	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMeta(c, body)
 	originalModel := reqModel
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
@@ -1651,7 +1750,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	if account.Type == AccountTypeOAuth {
-		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPath(c))
+		isCompactEndpoint := resolveOpenAIResponsesEndpoint(c) == openAICompactEndpoint
+		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isCompactEndpoint)
 		if codexResult.Modified {
 			bodyModified = true
 			disablePatch()
@@ -1661,6 +1761,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		if codexResult.PromptCacheKey != "" {
 			promptCacheKey = codexResult.PromptCacheKey
+		}
+		if v, ok := reqBody["stream"].(bool); ok {
+			reqStream = v
+		}
+		if isCompactEndpoint {
+			reqStream = false
 		}
 	}
 
@@ -2001,7 +2107,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				Detail:             upstreamDetail,
 			})
 
-			s.handleFailoverSideEffects(ctx, resp, account)
+			s.handleFailoverSideEffects(ctx, resp, account, respBody)
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, body)
@@ -2083,14 +2189,20 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
 		}
 
-		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, isOpenAIResponsesCompactPath(c))
+		isCompactEndpoint := resolveOpenAIResponsesEndpoint(c) == openAICompactEndpoint
+		forceStream := !isCompactEndpoint
+		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, forceStream, isCompactEndpoint)
 		if err != nil {
 			return nil, err
 		}
 		if normalized {
 			body = normalizedBody
 		}
-		reqStream = gjson.GetBytes(body, "stream").Bool()
+		if isCompactEndpoint {
+			reqStream = false
+		} else if forceStream {
+			reqStream = true
+		}
 	}
 
 	logger.LegacyPrintf("service.openai_gateway",
@@ -2122,7 +2234,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(ctx, c, account, body, token)
+	upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(ctx, c, account, body, token, reqStream)
 	if err != nil {
 		return nil, err
 	}
@@ -2177,7 +2289,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		usage = result.usage
 		firstTokenMs = result.firstTokenMs
 	} else {
-		usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c)
+		usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel)
 		if err != nil {
 			return nil, err
 		}
@@ -2240,11 +2352,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	account *Account,
 	body []byte,
 	token string,
+	isStream bool,
 ) (*http.Request, error) {
-	targetURL := openaiPlatformAPIURL
+	endpoint := resolveOpenAIResponsesEndpoint(c)
+	targetURL := buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
 	switch account.Type {
 	case AccountTypeOAuth:
-		targetURL = chatgptCodexURL
+		targetURL = buildOpenAIResponsesURL(chatgptCodexURL, endpoint)
 	case AccountTypeAPIKey:
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL != "" {
@@ -2252,10 +2366,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			if err != nil {
 				return nil, err
 			}
-			targetURL = buildOpenAIResponsesURL(validatedURL)
+			targetURL = buildOpenAIResponsesURL(validatedURL, endpoint)
 		}
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -2289,17 +2402,6 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		if isOpenAIResponsesCompactPath(c) {
-			req.Header.Set("accept", "application/json")
-			if req.Header.Get("version") == "" {
-				req.Header.Set("version", codexCLIVersion)
-			}
-			if req.Header.Get("session_id") == "" {
-				req.Header.Set("session_id", resolveOpenAICompactSessionID(c))
-			}
-		} else if req.Header.Get("accept") == "" {
-			req.Header.Set("accept", "text/event-stream")
-		}
 		if req.Header.Get("OpenAI-Beta") == "" {
 			req.Header.Set("OpenAI-Beta", "responses=experimental")
 		}
@@ -2314,6 +2416,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 				req.Header.Set("session_id", promptCacheKey)
 			}
 		}
+	}
+	if isStream {
+		req.Header.Set("accept", "text/event-stream")
+	} else {
+		req.Header.Set("accept", "application/json")
 	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
@@ -2535,6 +2642,8 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
+	originalModel string,
 ) (*OpenAIUsage, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
@@ -2549,6 +2658,19 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 			})
 		}
 		return nil, err
+	}
+
+	if account != nil && account.Type == AccountTypeOAuth {
+		bodyLooksLikeSSE := bytes.Contains(body, []byte("data:")) || bytes.Contains(body, []byte("event:"))
+		if isEventStreamResponse(resp.Header) || bodyLooksLikeSSE {
+			return s.handleOAuthSSEToJSON(resp, c, body, originalModel, originalModel)
+		}
+	}
+
+	if resolveOpenAIResponsesEndpoint(c) == openAICompactEndpoint {
+		if msg := validateCompactPassthroughResponseBody(body); msg != "" {
+			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
+		}
 	}
 
 	usage := &OpenAIUsage{}
@@ -2572,6 +2694,20 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil
+}
+
+func validateCompactPassthroughResponseBody(body []byte) string {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return "Upstream returned empty compact response"
+	}
+	if !gjson.ValidBytes(body) {
+		return "Upstream returned invalid compact response JSON"
+	}
+	output := gjson.GetBytes(body, "output")
+	if !output.Exists() || !output.IsArray() {
+		return "Upstream returned invalid compact response shape"
+	}
+	return ""
 }
 
 func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, filter *responseheaders.CompiledHeaderFilter) {
@@ -2623,28 +2759,28 @@ func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, fil
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	endpoint := resolveOpenAIResponsesEndpoint(c)
 	// Determine target URL based on account type
 	var targetURL string
 	switch account.Type {
 	case AccountTypeOAuth:
 		// OAuth accounts use ChatGPT internal API
-		targetURL = chatgptCodexURL
+		targetURL = buildOpenAIResponsesURL(chatgptCodexURL, endpoint)
 	case AccountTypeAPIKey:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL == "" {
-			targetURL = openaiPlatformAPIURL
+			targetURL = buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
 		} else {
 			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 			if err != nil {
 				return nil, err
 			}
-			targetURL = buildOpenAIResponsesURL(validatedURL)
+			targetURL = buildOpenAIResponsesURL(validatedURL, endpoint)
 		}
 	default:
-		targetURL = openaiPlatformAPIURL
+		targetURL = buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -2677,16 +2813,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if account.Type == AccountTypeOAuth {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
-		if isOpenAIResponsesCompactPath(c) {
-			req.Header.Set("accept", "application/json")
-			if req.Header.Get("version") == "" {
-				req.Header.Set("version", codexCLIVersion)
-			}
-			if req.Header.Get("session_id") == "" {
-				req.Header.Set("session_id", resolveOpenAICompactSessionID(c))
-			}
-		} else {
+		if isStream {
 			req.Header.Set("accept", "text/event-stream")
+		} else {
+			req.Header.Set("accept", "application/json")
 		}
 		if promptCacheKey != "" {
 			req.Header.Set("conversation_id", promptCacheKey)
@@ -3331,11 +3461,11 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 		}
-		usage = s.parseSSEUsageFromBody(bodyText)
-		if originalModel != mappedModel {
-			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
+		msg := "Upstream returned an incomplete event-stream response"
+		if terminalOK {
+			msg = fmt.Sprintf("Upstream returned unsupported terminal event: %s", terminalType)
 		}
-		body = []byte(bodyText)
+		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -3463,108 +3593,46 @@ func (s *OpenAIGatewayService) validateUpstreamBaseURL(raw string) (string, erro
 	return normalized, nil
 }
 
+func resolveOpenAIResponsesEndpoint(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return openAIResponsesEndpoint
+	}
+	return resolveOpenAIResponsesEndpointFromPath(c.Request.URL.Path)
+}
+
+func resolveOpenAIResponsesEndpointFromPath(path string) string {
+	normalizedPath := strings.TrimRight(strings.TrimSpace(path), "/")
+	if strings.HasSuffix(normalizedPath, "/"+openAICompactEndpoint) {
+		return openAICompactEndpoint
+	}
+	return openAIResponsesEndpoint
+}
+
 // buildOpenAIResponsesURL 组装 OpenAI Responses 端点。
-// - base 以 /v1 结尾：追加 /responses
-// - base 已是 /responses：原样返回
-// - 其他情况：追加 /v1/responses
-func buildOpenAIResponsesURL(base string) string {
+// - endpoint=responses: 兼容已有 /responses 语义
+// - endpoint=responses/compact: 输出 compact 端点
+// - base 以 /v1 结尾：追加 endpoint
+// - 其他情况：追加 /v1/{endpoint}
+func buildOpenAIResponsesURL(base, endpoint string) string {
 	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
-	if strings.HasSuffix(normalized, "/responses") {
+	normalizedEndpoint := strings.Trim(strings.TrimSpace(endpoint), "/")
+	if normalizedEndpoint == "" {
+		normalizedEndpoint = openAIResponsesEndpoint
+	}
+	endpointSuffix := "/" + normalizedEndpoint
+	if strings.HasSuffix(normalized, endpointSuffix) {
 		return normalized
 	}
+	if normalizedEndpoint == openAICompactEndpoint && strings.HasSuffix(normalized, "/"+openAIResponsesEndpoint) {
+		return normalized + "/compact"
+	}
+	if normalizedEndpoint == openAIResponsesEndpoint && strings.HasSuffix(normalized, "/"+openAICompactEndpoint) {
+		return strings.TrimSuffix(normalized, "/compact")
+	}
 	if strings.HasSuffix(normalized, "/v1") {
-		return normalized + "/responses"
+		return normalized + endpointSuffix
 	}
-	return normalized + "/v1/responses"
-}
-
-func IsOpenAIResponsesCompactPathForTest(c *gin.Context) bool {
-	return isOpenAIResponsesCompactPath(c)
-}
-
-func OpenAICompactSessionSeedKeyForTest() string {
-	return openAICompactSessionSeedKey
-}
-
-func NormalizeOpenAICompactRequestBodyForTest(body []byte) ([]byte, bool, error) {
-	return normalizeOpenAICompactRequestBody(body)
-}
-
-func isOpenAIResponsesCompactPath(c *gin.Context) bool {
-	suffix := strings.TrimSpace(openAIResponsesRequestPathSuffix(c))
-	return suffix == "/compact" || strings.HasPrefix(suffix, "/compact/")
-}
-
-func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
-	if len(body) == 0 {
-		return body, false, nil
-	}
-
-	normalized := []byte(`{}`)
-	for _, field := range []string{"model", "input", "instructions", "previous_response_id"} {
-		value := gjson.GetBytes(body, field)
-		if !value.Exists() {
-			continue
-		}
-		next, err := sjson.SetRawBytes(normalized, field, []byte(value.Raw))
-		if err != nil {
-			return body, false, fmt.Errorf("normalize compact body %s: %w", field, err)
-		}
-		normalized = next
-	}
-
-	if bytes.Equal(bytes.TrimSpace(body), bytes.TrimSpace(normalized)) {
-		return body, false, nil
-	}
-	return normalized, true, nil
-}
-
-func resolveOpenAICompactSessionID(c *gin.Context) string {
-	if c != nil {
-		if sessionID := strings.TrimSpace(c.GetHeader("session_id")); sessionID != "" {
-			return sessionID
-		}
-		if conversationID := strings.TrimSpace(c.GetHeader("conversation_id")); conversationID != "" {
-			return conversationID
-		}
-		if seed, ok := c.Get(openAICompactSessionSeedKey); ok {
-			if seedStr, ok := seed.(string); ok && strings.TrimSpace(seedStr) != "" {
-				return strings.TrimSpace(seedStr)
-			}
-		}
-	}
-	return uuid.NewString()
-}
-
-func openAIResponsesRequestPathSuffix(c *gin.Context) string {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
-		return ""
-	}
-	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
-	if normalizedPath == "" {
-		return ""
-	}
-	idx := strings.LastIndex(normalizedPath, "/responses")
-	if idx < 0 {
-		return ""
-	}
-	suffix := normalizedPath[idx+len("/responses"):]
-	if suffix == "" || suffix == "/" {
-		return ""
-	}
-	if !strings.HasPrefix(suffix, "/") {
-		return ""
-	}
-	return suffix
-}
-
-func appendOpenAIResponsesRequestPathSuffix(baseURL, suffix string) string {
-	trimmedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	trimmedSuffix := strings.TrimSpace(suffix)
-	if trimmedBase == "" || trimmedSuffix == "" {
-		return trimmedBase
-	}
-	return trimmedBase + trimmedSuffix
+	return normalized + "/v1" + endpointSuffix
 }
 
 func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel, toModel string) []byte {
@@ -3948,6 +4016,24 @@ func deriveOpenAIReasoningEffortFromModel(model string) string {
 	return normalizeOpenAIReasoningEffort(parts[len(parts)-1])
 }
 
+// OpenAIRequestMeta 缓存已提取的请求元数据，避免重复解析。
+type OpenAIRequestMeta struct {
+	Model          string
+	Stream         bool
+	PromptCacheKey string
+}
+
+func extractOpenAIRequestMeta(c *gin.Context, body []byte) (model string, stream bool, promptCacheKey string) {
+	if c != nil {
+		if cached, ok := c.Get(OpenAIRequestMetaKey); ok {
+			if meta, ok := cached.(*OpenAIRequestMeta); ok && meta != nil {
+				return meta.Model, meta.Stream, meta.PromptCacheKey
+			}
+		}
+	}
+	return extractOpenAIRequestMetaFromBody(body)
+}
+
 func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, promptCacheKey string) {
 	if len(body) == 0 {
 		return "", false, ""
@@ -3959,9 +4045,12 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 	return model, stream, promptCacheKey
 }
 
-// normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
-// 1) store=false 2) 非 compact 保持 stream=true；compact 强制 stream=false
-func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
+// normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛到兼容行为：
+// 1) /responses 保持历史语义：store=false
+// 2) /responses/compact 删除 store，避免上游返回 unknown_parameter
+// 3) forceStream=true 时强制 stream=true（/responses）
+// 4) forceStream=false 时对 /responses/compact 强制 stream=false，避免返回 SSE
+func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool, stripStore bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
@@ -3969,19 +4058,11 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 	normalized := body
 	changed := false
 
-	if compact {
+	if stripStore {
 		if store := gjson.GetBytes(normalized, "store"); store.Exists() {
 			next, err := sjson.DeleteBytes(normalized, "store")
 			if err != nil {
-				return body, false, fmt.Errorf("normalize passthrough body delete store: %w", err)
-			}
-			normalized = next
-			changed = true
-		}
-		if stream := gjson.GetBytes(normalized, "stream"); stream.Exists() {
-			next, err := sjson.DeleteBytes(normalized, "stream")
-			if err != nil {
-				return body, false, fmt.Errorf("normalize passthrough body delete stream: %w", err)
+				return body, false, fmt.Errorf("normalize passthrough body remove store: %w", err)
 			}
 			normalized = next
 			changed = true
@@ -4003,6 +4084,24 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 			normalized = next
 			changed = true
 		}
+	}
+
+	if forceStream {
+		if stream := gjson.GetBytes(normalized, "stream"); !stream.Exists() || stream.Type != gjson.True {
+			next, err := sjson.SetBytes(normalized, "stream", true)
+			if err != nil {
+				return body, false, fmt.Errorf("normalize passthrough body stream=true: %w", err)
+			}
+			normalized = next
+			changed = true
+		}
+	} else if stream := gjson.GetBytes(normalized, "stream"); stream.Exists() && stream.Type != gjson.False {
+		next, err := sjson.SetBytes(normalized, "stream", false)
+		if err != nil {
+			return body, false, fmt.Errorf("normalize passthrough body stream=false: %w", err)
+		}
+		normalized = next
+		changed = true
 	}
 
 	return normalized, changed, nil

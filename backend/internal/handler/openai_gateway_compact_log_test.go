@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -108,7 +109,7 @@ func TestIsOpenAIRemoteCompactPath(t *testing.T) {
 	require.False(t, isOpenAIRemoteCompactPath(c))
 }
 
-func TestLogOpenAIRemoteCompactOutcome_Succeeded(t *testing.T) {
+func TestLogOpenAIRemoteCompactOutcome_SucceededDoesNotLog(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logSink, restore := captureHandlerStructuredLog(t)
 	defer restore()
@@ -119,19 +120,18 @@ func TestLogOpenAIRemoteCompactOutcome_Succeeded(t *testing.T) {
 	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.104.0")
 	c.Set(opsModelKey, "gpt-5.3-codex")
 	c.Set(opsAccountIDKey, int64(123))
+	c.Set(opsStreamKey, false)
+	c.Set(opsRequestBodyKey, []byte(`{"model":"gpt-5.3-codex","instructions":"compact now","input":[{"type":"text","text":"hi"}]}`))
+	c.Set("openai_passthrough", true)
 	c.Header("x-request-id", "rid-compact-ok")
+	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Status(http.StatusOK)
 
 	h := &OpenAIGatewayHandler{}
 	h.logOpenAIRemoteCompactOutcome(c, time.Now().Add(-8*time.Millisecond))
 
-	require.True(t, logSink.ContainsMessageAtLevel("codex.remote_compact.succeeded", "info"))
-	require.True(t, logSink.ContainsFieldValue("compact_outcome", "succeeded"))
-	require.True(t, logSink.ContainsFieldValue("status_code", "200"))
-	require.True(t, logSink.ContainsFieldValue("path", "/v1/responses/compact"))
-	require.True(t, logSink.ContainsFieldValue("request_model", "gpt-5.3-codex"))
-	require.True(t, logSink.ContainsFieldValue("account_id", "123"))
-	require.True(t, logSink.ContainsFieldValue("upstream_request_id", "rid-compact-ok"))
+	require.False(t, logSink.ContainsMessageAtLevel("codex.remote_compact.succeeded", "warn"))
+	require.False(t, logSink.ContainsMessageAtLevel("codex.remote_compact.failed", "warn"))
 }
 
 func TestLogOpenAIRemoteCompactOutcome_Failed(t *testing.T) {
@@ -143,7 +143,18 @@ func TestLogOpenAIRemoteCompactOutcome_Failed(t *testing.T) {
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/responses/compact", nil)
 	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.104.0")
+	c.Set(opsStreamKey, false)
+	c.Set(opsRequestBodyKey, []byte(`{"model":"gpt-5.3-codex","input":[{"type":"text","text":"hi"}]}`))
+	c.Set("openai_passthrough", true)
+	c.Set(service.OpsUpstreamErrorMessageKey, "Upstream returned invalid compact response JSON")
+	c.Set(service.OpsUpstreamErrorDetailKey, "not-json")
+	c.Set(service.OpsUpstreamErrorsKey, []*service.OpsUpstreamErrorEvent{{Kind: "http_error", Message: "Upstream returned invalid compact response JSON", Detail: "not-json", Passthrough: true, UpstreamStatusCode: 200}})
+	w := acquireOpsCaptureWriter(c.Writer)
+	defer releaseOpsCaptureWriter(w)
+	c.Writer = w
+	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Status(http.StatusBadGateway)
+	_, _ = c.Writer.Write([]byte(`{"error":{"type":"upstream_error","message":"Upstream returned invalid compact response JSON"}}`))
 
 	h := &OpenAIGatewayHandler{}
 	h.logOpenAIRemoteCompactOutcome(c, time.Now())
@@ -152,6 +163,12 @@ func TestLogOpenAIRemoteCompactOutcome_Failed(t *testing.T) {
 	require.True(t, logSink.ContainsFieldValue("compact_outcome", "failed"))
 	require.True(t, logSink.ContainsFieldValue("status_code", "502"))
 	require.True(t, logSink.ContainsFieldValue("path", "/responses/compact"))
+	require.True(t, logSink.ContainsFieldValue("request_stream", "false"))
+	require.True(t, logSink.ContainsFieldValue("passthrough", "true"))
+	require.True(t, logSink.ContainsFieldValue("upstream_error_message", "invalid compact response JSON"))
+	require.True(t, logSink.ContainsFieldValue("upstream_error_detail", "not-json"))
+	require.True(t, logSink.ContainsFieldValue("upstream_error_count", "1"))
+	require.True(t, logSink.ContainsFieldValue("response_body_preview", `"type":"upstream_error"`))
 }
 
 func TestLogOpenAIRemoteCompactOutcome_NonCompactSkips(t *testing.T) {
