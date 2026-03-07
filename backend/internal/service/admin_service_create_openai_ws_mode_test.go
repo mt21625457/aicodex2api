@@ -33,7 +33,7 @@ func TestAdminService_CreateAccount_RejectsInvalidOpenAIWSMode(t *testing.T) {
 		Platform:             PlatformOpenAI,
 		Type:                 AccountTypeAPIKey,
 		Credentials:          map[string]any{"api_key": "sk-test"},
-		Extra:                map[string]any{"openai_apikey_responses_websockets_v2_mode": "shared"},
+		Extra:                map[string]any{"openai_apikey_responses_websockets_v2_mode": "invalid-mode"},
 		SkipDefaultGroupBind: true,
 	})
 	require.Nil(t, account)

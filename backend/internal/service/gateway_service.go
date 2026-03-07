@@ -4660,6 +4660,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if req.Header.Get("anthropic-version") == "" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
+	s.normalizeAnthropicBetaForAPIKey(req, body)
 
 	return req, nil
 }
@@ -5178,14 +5179,52 @@ func defaultAPIKeyBetaHeader(body []byte) string {
 	return claude.APIKeyBetaHeader
 }
 
+func requestThinkingEnabled(body []byte) bool {
+	thinkingType := gjson.GetBytes(body, "thinking.type").String()
+	return strings.EqualFold(thinkingType, "enabled") || strings.EqualFold(thinkingType, "adaptive")
+}
+
+func requestStreamEnabled(body []byte) bool {
+	stream := gjson.GetBytes(body, "stream")
+	return stream.Exists() && stream.Bool()
+}
+
+func requestHasTools(body []byte) bool {
+	tools := gjson.GetBytes(body, "tools")
+	return tools.Exists() && tools.IsArray() && len(tools.Array()) > 0
+}
+
+func defaultAPIKeyBetaTokens(body []byte, countTokens bool) []string {
+	if countTokens {
+		if requestThinkingEnabled(body) {
+			return []string{claude.BetaInterleavedThinking}
+		}
+		return nil
+	}
+
+	if !requestHasTools(body) {
+		return nil
+	}
+
+	tokens := make([]string, 0, 2)
+	if requestThinkingEnabled(body) {
+		tokens = append(tokens, claude.BetaInterleavedThinking)
+	}
+	if requestStreamEnabled(body) {
+		tokens = append(tokens, claude.BetaFineGrainedToolStreaming)
+	}
+	return tokens
+}
+
 func (s *GatewayService) normalizeAnthropicBetaForAPIKey(req *http.Request, body []byte) {
 	if req == nil {
 		return
 	}
 
 	beta := stripBetaTokensWithSet(req.Header.Get("anthropic-beta"), apiKeyDroppedBetasSet)
-	if s != nil && s.cfg != nil && s.cfg.Gateway.InjectBetaForAPIKey && requestNeedsBetaFeatures(body) {
-		beta = mergeAnthropicBetaDropping([]string{defaultAPIKeyBetaHeader(body)}, beta, apiKeyDroppedBetasSet)
+	if s != nil && s.cfg != nil && s.cfg.Gateway.InjectBetaForAPIKey {
+		countTokens := req.URL != nil && strings.Contains(req.URL.Path, "/count_tokens")
+		beta = mergeAnthropicBetaDropping(defaultAPIKeyBetaTokens(body, countTokens), beta, apiKeyDroppedBetasSet)
 	}
 
 	if strings.TrimSpace(beta) == "" {
@@ -5315,6 +5354,7 @@ func buildBetaTokenSet(tokens []string) map[string]struct{} {
 var (
 	defaultDroppedBetasSet        = buildBetaTokenSet(claude.DroppedBetas)
 	droppedBetasWithClaudeCodeSet = droppedBetaSet(claude.BetaClaudeCode)
+	apiKeyDroppedBetasSet         = droppedBetaSet(claude.BetaClaudeCode, claude.BetaOAuth)
 )
 
 // applyClaudeCodeMimicHeaders forces "Claude Code-like" request headers.
@@ -6575,7 +6615,11 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		cost, err = s.billingService.CalculateCost(result.Model, tokens, multiplier)
 		if err != nil {
 			logger.LegacyPrintf("service.gateway", "Calculate cost failed: %v", err)
-			cost = &CostBreakdown{ActualCost: 0}
+			if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+				cost = &CostBreakdown{ActualCost: 0}
+			} else {
+				return fmt.Errorf("calculate cost: %w", err)
+			}
 		}
 	}
 
@@ -6743,7 +6787,11 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 		cost, err = s.billingService.CalculateCostWithLongContext(result.Model, tokens, multiplier, input.LongContextThreshold, input.LongContextMultiplier)
 		if err != nil {
 			logger.LegacyPrintf("service.gateway", "Calculate cost failed: %v", err)
-			cost = &CostBreakdown{ActualCost: 0}
+			if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+				cost = &CostBreakdown{ActualCost: 0}
+			} else {
+				return fmt.Errorf("calculate cost: %w", err)
+			}
 		}
 	}
 

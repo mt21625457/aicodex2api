@@ -1394,6 +1394,12 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
+	if len(input.Extra) > 0 {
+		if err := validateOpenAIWSModeExtraValues(input.Extra); err != nil {
+			return nil, err
+		}
+	}
+
 	// Sora apikey 账号的 base_url 必填校验
 	if input.Platform == PlatformSora && input.Type == AccountTypeAPIKey {
 		baseURL, _ := input.Credentials["base_url"].(string)

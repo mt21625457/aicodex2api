@@ -27,7 +27,7 @@
           <svg class="mr-1.5 inline h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
-          {{ t('admin.accounts.bulkEdit.mixedPlatformWarning', { platforms: selectedPlatforms.join(', ') }) }}
+	          {{ t('admin.accounts.bulkEdit.mixedPlatformWarning', { platforms: resolvedSelectedPlatforms.join(', ') }) }}
         </p>
       </div>
 
@@ -838,8 +838,10 @@ import { buildModelMappingObject as buildModelMappingPayload } from '@/composabl
 interface Props {
   show: boolean
   accountIds: number[]
-  selectedPlatforms: AccountPlatform[]
-  selectedTypes: AccountType[]
+  selectedPlatforms?: AccountPlatform[]
+  selectedTypes?: AccountType[]
+  scopePlatform?: AccountPlatform | ''
+  scopeType?: AccountType | ''
   proxies: ProxyConfig[]
   groups: AdminGroup[]
 }
@@ -853,15 +855,25 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const appStore = useAppStore()
 
+const resolvedSelectedPlatforms = computed(() => {
+  if (props.selectedPlatforms && props.selectedPlatforms.length > 0) return props.selectedPlatforms
+  return props.scopePlatform ? [props.scopePlatform] : []
+})
+
+const resolvedSelectedTypes = computed(() => {
+  if (props.selectedTypes && props.selectedTypes.length > 0) return props.selectedTypes
+  return props.scopeType ? [props.scopeType] : []
+})
+
 // Platform awareness
-const isMixedPlatform = computed(() => props.selectedPlatforms.length > 1)
+const isMixedPlatform = computed(() => resolvedSelectedPlatforms.value.length > 1)
 
 // 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
 const allAnthropicOAuthOrSetupToken = computed(() => {
   return (
-    props.selectedPlatforms.length === 1 &&
-    props.selectedPlatforms[0] === 'anthropic' &&
-    props.selectedTypes.every(t => t === 'oauth' || t === 'setup-token')
+    resolvedSelectedPlatforms.value.length === 1 &&
+    resolvedSelectedPlatforms.value[0] === 'anthropic' &&
+    resolvedSelectedTypes.value.every(t => t === 'oauth' || t === 'setup-token')
   )
 })
 
@@ -874,15 +886,15 @@ const platformModelPrefix: Record<string, string[]> = {
 }
 
 const filteredModels = computed(() => {
-  if (props.selectedPlatforms.length === 0) return allModels
-  const prefixes = [...new Set(props.selectedPlatforms.flatMap(p => platformModelPrefix[p] || []))]
+  if (resolvedSelectedPlatforms.value.length === 0) return allModels
+  const prefixes = [...new Set(resolvedSelectedPlatforms.value.flatMap(p => platformModelPrefix[p] || []))]
   if (prefixes.length === 0) return allModels
   return allModels.filter(m => prefixes.some(prefix => m.value.startsWith(prefix)))
 })
 
 const filteredPresets = computed(() => {
-  if (props.selectedPlatforms.length === 0) return presetMappings
-  const prefixes = [...new Set(props.selectedPlatforms.flatMap(p => platformModelPrefix[p] || []))]
+  if (resolvedSelectedPlatforms.value.length === 0) return presetMappings
+  const prefixes = [...new Set(resolvedSelectedPlatforms.value.flatMap(p => platformModelPrefix[p] || []))]
   if (prefixes.length === 0) return presetMappings
   return presetMappings.filter(m => prefixes.some(prefix => m.from.startsWith(prefix)))
 })
@@ -1340,8 +1352,8 @@ const mixedChannelConfirmed = ref(false)
 const canPreCheck = () =>
   enableGroups.value &&
   groupIds.value.length > 0 &&
-  props.selectedPlatforms.length === 1 &&
-  (props.selectedPlatforms[0] === 'antigravity' || props.selectedPlatforms[0] === 'anthropic')
+  resolvedSelectedPlatforms.value.length === 1 &&
+  (resolvedSelectedPlatforms.value[0] === 'antigravity' || resolvedSelectedPlatforms.value[0] === 'anthropic')
 
 const handleClose = () => {
   showMixedChannelWarning.value = false
@@ -1358,7 +1370,7 @@ const preCheckMixedChannelRisk = async (built: Record<string, unknown>): Promise
 
   try {
     const result = await adminAPI.accounts.checkMixedChannelRisk({
-      platform: props.selectedPlatforms[0],
+      platform: resolvedSelectedPlatforms.value[0],
       group_ids: groupIds.value
     })
     if (!result.has_risk) return true

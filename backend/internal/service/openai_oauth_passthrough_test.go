@@ -250,7 +250,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreami
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-compact"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"cmp_123","usage":{"input_tokens":11,"output_tokens":22}}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"cmp_123","output":[],"usage":{"input_tokens":11,"output_tokens":22}}`)),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 

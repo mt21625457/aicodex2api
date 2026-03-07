@@ -86,6 +86,12 @@ func (s *startupAccountRepoStub) ListSchedulableByPlatforms(_ context.Context, p
 func (s *startupAccountRepoStub) ListSchedulableByGroupIDAndPlatforms(ctx context.Context, groupID int64, platforms []string) ([]Account, error) {
 	return s.ListSchedulableByPlatforms(ctx, platforms)
 }
+func (s *startupAccountRepoStub) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return s.ListSchedulableByPlatform(ctx, platform)
+}
+func (s *startupAccountRepoStub) ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]Account, error) {
+	return s.ListSchedulableByPlatforms(ctx, platforms)
+}
 func (s *startupAccountRepoStub) SetRateLimited(context.Context, int64, time.Time) error { return nil }
 func (s *startupAccountRepoStub) SetModelRateLimit(context.Context, int64, string, time.Time) error {
 	return nil
@@ -106,6 +112,10 @@ func (s *startupAccountRepoStub) UpdateSessionWindow(context.Context, int64, *ti
 func (s *startupAccountRepoStub) UpdateExtra(context.Context, int64, map[string]any) error {
 	return nil
 }
+func (s *startupAccountRepoStub) IncrementQuotaUsed(context.Context, int64, float64) error {
+	return nil
+}
+func (s *startupAccountRepoStub) ResetQuotaUsed(context.Context, int64) error { return nil }
 func (s *startupAccountRepoStub) BulkUpdate(context.Context, []int64, AccountBulkUpdate) (int64, error) {
 	return 0, nil
 }

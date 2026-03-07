@@ -719,10 +719,11 @@ export interface Account {
   quota_limit?: number | null
   quota_used?: number | null
 
-  // 运行时状态（仅当启用对应限制时返回）
-  current_window_cost?: number | null // 当前窗口费用
-  active_sessions?: number | null // 当前活跃会话数
-}
+	  // 运行时状态（仅当启用对应限制时返回）
+	  current_window_cost?: number | null // 当前窗口费用
+	  active_sessions?: number | null // 当前活跃会话数
+	  current_rpm?: number | null
+	}
 
 // Account Usage types
 export interface WindowStats {

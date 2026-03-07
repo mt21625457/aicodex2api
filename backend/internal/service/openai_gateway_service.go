@@ -40,6 +40,7 @@ const (
 	openAICompactEndpoint   = "responses/compact"
 	openaiStickySessionTTL  = time.Hour // 粘性会话TTL
 	codexCLIUserAgent       = "codex_cli_rs/0.104.0"
+	codexCLIVersion         = "0.104.0"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -54,6 +55,7 @@ const (
 	openAIWSRetryBackoffInitialDefault = 120 * time.Millisecond
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
+	openAICompactSessionSeedKey        = "openai_compact_session_seed"
 	openAICodexUsageUpdateConcurrency  = 16
 )
 
@@ -221,9 +223,10 @@ type OpenAIUsage struct {
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
-	RequestID string
-	Usage     OpenAIUsage
-	Model     string
+	RequestID    string
+	Usage        OpenAIUsage
+	Model        string
+	BillingModel string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
 	// Stored for usage records display; nil means not provided / not applicable.
 	ReasoningEffort *string
@@ -239,6 +242,7 @@ type OpenAIForwardResult struct {
 	// PendingFunctionCallIDs 表示该 response 中未完成的 function_call call_id 集合。
 	// 仅在 WS ingress 连续对话场景用于续链自愈，不参与外部 API 返回。
 	PendingFunctionCallIDs []string
+	ResponseHeaders        http.Header
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
@@ -1134,6 +1138,21 @@ func isOpenAIInstructionsRequiredError(upstreamStatusCode int, upstreamMsg strin
 	}
 
 	return false
+}
+
+// ExtractSessionID extracts the raw session ID from headers or body without hashing.
+func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) string {
+	if c == nil {
+		return ""
+	}
+	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
+	}
+	if sessionID == "" && len(body) > 0 {
+		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	}
+	return sessionID
 }
 
 // GenerateSessionHash generates a sticky-session hash for OpenAI requests.
@@ -2556,13 +2575,20 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if req.Header.Get("originator") == "" {
 			req.Header.Set("originator", "codex_cli_rs")
 		}
+		if req.Header.Get("version") == "" {
+			req.Header.Set("version", codexCLIVersion)
+		}
+		sessionID := promptCacheKey
+		if strings.TrimSpace(sessionID) == "" {
+			sessionID = fmt.Sprintf("compact_%d", time.Now().UnixNano())
+		}
 		if promptCacheKey != "" {
 			if req.Header.Get("conversation_id") == "" {
 				req.Header.Set("conversation_id", promptCacheKey)
 			}
-			if req.Header.Get("session_id") == "" {
-				req.Header.Set("session_id", promptCacheKey)
-			}
+		}
+		if req.Header.Get("session_id") == "" {
+			req.Header.Set("session_id", sessionID)
 		}
 	}
 	if isStream {
@@ -2832,11 +2858,15 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 }
 
 func validateCompactPassthroughResponseBody(body []byte) string {
-	if len(bytes.TrimSpace(body)) == 0 {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
 		return "Upstream returned empty compact response"
 	}
 	if !gjson.ValidBytes(body) {
 		return "Upstream returned invalid compact response JSON"
+	}
+	if trimmed[0] != '{' {
+		return "Upstream returned invalid compact response shape"
 	}
 	output := gjson.GetBytes(body, "output")
 	if !output.Exists() || !output.IsArray() {
@@ -3909,6 +3939,42 @@ func buildOpenAIResponsesURL(base, endpoint string) string {
 	return normalized + "/v1" + endpointSuffix
 }
 
+func IsOpenAIResponsesCompactPathForTest(c *gin.Context) bool {
+	return resolveOpenAIResponsesEndpoint(c) == openAICompactEndpoint
+}
+
+func OpenAICompactSessionSeedKeyForTest() string {
+	return openAICompactSessionSeedKey
+}
+
+func NormalizeOpenAICompactRequestBodyForTest(body []byte) ([]byte, bool, error) {
+	return normalizeOpenAICompactRequestBody(body)
+}
+
+func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
+	if len(body) == 0 {
+		return body, false, nil
+	}
+
+	normalized := []byte(`{}`)
+	for _, field := range []string{"model", "input", "instructions", "previous_response_id"} {
+		value := gjson.GetBytes(body, field)
+		if !value.Exists() {
+			continue
+		}
+		next, err := sjson.SetRawBytes(normalized, field, []byte(value.Raw))
+		if err != nil {
+			return body, false, fmt.Errorf("normalize compact body %s: %w", field, err)
+		}
+		normalized = next
+	}
+
+	if bytes.Equal(bytes.TrimSpace(body), bytes.TrimSpace(normalized)) {
+		return body, false, nil
+	}
+	return normalized, true, nil
+}
+
 func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel, toModel string) []byte {
 	// 使用 gjson/sjson 精确替换 model 字段，避免全量 JSON 反序列化
 	if m := gjson.GetBytes(body, "model"); m.Exists() && m.Str == fromModel {
@@ -4356,6 +4422,15 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	}()
 }
 
+func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header) {
+	if accountID <= 0 || headers == nil {
+		return
+	}
+	if snapshot := ParseCodexRateLimitHeaders(headers); snapshot != nil {
+		s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
+	}
+}
+
 func (s *OpenAIGatewayService) tryAcquireCodexUsageUpdateSlot() bool {
 	if s == nil {
 		return false
@@ -4463,7 +4538,7 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 // 1) /responses 保持历史语义：store=false
 // 2) /responses/compact 删除 store，避免上游返回 unknown_parameter
 // 3) forceStream=true 时强制 stream=true（/responses）
-// 4) forceStream=false 时对 /responses/compact 强制 stream=false，避免返回 SSE
+// 4) forceStream=false 时对 /responses/compact 删除 stream，避免返回 SSE
 func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool, stripStore bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
@@ -4499,10 +4574,10 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, forceStream bool, stripSto
 			normalized = next
 			changed = true
 		}
-	} else if stream := gjson.GetBytes(normalized, "stream"); stream.Exists() && stream.Type != gjson.False {
-		next, err := sjson.SetBytes(normalized, "stream", false)
+	} else if stream := gjson.GetBytes(normalized, "stream"); stream.Exists() {
+		next, err := sjson.DeleteBytes(normalized, "stream")
 		if err != nil {
-			return body, false, fmt.Errorf("normalize passthrough body stream=false: %w", err)
+			return body, false, fmt.Errorf("normalize passthrough body remove stream: %w", err)
 		}
 		normalized = next
 		changed = true

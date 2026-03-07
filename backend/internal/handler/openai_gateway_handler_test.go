@@ -702,7 +702,7 @@ func TestOpenAIResponsesWebSocket_PassthroughAndCtxPoolShareSchedulerInputsAndSt
 		cfg := &config.Config{RunMode: config.RunModeSimple}
 		cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
 		cfg.Gateway.OpenAIWS.IngressModeDefault = mode
-		billingSvc := service.NewBillingCacheService(nil, nil, nil, cfg)
+		billingSvc := service.NewBillingCacheService(nil, nil, nil, nil, cfg)
 		t.Cleanup(func() {
 			billingSvc.Stop()
 		})
@@ -843,7 +843,7 @@ func TestOpenAIResponsesWebSocket_PassthroughBeforeTurnBillingCheckOnSecondTurn(
 	billingCache := &billingCacheBalanceSequenceMock{
 		balances: []float64{10, 0},
 	}
-	billingSvc := service.NewBillingCacheService(billingCache, nil, nil, cfg)
+	billingSvc := service.NewBillingCacheService(billingCache, nil, nil, nil, cfg)
 	t.Cleanup(func() {
 		billingSvc.Stop()
 	})
@@ -1017,7 +1017,7 @@ func TestOpenAIResponsesWebSocket_PassthroughBeforeTurnConcurrencyCheckOnSecondT
 			billingCache := &billingCacheBalanceSequenceMock{
 				balances: []float64{10, 10},
 			}
-			billingSvc := service.NewBillingCacheService(billingCache, nil, nil, cfg)
+			billingSvc := service.NewBillingCacheService(billingCache, nil, nil, nil, cfg)
 			t.Cleanup(func() {
 				billingSvc.Stop()
 			})
@@ -1144,7 +1144,7 @@ func TestOpenAIResponsesWebSocket_PassthroughAfterTurnRecordsUsageForPartialAndS
 	billingCache := &billingCacheBalanceSequenceMock{
 		balances: []float64{10, 10},
 	}
-	billingSvc := service.NewBillingCacheService(billingCache, nil, nil, cfg)
+	billingSvc := service.NewBillingCacheService(billingCache, nil, nil, nil, cfg)
 	t.Cleanup(func() {
 		billingSvc.Stop()
 	})
@@ -1505,6 +1505,22 @@ func (m *billingCacheBalanceSequenceMock) UpdateSubscriptionUsage(ctx context.Co
 }
 
 func (m *billingCacheBalanceSequenceMock) InvalidateSubscriptionCache(ctx context.Context, userID, groupID int64) error {
+	return nil
+}
+
+func (m *billingCacheBalanceSequenceMock) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*service.APIKeyRateLimitCacheData, error) {
+	return nil, nil
+}
+
+func (m *billingCacheBalanceSequenceMock) SetAPIKeyRateLimit(ctx context.Context, keyID int64, data *service.APIKeyRateLimitCacheData) error {
+	return nil
+}
+
+func (m *billingCacheBalanceSequenceMock) UpdateAPIKeyRateLimitUsage(ctx context.Context, keyID int64, cost float64) error {
+	return nil
+}
+
+func (m *billingCacheBalanceSequenceMock) InvalidateAPIKeyRateLimit(ctx context.Context, keyID int64) error {
 	return nil
 }
 

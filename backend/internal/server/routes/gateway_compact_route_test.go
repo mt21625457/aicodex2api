@@ -31,6 +31,7 @@ func TestRegisterGatewayRoutes_RegistersOpenAICompactRoutes(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		cfg,
 	)
 
@@ -45,6 +46,6 @@ func TestRegisterGatewayRoutes_RegistersOpenAICompactRoutes(t *testing.T) {
 		require.Failf(t, "route not found", "method=%s path=%s", method, path)
 	}
 
-	requireRoute("POST", "/v1/responses/compact")
-	requireRoute("POST", "/responses/compact")
+	requireRoute("POST", "/v1/responses/*subpath")
+	requireRoute("POST", "/responses/*subpath")
 }

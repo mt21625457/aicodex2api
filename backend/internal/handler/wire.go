@@ -117,6 +117,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementHandler,
 	NewGatewayHandler,
 	NewOpenAIGatewayHandler,
+	NewSoraClientHandler,
 	NewSoraGatewayHandler,
 	NewTotpHandler,
 	ProvideSettingHandler,

@@ -1110,6 +1110,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		req.LoadFactor != nil ||
 		req.Status != "" ||
 		req.Schedulable != nil ||
+		req.AutoPauseOnExpired != nil ||
 		req.GroupIDs != nil ||
 		len(req.Credentials) > 0 ||
 		len(req.Extra) > 0
@@ -1129,6 +1130,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		LoadFactor:            req.LoadFactor,
 		Status:                req.Status,
 		Schedulable:           req.Schedulable,
+		AutoPauseOnExpired:    req.AutoPauseOnExpired,
 		GroupIDs:              req.GroupIDs,
 		Credentials:           req.Credentials,
 		Extra:                 req.Extra,
