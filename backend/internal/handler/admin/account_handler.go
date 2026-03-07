@@ -122,7 +122,7 @@ type UpdateAccountRequest struct {
 	Priority                *int           `json:"priority"`
 	RateMultiplier          *float64       `json:"rate_multiplier"`
 	LoadFactor              *int           `json:"load_factor"`
-	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive"`
+	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
 	GroupIDs                *[]int64       `json:"group_ids"`
 	ExpiresAt               *int64         `json:"expires_at"`
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
@@ -288,8 +288,8 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	// 仅非 lite 模式获取窗口费用（PostgreSQL 聚合查询，高开销）
-	if !lite && len(windowCostAccountIDs) > 0 {
+	// 始终获取窗口费用（PostgreSQL 聚合查询）
+	if len(windowCostAccountIDs) > 0 {
 		windowCosts = make(map[int64]float64)
 		var mu sync.Mutex
 		g, gctx := errgroup.WithContext(c.Request.Context())
