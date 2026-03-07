@@ -5,6 +5,8 @@ package web
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,6 +82,47 @@ type mockSettingsProvider struct {
 	settings any
 	err      error
 	called   int
+}
+
+type failingOpenFS struct {
+	err error
+}
+
+func (f failingOpenFS) Open(string) (fs.File, error) {
+	return nil, f.err
+}
+
+type failingReadFS struct{}
+
+func (f failingReadFS) Open(string) (fs.File, error) {
+	return failingReadFile{}, nil
+}
+
+type failingReadFile struct{}
+
+func (failingReadFile) Stat() (fs.FileInfo, error) { return nil, nil }
+func (failingReadFile) Close() error               { return nil }
+func (failingReadFile) Read([]byte) (int, error) {
+	return 0, errors.New("read failed")
+}
+
+type frontendAPISkipCase struct {
+	method string
+	path   string
+}
+
+func buildFrontendAPISkipCases(apiPath string) []frontendAPISkipCase {
+	return []frontendAPISkipCase{
+		{method: http.MethodGet, path: apiPath},
+		{method: http.MethodGet, path: "/v1/models"},
+		{method: http.MethodGet, path: "/v1beta/chat"},
+		{method: http.MethodGet, path: "/sora/v1/models"},
+		{method: http.MethodGet, path: "/antigravity/test"},
+		{method: http.MethodGet, path: "/setup/init"},
+		{method: http.MethodGet, path: "/health"},
+		{method: http.MethodGet, path: "/responses"},
+		{method: http.MethodPost, path: "/responses/compact"},
+	}
 }
 
 func (m *mockSettingsProvider) GetPublicSettingsForInjection(ctx context.Context) (any, error) {
@@ -358,29 +401,20 @@ func TestFrontendServer_Middleware(t *testing.T) {
 		server, err := NewFrontendServer(provider)
 		require.NoError(t, err)
 
-		apiPaths := []string{
-			"/api/v1/users",
-			"/v1/models",
-			"/v1beta/chat",
-			"/sora/v1/models",
-			"/antigravity/test",
-			"/setup/init",
-			"/health",
-			"/responses",
-		}
+		testCases := buildFrontendAPISkipCases("/api/v1/users")
 
-		for _, path := range apiPaths {
-			t.Run(path, func(t *testing.T) {
+		for _, tc := range testCases {
+			t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 				router := gin.New()
 				router.Use(server.Middleware())
 				nextCalled := false
-				router.GET(path, func(c *gin.Context) {
+				router.Handle(tc.method, tc.path, func(c *gin.Context) {
 					nextCalled = true
 					c.String(http.StatusOK, "ok")
 				})
 
 				w := httptest.NewRecorder()
-				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req := httptest.NewRequest(tc.method, tc.path, nil)
 				router.ServeHTTP(w, req)
 
 				assert.True(t, nextCalled, "next handler should be called for API route")
@@ -534,34 +568,64 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 	t.Run("skips_api_routes", func(t *testing.T) {
 		middleware := ServeEmbeddedFrontend()
 
-		apiPaths := []string{
-			"/api/users",
-			"/v1/models",
-			"/v1beta/chat",
-			"/sora/v1/models",
-			"/antigravity/test",
-			"/setup/init",
-			"/health",
-			"/responses",
-		}
+		testCases := buildFrontendAPISkipCases("/api/users")
 
-		for _, path := range apiPaths {
-			t.Run(path, func(t *testing.T) {
+		for _, tc := range testCases {
+			t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 				nextCalled := false
 				router := gin.New()
 				router.Use(middleware)
-				router.GET(path, func(c *gin.Context) {
+				router.Handle(tc.method, tc.path, func(c *gin.Context) {
 					nextCalled = true
 					c.String(http.StatusOK, "ok")
 				})
 
 				w := httptest.NewRecorder()
-				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req := httptest.NewRequest(tc.method, tc.path, nil)
 				router.ServeHTTP(w, req)
 
 				assert.True(t, nextCalled, "next handler should be called for API route")
 			})
 		}
+	})
+}
+
+func TestServeIndexHTMLHelper(t *testing.T) {
+	t.Run("serves_index_html_successfully", func(t *testing.T) {
+		distFS, err := fs.Sub(frontendFS, "dist")
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+		serveIndexHTML(c, distFS)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
+		assert.Contains(t, w.Body.String(), "<!doctype html>")
+	})
+
+	t.Run("returns_not_found_when_index_missing", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+		serveIndexHTML(c, failingOpenFS{err: fs.ErrNotExist})
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.Contains(t, w.Body.String(), "Frontend not found")
+	})
+
+	t.Run("returns_internal_error_when_index_read_fails", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+		serveIndexHTML(c, failingReadFS{})
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "Failed to read index.html")
 	})
 }
 

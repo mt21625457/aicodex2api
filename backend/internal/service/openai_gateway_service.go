@@ -546,6 +546,10 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 		if statusCode == 0 {
 			statusCode = http.StatusTooManyRequests
 		}
+	case "upstream_5xx", "upstream_error_event":
+		if statusCode == 0 {
+			statusCode = http.StatusServiceUnavailable
+		}
 	default:
 		if statusCode == 0 {
 			return 0, "", "", "", false
@@ -565,6 +569,8 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 			upstreamMessage = "upstream authentication failed"
 		case "upstream_rate_limited":
 			upstreamMessage = "upstream rate limit exceeded, please retry later"
+		case "upstream_5xx", "upstream_error_event":
+			upstreamMessage = "upstream service unavailable"
 		default:
 			upstreamMessage = "Upstream request failed"
 		}
@@ -581,6 +587,79 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 	return statusCode, errType, clientMessage, upstreamMessage, true
 }
 
+func resolveOpenAIWSUpstreamStatusSideEffectInput(wsErr error) (statusCode int, headers http.Header, responseBody []byte, ok bool) {
+	if wsErr == nil {
+		return 0, nil, nil, false
+	}
+
+	var upstreamStatusErr *openAIWSUpstreamStatusError
+	if errors.As(wsErr, &upstreamStatusErr) && upstreamStatusErr != nil && upstreamStatusErr.statusCode > 0 {
+		statusCode = upstreamStatusErr.statusCode
+		headers = cloneHeader(upstreamStatusErr.headers)
+		responseBody = append([]byte(nil), upstreamStatusErr.responseBody...)
+		return statusCode, headers, responseBody, true
+	}
+
+	var dialErr *openAIWSDialError
+	if errors.As(wsErr, &dialErr) && dialErr != nil && dialErr.StatusCode > 0 {
+		statusCode = dialErr.StatusCode
+		headers = cloneHeader(dialErr.ResponseHeaders)
+		if dialErr.Err != nil {
+			responseBody = []byte(strings.TrimSpace(dialErr.Err.Error()))
+		}
+		return statusCode, headers, responseBody, true
+	}
+
+	var fallbackErr *openAIWSFallbackError
+	if !errors.As(wsErr, &fallbackErr) || fallbackErr == nil {
+		return 0, nil, nil, false
+	}
+	reason := strings.TrimSpace(strings.TrimPrefix(fallbackErr.Reason, "prewarm_"))
+	switch reason {
+	case "upstream_rate_limited":
+		statusCode = http.StatusTooManyRequests
+	case "upstream_5xx", "upstream_error_event":
+		statusCode = http.StatusServiceUnavailable
+	default:
+		return 0, nil, nil, false
+	}
+	if fallbackErr.Err != nil {
+		responseBody = []byte(strings.TrimSpace(fallbackErr.Err.Error()))
+	}
+	return statusCode, nil, responseBody, true
+}
+
+func (s *OpenAIGatewayService) handleOpenAIWSUpstreamStatusSideEffectsWithStatus(
+	ctx context.Context,
+	account *Account,
+	statusCode int,
+	headers http.Header,
+	responseBody []byte,
+) {
+	if s == nil || s.rateLimitService == nil || account == nil {
+		return
+	}
+	if statusCode <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, responseBody)
+}
+
+func (s *OpenAIGatewayService) handleOpenAIWSUpstreamStatusSideEffects(ctx context.Context, account *Account, wsErr error) {
+	if s == nil || s.rateLimitService == nil || account == nil || wsErr == nil {
+		return
+	}
+
+	statusCode, headers, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(wsErr)
+	if !ok {
+		return
+	}
+	s.handleOpenAIWSUpstreamStatusSideEffectsWithStatus(ctx, account, statusCode, headers, responseBody)
+}
+
 func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context, account *Account, wsErr error) bool {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false
@@ -589,12 +668,12 @@ func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context
 	if !ok {
 		return false
 	}
-	if strings.TrimSpace(clientMessage) == "" {
-		clientMessage = "Upstream request failed"
+
+	var reqCtx context.Context
+	if c.Request != nil {
+		reqCtx = c.Request.Context()
 	}
-	if strings.TrimSpace(upstreamMessage) == "" {
-		upstreamMessage = clientMessage
-	}
+	s.handleOpenAIWSUpstreamStatusSideEffects(reqCtx, account, wsErr)
 
 	setOpsUpstreamError(c, statusCode, upstreamMessage, "")
 	if account != nil {

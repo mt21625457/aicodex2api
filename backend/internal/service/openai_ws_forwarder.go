@@ -1106,6 +1106,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
+			s.handleOpenAIWSUpstreamStatusSideEffectsWithStatus(ctx, account, statusCode, nil, message)
 			setOpsUpstreamError(c, statusCode, errMsg, "")
 			if reqStream && !clientDisconnected {
 				if shouldFlushOpenAIWSBufferedEventsOnError(reqStream, wroteDownstream, clientDisconnected) {
@@ -1279,6 +1280,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				fmt.Errorf("panic recovered: %v", recovered),
 			)
 		}
+		s.handleOpenAIWSUpstreamStatusSideEffects(ctx, account, err)
 	}()
 
 	if s == nil {
@@ -1849,6 +1851,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		clientDisconnectDrainDeadline := time.Time{}
 		terminateOnErrorEvent := false
 		terminateOnErrorMessage := ""
+		terminateOnErrorStatusCode := 0
+		var terminateOnErrorResponseBody []byte
 		mappedModel := ""
 		var mappedModelBytes []byte
 		buildPartialResult := newOpenAIWSIngressPartialResultBuilder(
@@ -2067,6 +2071,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if eventType == "error" {
 				errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(upstreamMessage)
 				fallbackReason, _ := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
+				terminateOnErrorStatusCode = openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
+				terminateOnErrorResponseBody = append([]byte(nil), upstreamMessage...)
 				errCode, errType, errMessage := summarizeOpenAIWSErrorEventFieldsFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
 				recoveryEnabled := s.openAIWSIngressPreviousResponseRecoveryEnabled()
 				recoverablePrevNotFound := fallbackReason == openAIWSIngressStagePreviousResponseNotFound &&
@@ -2182,6 +2188,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 				}
 				if err := writeClientMessage(upstreamMessage); err != nil {
+					cause := fmt.Errorf("write client websocket event: %w", err)
+					if terminateOnErrorEvent && terminateOnErrorStatusCode > 0 {
+						cause = wrapOpenAIWSUpstreamStatusError(
+							terminateOnErrorStatusCode,
+							nil,
+							terminateOnErrorResponseBody,
+							cause,
+						)
+					}
 					if isOpenAIWSClientDisconnectError(err) {
 						// 客户端断连：立即取消上游 pump 并释放连接。
 						// 不再排水等待，以便新连接能尽快获取上游 lease。
@@ -2198,14 +2213,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						lease.MarkBroken()
 						return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
 							"client_disconnected_immediate",
-							fmt.Errorf("client disconnected (write): %w", err),
+							cause,
 							wroteDownstream,
 							buildPartialResult("client_disconnected"),
 						)
 					} else {
 						return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
 							"write_client",
-							fmt.Errorf("write client websocket event: %w", err),
+							cause,
 							wroteDownstream,
 							buildPartialResult("write_client"),
 						)
@@ -2217,9 +2232,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if terminateOnErrorEvent {
 				// WS ingress 中的 error 事件应立即终止当前 turn，避免继续阻塞在下一次上游 read。
 				lease.MarkBroken()
+				terminateErr := errors.New(terminateOnErrorMessage)
+				if terminateOnErrorStatusCode > 0 {
+					terminateErr = wrapOpenAIWSUpstreamStatusError(
+						terminateOnErrorStatusCode,
+						nil,
+						terminateOnErrorResponseBody,
+						terminateErr,
+					)
+				}
 				return nil, wrapOpenAIWSIngressTurnErrorWithPartial(
 					"upstream_error_event",
-					errors.New(terminateOnErrorMessage),
+					terminateErr,
 					wroteDownstream,
 					buildPartialResult("upstream_error_event"),
 				)

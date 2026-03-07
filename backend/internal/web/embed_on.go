@@ -30,6 +30,17 @@ type PublicSettingsProvider interface {
 	GetPublicSettingsForInjection(ctx context.Context) (any, error)
 }
 
+func isFrontendSkippedAPIPath(path string) bool {
+	return strings.HasPrefix(path, "/api/") ||
+		strings.HasPrefix(path, "/v1/") ||
+		strings.HasPrefix(path, "/v1beta/") ||
+		strings.HasPrefix(path, "/sora/") ||
+		strings.HasPrefix(path, "/antigravity/") ||
+		strings.HasPrefix(path, "/setup/") ||
+		path == "/health" ||
+		strings.HasPrefix(path, "/responses")
+}
+
 // FrontendServer serves the embedded frontend with settings injection
 type FrontendServer struct {
 	distFS     fs.FS
@@ -83,14 +94,7 @@ func (s *FrontendServer) Middleware() gin.HandlerFunc {
 		path := c.Request.URL.Path
 
 		// Skip API routes
-		if strings.HasPrefix(path, "/api/") ||
-			strings.HasPrefix(path, "/v1/") ||
-			strings.HasPrefix(path, "/v1beta/") ||
-			strings.HasPrefix(path, "/sora/") ||
-			strings.HasPrefix(path, "/antigravity/") ||
-			strings.HasPrefix(path, "/setup/") ||
-			path == "/health" ||
-			path == "/responses" {
+		if isFrontendSkippedAPIPath(path) {
 			c.Next()
 			return
 		}
@@ -207,14 +211,7 @@ func ServeEmbeddedFrontend() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 
-		if strings.HasPrefix(path, "/api/") ||
-			strings.HasPrefix(path, "/v1/") ||
-			strings.HasPrefix(path, "/v1beta/") ||
-			strings.HasPrefix(path, "/sora/") ||
-			strings.HasPrefix(path, "/antigravity/") ||
-			strings.HasPrefix(path, "/setup/") ||
-			path == "/health" ||
-			path == "/responses" {
+		if isFrontendSkippedAPIPath(path) {
 			c.Next()
 			return
 		}

@@ -382,3 +382,59 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughDoesN
 	require.Equal(t, 1, dialer.DialCount())
 	require.Empty(t, storeProbe.Calls(), "passthrough 路径不应访问 StateStore")
 }
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughDial429TriggersRateLimitSideEffect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	svc := buildIngressPolicyTestService(cfg)
+	repo := &wsFallbackSideEffectRepo{}
+	svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.openaiWSPassthroughDialer = &passthroughDialerStub{
+		err:        errors.New("rate limited"),
+		statusCode: http.StatusTooManyRequests,
+		headers: http.Header{
+			"X-Codex-Primary-Reset-After-Seconds": []string{"45"},
+		},
+	}
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+
+	err := runIngressProxyWithFirstPayload(t, svc, account, `{"type":"response.create","model":"gpt-5.3-codex","input":[]}`)
+	require.Error(t, err)
+	var closeErr *OpenAIWSClientCloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusTryAgainLater, closeErr.StatusCode())
+	require.Equal(t, 1, repo.setRateLimitedCalls)
+	require.Equal(t, account.ID, repo.setRateLimitedID)
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughDial503TriggersCustomErrorSideEffect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := buildIngressPolicyTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	svc := buildIngressPolicyTestService(cfg)
+	repo := &wsFallbackSideEffectRepo{}
+	svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.openaiWSPassthroughDialer = &passthroughDialerStub{
+		err:        errors.New("service unavailable"),
+		statusCode: http.StatusServiceUnavailable,
+	}
+	account := buildIngressPolicyTestAccount(map[string]any{
+		"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	})
+	account.Credentials = map[string]any{
+		"api_key":                    "sk-test",
+		"custom_error_codes_enabled": true,
+		"custom_error_codes":         []any{float64(http.StatusServiceUnavailable)},
+	}
+
+	err := runIngressProxyWithFirstPayload(t, svc, account, `{"type":"response.create","model":"gpt-5.3-codex","input":[]}`)
+	require.Error(t, err)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Equal(t, account.ID, repo.setErrorID)
+	require.Contains(t, repo.setErrorMsg, "Custom error code 503")
+}

@@ -15,6 +15,43 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type wsFallbackSideEffectRepo struct {
+	stubOpenAIAccountRepo
+
+	setRateLimitedCalls int
+	setRateLimitedID    int64
+	setRateLimitedAt    time.Time
+
+	setErrorCalls int
+	setErrorID    int64
+	setErrorMsg   string
+
+	setOverloadedCalls int
+	setOverloadedID    int64
+	setOverloadedUntil time.Time
+}
+
+func (r *wsFallbackSideEffectRepo) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
+	r.setRateLimitedCalls++
+	r.setRateLimitedID = id
+	r.setRateLimitedAt = resetAt
+	return nil
+}
+
+func (r *wsFallbackSideEffectRepo) SetError(ctx context.Context, id int64, errorMsg string) error {
+	r.setErrorCalls++
+	r.setErrorID = id
+	r.setErrorMsg = errorMsg
+	return nil
+}
+
+func (r *wsFallbackSideEffectRepo) SetOverloaded(ctx context.Context, id int64, until time.Time) error {
+	r.setOverloadedCalls++
+	r.setOverloadedID = id
+	r.setOverloadedUntil = until
+	return nil
+}
+
 func TestClassifyOpenAIWSAcquireError(t *testing.T) {
 	t.Run("dial_426_upgrade_required", func(t *testing.T) {
 		err := &openAIWSDialError{StatusCode: 426, Err: errors.New("upgrade required")}
@@ -276,7 +313,7 @@ func TestOpenAIWSErrorHTTPStatus(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"authentication_error","code":"invalid_api_key","message":"auth failed"}}`)))
 	require.Equal(t, http.StatusForbidden, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"permission_error","code":"forbidden","message":"forbidden"}}`)))
 	require.Equal(t, http.StatusTooManyRequests, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"rate limited"}}`)))
-	require.Equal(t, http.StatusBadGateway, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"server_error","code":"server_error","message":"server"}}`)))
+	require.Equal(t, http.StatusServiceUnavailable, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"server_error","code":"server_error","message":"server"}}`)))
 }
 
 func TestResolveOpenAIWSFallbackErrorResponse(t *testing.T) {
@@ -308,6 +345,556 @@ func TestResolveOpenAIWSFallbackErrorResponse(t *testing.T) {
 	t.Run("non_fallback_error_not_resolved", func(t *testing.T) {
 		_, _, _, _, ok := resolveOpenAIWSFallbackErrorResponse(errors.New("plain error"))
 		require.False(t, ok)
+	})
+
+	t.Run("upgrade_required_without_dial_status", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("upgrade_required", errors.New("")),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusUpgradeRequired, statusCode)
+		require.Equal(t, "upstream_error", errType)
+		require.Equal(t, "upstream websocket upgrade required", clientMessage)
+		require.Equal(t, "upstream websocket upgrade required", upstreamMessage)
+	})
+
+	t.Run("upstream_rate_limited_without_dial_status", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("upstream_rate_limited", errors.New("")),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusTooManyRequests, statusCode)
+		require.Equal(t, "rate_limit_error", errType)
+		require.Equal(t, "upstream rate limit exceeded, please retry later", clientMessage)
+		require.Equal(t, "upstream rate limit exceeded, please retry later", upstreamMessage)
+	})
+
+	t.Run("upstream_5xx_without_dial_status", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("upstream_5xx", errors.New("service unavailable")),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusServiceUnavailable, statusCode)
+		require.Equal(t, "upstream_error", errType)
+		require.Equal(t, "service unavailable", clientMessage)
+		require.Equal(t, "service unavailable", upstreamMessage)
+	})
+
+	t.Run("upstream_error_event_without_status", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("upstream_error_event", errors.New("server error")),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusServiceUnavailable, statusCode)
+		require.Equal(t, "upstream_error", errType)
+		require.Equal(t, "server error", clientMessage)
+		require.Equal(t, "server error", upstreamMessage)
+	})
+
+	t.Run("unknown_reason_with_dial_status_is_resolved", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("event_error", &openAIWSDialError{
+				StatusCode: http.StatusServiceUnavailable,
+				Err:        errors.New("provider 503"),
+			}),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusServiceUnavailable, statusCode)
+		require.Equal(t, "upstream_error", errType)
+		require.Equal(t, "provider 503", clientMessage)
+		require.Equal(t, "provider 503", upstreamMessage)
+	})
+
+	t.Run("unknown_reason_without_status_not_resolved", func(t *testing.T) {
+		_, _, _, _, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("event_error", errors.New("unknown")),
+		)
+		require.False(t, ok)
+	})
+
+	t.Run("ws_unsupported_without_dial_status", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("ws_unsupported", nil),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusBadRequest, statusCode)
+		require.Equal(t, "upstream_error", errType)
+		require.Equal(t, "upstream websocket not supported", clientMessage)
+		require.Equal(t, "upstream websocket not supported", upstreamMessage)
+	})
+
+	t.Run("auth_failed_without_dial_status", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("auth_failed", nil),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusUnauthorized, statusCode)
+		require.Equal(t, "upstream_error", errType)
+		require.Equal(t, "upstream authentication failed", clientMessage)
+		require.Equal(t, "upstream authentication failed", upstreamMessage)
+	})
+
+	t.Run("unknown_reason_with_dial_429_has_rate_limit_error_type", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("event_error", &openAIWSDialError{
+				StatusCode: http.StatusTooManyRequests,
+				Err:        errors.New("busy"),
+			}),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusTooManyRequests, statusCode)
+		require.Equal(t, "rate_limit_error", errType)
+		require.Equal(t, "busy", clientMessage)
+		require.Equal(t, "busy", upstreamMessage)
+	})
+}
+
+func TestResolveOpenAIWSUpstreamStatusSideEffectInput(t *testing.T) {
+	t.Run("nil_error_returns_false", func(t *testing.T) {
+		statusCode, gotHeaders, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(nil)
+		require.False(t, ok)
+		require.Equal(t, 0, statusCode)
+		require.Nil(t, gotHeaders)
+		require.Nil(t, responseBody)
+	})
+
+	t.Run("dial_error_429_with_headers", func(t *testing.T) {
+		headers := http.Header{
+			"X-Codex-Primary-Reset-After-Seconds": []string{"120"},
+		}
+		statusCode, gotHeaders, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(
+			&openAIWSDialError{
+				StatusCode:      http.StatusTooManyRequests,
+				ResponseHeaders: headers,
+				Err:             errors.New("rate limited"),
+			},
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusTooManyRequests, statusCode)
+		require.Equal(t, "120", gotHeaders.Get("X-Codex-Primary-Reset-After-Seconds"))
+		require.Contains(t, string(responseBody), "rate limited")
+
+		// Ensure returned headers are cloned.
+		headers.Set("X-Codex-Primary-Reset-After-Seconds", "999")
+		require.Equal(t, "120", gotHeaders.Get("X-Codex-Primary-Reset-After-Seconds"))
+	})
+
+	t.Run("fallback_reason_rate_limited", func(t *testing.T) {
+		statusCode, gotHeaders, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(
+			wrapOpenAIWSFallback("prewarm_upstream_rate_limited", errors.New("busy")),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusTooManyRequests, statusCode)
+		require.Nil(t, gotHeaders)
+		require.Contains(t, string(responseBody), "busy")
+	})
+
+	t.Run("fallback_reason_upstream_5xx", func(t *testing.T) {
+		statusCode, gotHeaders, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(
+			wrapOpenAIWSFallback("upstream_5xx", errors.New("service unavailable")),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusServiceUnavailable, statusCode)
+		require.Nil(t, gotHeaders)
+		require.Contains(t, string(responseBody), "service unavailable")
+	})
+
+	t.Run("ingress_turn_error_with_upstream_status_error", func(t *testing.T) {
+		headers := http.Header{
+			"Retry-After": []string{"45"},
+		}
+		statusCode, gotHeaders, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(
+			wrapOpenAIWSIngressTurnError(
+				"upstream_error_event",
+				wrapOpenAIWSUpstreamStatusError(
+					http.StatusTooManyRequests,
+					headers,
+					[]byte(`{"type":"error","error":{"type":"rate_limit_error"}}`),
+					errors.New("openai ws error event: rate limited"),
+				),
+				true,
+			),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusTooManyRequests, statusCode)
+		require.Equal(t, "45", gotHeaders.Get("Retry-After"))
+		require.Contains(t, string(responseBody), "rate_limit_error")
+
+		// Ensure returned headers are cloned.
+		headers.Set("Retry-After", "999")
+		require.Equal(t, "45", gotHeaders.Get("Retry-After"))
+	})
+
+	t.Run("non_upstream_error_returns_false", func(t *testing.T) {
+		statusCode, gotHeaders, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(
+			wrapOpenAIWSFallback("previous_response_not_found", errors.New("not found")),
+		)
+		require.False(t, ok)
+		require.Equal(t, 0, statusCode)
+		require.Nil(t, gotHeaders)
+		require.Nil(t, responseBody)
+	})
+
+	t.Run("dial_error_without_status_returns_false", func(t *testing.T) {
+		statusCode, gotHeaders, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(
+			&openAIWSDialError{
+				StatusCode: 0,
+				Err:        errors.New("network"),
+			},
+		)
+		require.False(t, ok)
+		require.Equal(t, 0, statusCode)
+		require.Nil(t, gotHeaders)
+		require.Nil(t, responseBody)
+	})
+
+	t.Run("fallback_reason_without_inner_error_has_nil_body", func(t *testing.T) {
+		statusCode, gotHeaders, responseBody, ok := resolveOpenAIWSUpstreamStatusSideEffectInput(
+			wrapOpenAIWSFallback("upstream_5xx", nil),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusServiceUnavailable, statusCode)
+		require.Nil(t, gotHeaders)
+		require.Nil(t, responseBody)
+	})
+}
+
+func TestHandleOpenAIWSUpstreamStatusSideEffects(t *testing.T) {
+	t.Run("429_marks_account_rate_limited", func(t *testing.T) {
+		repo := &wsFallbackSideEffectRepo{}
+		rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+		account := &Account{
+			ID:          1001,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}
+
+		before := time.Now()
+		svc.handleOpenAIWSUpstreamStatusSideEffects(context.Background(), account, &openAIWSDialError{
+			StatusCode: http.StatusTooManyRequests,
+			ResponseHeaders: http.Header{
+				"X-Codex-Primary-Reset-After-Seconds":   []string{"120"},
+				"X-Codex-Secondary-Reset-After-Seconds": []string{"30"},
+			},
+			Err: errors.New("rate limited"),
+		})
+
+		require.Equal(t, 1, repo.setRateLimitedCalls)
+		require.Equal(t, account.ID, repo.setRateLimitedID)
+		require.WithinDuration(t, before.Add(120*time.Second), repo.setRateLimitedAt, 5*time.Second)
+	})
+
+	t.Run("503_with_custom_error_codes_marks_account_error", func(t *testing.T) {
+		repo := &wsFallbackSideEffectRepo{}
+		rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+		account := &Account{
+			ID:       1002,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"custom_error_codes_enabled": true,
+				"custom_error_codes":         []any{float64(http.StatusServiceUnavailable)},
+			},
+		}
+
+		svc.handleOpenAIWSUpstreamStatusSideEffects(
+			context.Background(),
+			account,
+			wrapOpenAIWSFallback("upstream_5xx", errors.New("provider unavailable")),
+		)
+
+		require.Equal(t, 0, repo.setRateLimitedCalls)
+		require.Equal(t, 1, repo.setErrorCalls)
+		require.Equal(t, account.ID, repo.setErrorID)
+		require.Contains(t, repo.setErrorMsg, "Custom error code 503")
+	})
+
+	t.Run("529_marks_account_overloaded", func(t *testing.T) {
+		repo := &wsFallbackSideEffectRepo{}
+		rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+		account := &Account{
+			ID:          1008,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}
+
+		before := time.Now()
+		svc.handleOpenAIWSUpstreamStatusSideEffectsWithStatus(context.Background(), account, 529, nil, []byte(`overloaded`))
+
+		require.Equal(t, 1, repo.setOverloadedCalls)
+		require.Equal(t, account.ID, repo.setOverloadedID)
+		require.True(t, repo.setOverloadedUntil.After(before))
+	})
+
+	t.Run("non_target_error_has_no_side_effect", func(t *testing.T) {
+		repo := &wsFallbackSideEffectRepo{}
+		rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+		account := &Account{
+			ID:          1003,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}
+
+		svc.handleOpenAIWSUpstreamStatusSideEffects(
+			context.Background(),
+			account,
+			wrapOpenAIWSFallback("previous_response_not_found", errors.New("missing previous response")),
+		)
+
+		require.Equal(t, 0, repo.setRateLimitedCalls)
+		require.Equal(t, 0, repo.setErrorCalls)
+	})
+
+	t.Run("nil_context_still_applies_side_effect", func(t *testing.T) {
+		repo := &wsFallbackSideEffectRepo{}
+		rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+		account := &Account{
+			ID:          1004,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}
+		svc.handleOpenAIWSUpstreamStatusSideEffects(nil, account, wrapOpenAIWSFallback("upstream_rate_limited", errors.New("rate limited")))
+		require.Equal(t, 1, repo.setRateLimitedCalls)
+	})
+
+	t.Run("ingress_error_event_429_marks_account_rate_limited", func(t *testing.T) {
+		repo := &wsFallbackSideEffectRepo{}
+		rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+		account := &Account{
+			ID:          1007,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}
+
+		before := time.Now()
+		wsErr := wrapOpenAIWSIngressTurnError(
+			"upstream_error_event",
+			wrapOpenAIWSUpstreamStatusError(
+				http.StatusTooManyRequests,
+				http.Header{
+					"X-Codex-Primary-Reset-After-Seconds": []string{"45"},
+				},
+				[]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"busy"}}`),
+				errors.New("openai ws error event: busy"),
+			),
+			true,
+		)
+
+		svc.handleOpenAIWSUpstreamStatusSideEffects(context.Background(), account, wsErr)
+
+		require.Equal(t, 1, repo.setRateLimitedCalls)
+		require.Equal(t, account.ID, repo.setRateLimitedID)
+		require.WithinDuration(t, before.Add(45*time.Second), repo.setRateLimitedAt, 5*time.Second)
+	})
+
+	t.Run("401_marks_account_error", func(t *testing.T) {
+		repo := &wsFallbackSideEffectRepo{}
+		rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+		svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+		account := &Account{
+			ID:          1005,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}
+
+		svc.handleOpenAIWSUpstreamStatusSideEffects(context.Background(), account, &openAIWSDialError{
+			StatusCode: http.StatusUnauthorized,
+			Err:        errors.New("unauthorized"),
+		})
+
+		require.Equal(t, 0, repo.setRateLimitedCalls)
+		require.Equal(t, 1, repo.setErrorCalls)
+		require.Equal(t, account.ID, repo.setErrorID)
+		require.Contains(t, repo.setErrorMsg, "Authentication failed")
+	})
+
+	t.Run("nil_service_or_dependencies_no_panic", func(t *testing.T) {
+		account := &Account{
+			ID:          1006,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}
+		require.NotPanics(t, func() {
+			var nilSvc *OpenAIGatewayService
+			nilSvc.handleOpenAIWSUpstreamStatusSideEffects(context.Background(), account, errors.New("x"))
+		})
+		require.NotPanics(t, func() {
+			svc := &OpenAIGatewayService{}
+			svc.handleOpenAIWSUpstreamStatusSideEffects(context.Background(), account, errors.New("x"))
+			svc.handleOpenAIWSUpstreamStatusSideEffects(context.Background(), nil, errors.New("x"))
+			svc.handleOpenAIWSUpstreamStatusSideEffects(context.Background(), account, nil)
+		})
+	})
+}
+
+func TestWriteOpenAIWSFallbackErrorResponse_TriggersRateLimitSideEffects(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+
+	repo := &wsFallbackSideEffectRepo{}
+	rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+	account := &Account{
+		ID:          2001,
+		Name:        "ws-rate-limit",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{},
+	}
+
+	wsErr := wrapOpenAIWSFallback("upstream_rate_limited", &openAIWSDialError{
+		StatusCode: http.StatusTooManyRequests,
+		ResponseHeaders: http.Header{
+			"X-Codex-Primary-Reset-After-Seconds": []string{"60"},
+		},
+		Err: errors.New("rate limited"),
+	})
+
+	ok := svc.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
+	require.True(t, ok)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Contains(t, rec.Body.String(), "rate_limit_error")
+	require.Equal(t, 1, repo.setRateLimitedCalls)
+	require.Equal(t, account.ID, repo.setRateLimitedID)
+}
+
+func TestWriteOpenAIWSFallbackErrorResponse_Upstream5xxWritesServiceUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+
+	repo := &wsFallbackSideEffectRepo{}
+	rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+	account := &Account{
+		ID:          2002,
+		Name:        "ws-upstream-5xx",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{},
+	}
+
+	ok := svc.writeOpenAIWSFallbackErrorResponse(c, account, wrapOpenAIWSFallback("upstream_5xx", errors.New("service unavailable")))
+	require.True(t, ok)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Contains(t, rec.Body.String(), "service unavailable")
+}
+
+func TestWriteOpenAIWSFallbackErrorResponse_Guards(t *testing.T) {
+	t.Run("nil_context_returns_false", func(t *testing.T) {
+		repo := &wsFallbackSideEffectRepo{}
+		svc := &OpenAIGatewayService{
+			rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+		}
+		ok := svc.writeOpenAIWSFallbackErrorResponse(nil, nil, wrapOpenAIWSFallback("upstream_rate_limited", errors.New("busy")))
+		require.False(t, ok)
+		require.Equal(t, 0, repo.setRateLimitedCalls)
+	})
+
+	t.Run("non_fallback_error_returns_false", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+
+		repo := &wsFallbackSideEffectRepo{}
+		svc := &OpenAIGatewayService{
+			rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+		}
+
+		ok := svc.writeOpenAIWSFallbackErrorResponse(c, &Account{
+			ID:          3001,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}, errors.New("plain error"))
+		require.False(t, ok)
+		require.Equal(t, 0, repo.setRateLimitedCalls)
+	})
+
+	t.Run("written_response_returns_false", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+		c.String(http.StatusNoContent, "done")
+
+		repo := &wsFallbackSideEffectRepo{}
+		svc := &OpenAIGatewayService{
+			rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+		}
+
+		ok := svc.writeOpenAIWSFallbackErrorResponse(c, &Account{
+			ID:          3002,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}, wrapOpenAIWSFallback("upstream_rate_limited", errors.New("busy")))
+		require.False(t, ok)
+		require.Equal(t, 0, repo.setRateLimitedCalls)
+	})
+
+	t.Run("account_nil_still_writes_response", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+
+		repo := &wsFallbackSideEffectRepo{}
+		svc := &OpenAIGatewayService{
+			rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+		}
+		ok := svc.writeOpenAIWSFallbackErrorResponse(c, nil, wrapOpenAIWSFallback("upstream_rate_limited", errors.New("busy")))
+		require.True(t, ok)
+		require.Equal(t, http.StatusTooManyRequests, rec.Code)
+		require.Equal(t, 0, repo.setRateLimitedCalls)
+	})
+
+	t.Run("nil_request_context_still_handles_side_effects", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = nil
+
+		repo := &wsFallbackSideEffectRepo{}
+		svc := &OpenAIGatewayService{
+			rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+		}
+		account := &Account{
+			ID:          3003,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{},
+		}
+
+		ok := svc.writeOpenAIWSFallbackErrorResponse(c, account, wrapOpenAIWSFallback("upstream_rate_limited", &openAIWSDialError{
+			StatusCode: http.StatusTooManyRequests,
+			ResponseHeaders: http.Header{
+				"X-Codex-Primary-Reset-After-Seconds": []string{"30"},
+			},
+			Err: errors.New("rate limited"),
+		}))
+		require.True(t, ok)
+		require.Equal(t, http.StatusTooManyRequests, rec.Code)
+		require.Equal(t, 1, repo.setRateLimitedCalls)
 	})
 }
 
