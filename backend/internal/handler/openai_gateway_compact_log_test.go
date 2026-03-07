@@ -109,7 +109,7 @@ func TestIsOpenAIRemoteCompactPath(t *testing.T) {
 	require.False(t, isOpenAIRemoteCompactPath(c))
 }
 
-func TestLogOpenAIRemoteCompactOutcome_Succeeded(t *testing.T) {
+func TestLogOpenAIRemoteCompactOutcome_SucceededDoesNotLog(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logSink, restore := captureHandlerStructuredLog(t)
 	defer restore()
@@ -130,19 +130,8 @@ func TestLogOpenAIRemoteCompactOutcome_Succeeded(t *testing.T) {
 	h := &OpenAIGatewayHandler{}
 	h.logOpenAIRemoteCompactOutcome(c, time.Now().Add(-8*time.Millisecond))
 
-	require.True(t, logSink.ContainsMessageAtLevel("codex.remote_compact.succeeded", "warn"))
-	require.True(t, logSink.ContainsFieldValue("compact_outcome", "succeeded"))
-	require.True(t, logSink.ContainsFieldValue("status_code", "200"))
-	require.True(t, logSink.ContainsFieldValue("path", "/v1/responses/compact"))
-	require.True(t, logSink.ContainsFieldValue("request_model", "gpt-5.3-codex"))
-	require.True(t, logSink.ContainsFieldValue("account_id", "123"))
-	require.True(t, logSink.ContainsFieldValue("upstream_request_id", "rid-compact-ok"))
-	require.True(t, logSink.ContainsFieldValue("request_stream", "false"))
-	require.True(t, logSink.ContainsFieldValue("passthrough", "true"))
-	require.True(t, logSink.ContainsFieldValue("request_body_preview", `"model":"gpt-5.3-codex"`))
-	require.True(t, logSink.ContainsFieldValue("request_input_items", "1"))
-	require.True(t, logSink.ContainsFieldValue("request_instructions_bytes", "11"))
-	require.True(t, logSink.ContainsFieldValue("response_content_type", "application/json"))
+	require.False(t, logSink.ContainsMessageAtLevel("codex.remote_compact.succeeded", "warn"))
+	require.False(t, logSink.ContainsMessageAtLevel("codex.remote_compact.failed", "warn"))
 }
 
 func TestLogOpenAIRemoteCompactOutcome_Failed(t *testing.T) {

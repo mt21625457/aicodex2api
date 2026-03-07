@@ -420,6 +420,9 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 	if latencyMs < 0 {
 		latencyMs = 0
 	}
+	if outcome == "succeeded" {
+		return
+	}
 
 	fields := []zap.Field{
 		zap.String("component", "handler.openai_gateway.responses"),
@@ -434,10 +437,6 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 	fields = appendOpenAIRemoteCompactLogFields(fields, c)
 
 	log := logger.FromContext(ctx).With(fields...)
-	if outcome == "succeeded" {
-		log.Warn("codex.remote_compact.succeeded")
-		return
-	}
 	log.Warn("codex.remote_compact.failed")
 }
 
