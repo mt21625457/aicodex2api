@@ -70,30 +70,38 @@
           </div>
         </div>
 
-        <iframe v-else :src="purchaseUrl" class="h-full w-full border-0" allowfullscreen></iframe>
+        <div v-else class="purchase-embed-shell">
+          <iframe :src="purchaseUrl" class="purchase-embed-frame" allowfullscreen></iframe>
+        </div>
       </div>
     </div>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores'
+import { useAuthStore } from '@/stores/auth'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { buildEmbeddedUrl, detectTheme } from '@/utils/embedded-url'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const loading = ref(false)
+const purchaseTheme = ref<'light' | 'dark'>('light')
+let themeObserver: MutationObserver | null = null
 
 const purchaseEnabled = computed(() => {
   return appStore.cachedPublicSettings?.purchase_subscription_enabled ?? false
 })
 
 const purchaseUrl = computed(() => {
-  return (appStore.cachedPublicSettings?.purchase_subscription_url || '').trim()
+  const baseUrl = (appStore.cachedPublicSettings?.purchase_subscription_url || '').trim()
+  return buildEmbeddedUrl(baseUrl, authStore.user?.id, authStore.token, purchaseTheme.value)
 })
 
 const isValidUrl = computed(() => {
@@ -102,12 +110,31 @@ const isValidUrl = computed(() => {
 })
 
 onMounted(async () => {
+  purchaseTheme.value = detectTheme()
+
+  if (typeof document !== 'undefined') {
+    themeObserver = new MutationObserver(() => {
+      purchaseTheme.value = detectTheme()
+    })
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    })
+  }
+
   if (appStore.publicSettingsLoaded) return
   loading.value = true
   try {
     await appStore.fetchPublicSettings()
   } finally {
     loading.value = false
+  }
+})
+
+onUnmounted(() => {
+  if (themeObserver) {
+    themeObserver.disconnect()
+    themeObserver = null
   }
 })
 </script>
@@ -117,5 +144,27 @@ onMounted(async () => {
   @apply flex flex-col gap-6;
   height: calc(100vh - 64px - 4rem); /* 减去 header + lg:p-8 的上下padding */
 }
-</style>
 
+.purchase-embed-shell {
+  @apply relative;
+  @apply h-full w-full overflow-hidden rounded-2xl;
+  @apply bg-gradient-to-b from-gray-50 to-white dark:from-dark-900 dark:to-dark-950;
+  @apply p-0;
+}
+
+.purchase-open-fab {
+  @apply absolute right-3 top-3 z-10;
+  @apply shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/80 dark:supports-[backdrop-filter]:bg-dark-800/80;
+}
+
+.purchase-embed-frame {
+  display: block;
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+</style>

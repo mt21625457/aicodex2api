@@ -102,6 +102,30 @@ func init() {
 	apikeyDescQuotaUsed := apikeyFields[9].Descriptor()
 	// apikey.DefaultQuotaUsed holds the default value on creation for the quota_used field.
 	apikey.DefaultQuotaUsed = apikeyDescQuotaUsed.Default.(float64)
+	// apikeyDescRateLimit5h is the schema descriptor for rate_limit_5h field.
+	apikeyDescRateLimit5h := apikeyFields[11].Descriptor()
+	// apikey.DefaultRateLimit5h holds the default value on creation for the rate_limit_5h field.
+	apikey.DefaultRateLimit5h = apikeyDescRateLimit5h.Default.(float64)
+	// apikeyDescRateLimit1d is the schema descriptor for rate_limit_1d field.
+	apikeyDescRateLimit1d := apikeyFields[12].Descriptor()
+	// apikey.DefaultRateLimit1d holds the default value on creation for the rate_limit_1d field.
+	apikey.DefaultRateLimit1d = apikeyDescRateLimit1d.Default.(float64)
+	// apikeyDescRateLimit7d is the schema descriptor for rate_limit_7d field.
+	apikeyDescRateLimit7d := apikeyFields[13].Descriptor()
+	// apikey.DefaultRateLimit7d holds the default value on creation for the rate_limit_7d field.
+	apikey.DefaultRateLimit7d = apikeyDescRateLimit7d.Default.(float64)
+	// apikeyDescUsage5h is the schema descriptor for usage_5h field.
+	apikeyDescUsage5h := apikeyFields[14].Descriptor()
+	// apikey.DefaultUsage5h holds the default value on creation for the usage_5h field.
+	apikey.DefaultUsage5h = apikeyDescUsage5h.Default.(float64)
+	// apikeyDescUsage1d is the schema descriptor for usage_1d field.
+	apikeyDescUsage1d := apikeyFields[15].Descriptor()
+	// apikey.DefaultUsage1d holds the default value on creation for the usage_1d field.
+	apikey.DefaultUsage1d = apikeyDescUsage1d.Default.(float64)
+	// apikeyDescUsage7d is the schema descriptor for usage_7d field.
+	apikeyDescUsage7d := apikeyFields[16].Descriptor()
+	// apikey.DefaultUsage7d holds the default value on creation for the usage_7d field.
+	apikey.DefaultUsage7d = apikeyDescUsage7d.Default.(float64)
 	accountMixin := schema.Account{}.Mixin()
 	accountMixinHooks1 := accountMixin[1].Hooks()
 	account.Hooks[0] = accountMixinHooks1[0]
@@ -188,29 +212,29 @@ func init() {
 	// account.DefaultConcurrency holds the default value on creation for the concurrency field.
 	account.DefaultConcurrency = accountDescConcurrency.Default.(int)
 	// accountDescPriority is the schema descriptor for priority field.
-	accountDescPriority := accountFields[8].Descriptor()
+	accountDescPriority := accountFields[9].Descriptor()
 	// account.DefaultPriority holds the default value on creation for the priority field.
 	account.DefaultPriority = accountDescPriority.Default.(int)
 	// accountDescRateMultiplier is the schema descriptor for rate_multiplier field.
-	accountDescRateMultiplier := accountFields[9].Descriptor()
+	accountDescRateMultiplier := accountFields[10].Descriptor()
 	// account.DefaultRateMultiplier holds the default value on creation for the rate_multiplier field.
 	account.DefaultRateMultiplier = accountDescRateMultiplier.Default.(float64)
 	// accountDescStatus is the schema descriptor for status field.
-	accountDescStatus := accountFields[10].Descriptor()
+	accountDescStatus := accountFields[11].Descriptor()
 	// account.DefaultStatus holds the default value on creation for the status field.
 	account.DefaultStatus = accountDescStatus.Default.(string)
 	// account.StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	account.StatusValidator = accountDescStatus.Validators[0].(func(string) error)
 	// accountDescAutoPauseOnExpired is the schema descriptor for auto_pause_on_expired field.
-	accountDescAutoPauseOnExpired := accountFields[14].Descriptor()
+	accountDescAutoPauseOnExpired := accountFields[15].Descriptor()
 	// account.DefaultAutoPauseOnExpired holds the default value on creation for the auto_pause_on_expired field.
 	account.DefaultAutoPauseOnExpired = accountDescAutoPauseOnExpired.Default.(bool)
 	// accountDescSchedulable is the schema descriptor for schedulable field.
-	accountDescSchedulable := accountFields[15].Descriptor()
+	accountDescSchedulable := accountFields[16].Descriptor()
 	// account.DefaultSchedulable holds the default value on creation for the schedulable field.
 	account.DefaultSchedulable = accountDescSchedulable.Default.(bool)
 	// accountDescSessionWindowStatus is the schema descriptor for session_window_status field.
-	accountDescSessionWindowStatus := accountFields[23].Descriptor()
+	accountDescSessionWindowStatus := accountFields[24].Descriptor()
 	// account.SessionWindowStatusValidator is a validator for the "session_window_status" field. It is called by the builders before save.
 	account.SessionWindowStatusValidator = accountDescSessionWindowStatus.Validators[0].(func(string) error)
 	accountgroupFields := schema.AccountGroup{}.Fields()
@@ -253,12 +277,18 @@ func init() {
 	announcement.DefaultStatus = announcementDescStatus.Default.(string)
 	// announcement.StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	announcement.StatusValidator = announcementDescStatus.Validators[0].(func(string) error)
+	// announcementDescNotifyMode is the schema descriptor for notify_mode field.
+	announcementDescNotifyMode := announcementFields[3].Descriptor()
+	// announcement.DefaultNotifyMode holds the default value on creation for the notify_mode field.
+	announcement.DefaultNotifyMode = announcementDescNotifyMode.Default.(string)
+	// announcement.NotifyModeValidator is a validator for the "notify_mode" field. It is called by the builders before save.
+	announcement.NotifyModeValidator = announcementDescNotifyMode.Validators[0].(func(string) error)
 	// announcementDescCreatedAt is the schema descriptor for created_at field.
-	announcementDescCreatedAt := announcementFields[8].Descriptor()
+	announcementDescCreatedAt := announcementFields[9].Descriptor()
 	// announcement.DefaultCreatedAt holds the default value on creation for the created_at field.
 	announcement.DefaultCreatedAt = announcementDescCreatedAt.Default.(func() time.Time)
 	// announcementDescUpdatedAt is the schema descriptor for updated_at field.
-	announcementDescUpdatedAt := announcementFields[9].Descriptor()
+	announcementDescUpdatedAt := announcementFields[10].Descriptor()
 	// announcement.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	announcement.DefaultUpdatedAt = announcementDescUpdatedAt.Default.(func() time.Time)
 	// announcement.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
@@ -423,6 +453,16 @@ func init() {
 	groupDescSortOrder := groupFields[26].Descriptor()
 	// group.DefaultSortOrder holds the default value on creation for the sort_order field.
 	group.DefaultSortOrder = groupDescSortOrder.Default.(int)
+	// groupDescAllowMessagesDispatch is the schema descriptor for allow_messages_dispatch field.
+	groupDescAllowMessagesDispatch := groupFields[27].Descriptor()
+	// group.DefaultAllowMessagesDispatch holds the default value on creation for the allow_messages_dispatch field.
+	group.DefaultAllowMessagesDispatch = groupDescAllowMessagesDispatch.Default.(bool)
+	// groupDescDefaultMappedModel is the schema descriptor for default_mapped_model field.
+	groupDescDefaultMappedModel := groupFields[28].Descriptor()
+	// group.DefaultDefaultMappedModel holds the default value on creation for the default_mapped_model field.
+	group.DefaultDefaultMappedModel = groupDescDefaultMappedModel.Default.(string)
+	// group.DefaultMappedModelValidator is a validator for the "default_mapped_model" field. It is called by the builders before save.
+	group.DefaultMappedModelValidator = groupDescDefaultMappedModel.Validators[0].(func(string) error)
 	idempotencyrecordMixin := schema.IdempotencyRecord{}.Mixin()
 	idempotencyrecordMixinFields0 := idempotencyrecordMixin[0].Fields()
 	_ = idempotencyrecordMixinFields0

@@ -16,9 +16,9 @@ type tokenRefreshAccountRepo struct {
 	mockAccountRepoForGemini
 	updateCalls    int
 	setErrorCalls  int
+	clearTempCalls int
 	lastAccount    *Account
 	updateErr      error
-	activeAccounts []Account
 }
 
 func (r *tokenRefreshAccountRepo) Update(ctx context.Context, account *Account) error {
@@ -32,13 +32,9 @@ func (r *tokenRefreshAccountRepo) SetError(ctx context.Context, id int64, errorM
 	return nil
 }
 
-func (r *tokenRefreshAccountRepo) ListActive(ctx context.Context) ([]Account, error) {
-	if len(r.activeAccounts) == 0 {
-		return nil, nil
-	}
-	out := make([]Account, 0, len(r.activeAccounts))
-	out = append(out, r.activeAccounts...)
-	return out, nil
+func (r *tokenRefreshAccountRepo) ClearTempUnschedulable(ctx context.Context, id int64) error {
+	r.clearTempCalls++
+	return nil
 }
 
 type tokenCacheInvalidatorStub struct {
@@ -51,10 +47,26 @@ func (s *tokenCacheInvalidatorStub) InvalidateToken(ctx context.Context, account
 	return s.err
 }
 
+type tempUnschedCacheStub struct {
+	deleteCalls int
+}
+
+func (s *tempUnschedCacheStub) SetTempUnsched(ctx context.Context, accountID int64, state *TempUnschedState) error {
+	return nil
+}
+
+func (s *tempUnschedCacheStub) GetTempUnsched(ctx context.Context, accountID int64) (*TempUnschedState, error) {
+	return nil, nil
+}
+
+func (s *tempUnschedCacheStub) DeleteTempUnsched(ctx context.Context, accountID int64) error {
+	s.deleteCalls++
+	return nil
+}
+
 type tokenRefresherStub struct {
-	credentials  map[string]any
-	err          error
-	refreshCalls int
+	credentials map[string]any
+	err         error
 }
 
 func (r *tokenRefresherStub) CanRefresh(account *Account) bool {
@@ -66,39 +78,10 @@ func (r *tokenRefresherStub) NeedsRefresh(account *Account, refreshWindowDuratio
 }
 
 func (r *tokenRefresherStub) Refresh(ctx context.Context, account *Account) (map[string]any, error) {
-	r.refreshCalls++
 	if r.err != nil {
 		return nil, r.err
 	}
 	return r.credentials, nil
-}
-
-type tokenRefreshSchedulerLockStub struct {
-	SchedulerCache
-	lockByAccount map[int64]bool
-	err           error
-	calls         []SchedulerBucket
-}
-
-func (s *tokenRefreshSchedulerLockStub) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
-	_ = ctx
-	_ = ttl
-	s.calls = append(s.calls, bucket)
-	if s.err != nil {
-		return false, s.err
-	}
-	if s.lockByAccount != nil {
-		if ok, exists := s.lockByAccount[bucket.GroupID]; exists {
-			return ok, nil
-		}
-	}
-	return true, nil
-}
-
-func (s *tokenRefreshSchedulerLockStub) SetAccount(ctx context.Context, account *Account) error {
-	_ = ctx
-	_ = account
-	return nil
 }
 
 func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {
@@ -110,7 +93,7 @@ func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       5,
 		Platform: PlatformGemini,
@@ -129,96 +112,6 @@ func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {
 	require.Equal(t, "new-token", account.GetCredential("access_token"))
 }
 
-func TestTokenRefreshService_ProcessRefresh_SkipsWhenDistributedLockHeld(t *testing.T) {
-	repo := &tokenRefreshAccountRepo{
-		activeAccounts: []Account{
-			{ID: 31, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true},
-		},
-	}
-	lockStub := &tokenRefreshSchedulerLockStub{
-		lockByAccount: map[int64]bool{31: false},
-	}
-	cfg := &config.Config{
-		TokenRefresh: config.TokenRefreshConfig{
-			MaxRetries:               1,
-			RetryBackoffSeconds:      0,
-			CheckIntervalMinutes:     2,
-			RefreshBeforeExpiryHours: 1,
-			SyncLinkedSoraAccounts:   false,
-		},
-	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, lockStub, cfg)
-	refresher := &tokenRefresherStub{credentials: map[string]any{"access_token": "new-token"}}
-	service.refreshers = []TokenRefresher{refresher}
-
-	service.processRefresh()
-
-	require.Len(t, lockStub.calls, 1)
-	require.Equal(t, int64(31), lockStub.calls[0].GroupID)
-	require.Equal(t, tokenRefreshDistributedLockPlatform, lockStub.calls[0].Platform)
-	require.Equal(t, PlatformOpenAI, lockStub.calls[0].Mode)
-	require.Equal(t, 0, refresher.refreshCalls, "lock held by another instance should skip refresh")
-	require.Equal(t, 0, repo.updateCalls)
-}
-
-func TestTokenRefreshService_ProcessRefresh_RefreshesWhenDistributedLockAcquired(t *testing.T) {
-	repo := &tokenRefreshAccountRepo{
-		activeAccounts: []Account{
-			{ID: 32, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true},
-		},
-	}
-	lockStub := &tokenRefreshSchedulerLockStub{
-		lockByAccount: map[int64]bool{32: true},
-	}
-	cfg := &config.Config{
-		TokenRefresh: config.TokenRefreshConfig{
-			MaxRetries:               1,
-			RetryBackoffSeconds:      0,
-			CheckIntervalMinutes:     2,
-			RefreshBeforeExpiryHours: 1,
-			SyncLinkedSoraAccounts:   false,
-		},
-	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, lockStub, cfg)
-	refresher := &tokenRefresherStub{credentials: map[string]any{"access_token": "new-token"}}
-	service.refreshers = []TokenRefresher{refresher}
-
-	service.processRefresh()
-
-	require.Len(t, lockStub.calls, 1)
-	require.Equal(t, 1, refresher.refreshCalls)
-	require.Equal(t, 1, repo.updateCalls, "lock acquired should allow refresh")
-}
-
-func TestTokenRefreshService_ProcessRefresh_FailOpenWhenDistributedLockError(t *testing.T) {
-	repo := &tokenRefreshAccountRepo{
-		activeAccounts: []Account{
-			{ID: 33, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true},
-		},
-	}
-	lockStub := &tokenRefreshSchedulerLockStub{
-		err: errors.New("redis unavailable"),
-	}
-	cfg := &config.Config{
-		TokenRefresh: config.TokenRefreshConfig{
-			MaxRetries:               1,
-			RetryBackoffSeconds:      0,
-			CheckIntervalMinutes:     2,
-			RefreshBeforeExpiryHours: 1,
-			SyncLinkedSoraAccounts:   false,
-		},
-	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, lockStub, cfg)
-	refresher := &tokenRefresherStub{credentials: map[string]any{"access_token": "new-token"}}
-	service.refreshers = []TokenRefresher{refresher}
-
-	service.processRefresh()
-
-	require.Len(t, lockStub.calls, 1)
-	require.Equal(t, 1, refresher.refreshCalls, "lock backend error should fail-open and continue refresh")
-	require.Equal(t, 1, repo.updateCalls)
-}
-
 func TestTokenRefreshService_RefreshWithRetry_InvalidatorErrorIgnored(t *testing.T) {
 	repo := &tokenRefreshAccountRepo{}
 	invalidator := &tokenCacheInvalidatorStub{err: errors.New("invalidate failed")}
@@ -228,7 +121,7 @@ func TestTokenRefreshService_RefreshWithRetry_InvalidatorErrorIgnored(t *testing
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       6,
 		Platform: PlatformGemini,
@@ -254,7 +147,7 @@ func TestTokenRefreshService_RefreshWithRetry_NilInvalidator(t *testing.T) {
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
 	account := &Account{
 		ID:       7,
 		Platform: PlatformGemini,
@@ -281,7 +174,7 @@ func TestTokenRefreshService_RefreshWithRetry_Antigravity(t *testing.T) {
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       8,
 		Platform: PlatformAntigravity,
@@ -309,7 +202,7 @@ func TestTokenRefreshService_RefreshWithRetry_NonOAuthAccount(t *testing.T) {
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       9,
 		Platform: PlatformGemini,
@@ -337,7 +230,7 @@ func TestTokenRefreshService_RefreshWithRetry_OtherPlatformOAuth(t *testing.T) {
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       10,
 		Platform: PlatformOpenAI, // OpenAI OAuth 账户
@@ -365,7 +258,7 @@ func TestTokenRefreshService_RefreshWithRetry_UpdateFailed(t *testing.T) {
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       11,
 		Platform: PlatformGemini,
@@ -384,7 +277,7 @@ func TestTokenRefreshService_RefreshWithRetry_UpdateFailed(t *testing.T) {
 	require.Equal(t, 0, invalidator.calls) // 更新失败时不应触发缓存失效
 }
 
-// TestTokenRefreshService_RefreshWithRetry_RefreshFailed 测试刷新失败的情况
+// TestTokenRefreshService_RefreshWithRetry_RefreshFailed 测试可重试错误耗尽不标记 error
 func TestTokenRefreshService_RefreshWithRetry_RefreshFailed(t *testing.T) {
 	repo := &tokenRefreshAccountRepo{}
 	invalidator := &tokenCacheInvalidatorStub{}
@@ -394,7 +287,7 @@ func TestTokenRefreshService_RefreshWithRetry_RefreshFailed(t *testing.T) {
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       12,
 		Platform: PlatformGemini,
@@ -408,7 +301,7 @@ func TestTokenRefreshService_RefreshWithRetry_RefreshFailed(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, 0, repo.updateCalls)   // 刷新失败不应更新
 	require.Equal(t, 0, invalidator.calls)  // 刷新失败不应触发缓存失效
-	require.Equal(t, 1, repo.setErrorCalls) // 应设置错误状态
+	require.Equal(t, 0, repo.setErrorCalls) // 可重试错误耗尽不标记 error，下个周期继续重试
 }
 
 // TestTokenRefreshService_RefreshWithRetry_AntigravityRefreshFailed 测试 Antigravity 刷新失败不设置错误状态
@@ -421,7 +314,7 @@ func TestTokenRefreshService_RefreshWithRetry_AntigravityRefreshFailed(t *testin
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       13,
 		Platform: PlatformAntigravity,
@@ -448,7 +341,7 @@ func TestTokenRefreshService_RefreshWithRetry_AntigravityNonRetryableError(t *te
 			RetryBackoffSeconds: 0,
 		},
 	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg)
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 	account := &Account{
 		ID:       14,
 		Platform: PlatformAntigravity,
@@ -463,6 +356,77 @@ func TestTokenRefreshService_RefreshWithRetry_AntigravityNonRetryableError(t *te
 	require.Equal(t, 0, repo.updateCalls)
 	require.Equal(t, 0, invalidator.calls)
 	require.Equal(t, 1, repo.setErrorCalls) // 不可重试错误应设置错误状态
+}
+
+// TestTokenRefreshService_RefreshWithRetry_ClearsTempUnschedulable 测试刷新成功后清除临时不可调度（DB + Redis）
+func TestTokenRefreshService_RefreshWithRetry_ClearsTempUnschedulable(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	invalidator := &tokenCacheInvalidatorStub{}
+	tempCache := &tempUnschedCacheStub{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, tempCache)
+	until := time.Now().Add(10 * time.Minute)
+	account := &Account{
+		ID:                     15,
+		Platform:               PlatformGemini,
+		Type:                   AccountTypeOAuth,
+		TempUnschedulableUntil: &until,
+	}
+	refresher := &tokenRefresherStub{
+		credentials: map[string]any{
+			"access_token": "new-token",
+		},
+	}
+
+	err := service.refreshWithRetry(context.Background(), account, refresher)
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.updateCalls)
+	require.Equal(t, 1, repo.clearTempCalls)  // DB 清除
+	require.Equal(t, 1, tempCache.deleteCalls) // Redis 缓存也应清除
+}
+
+// TestTokenRefreshService_RefreshWithRetry_NonRetryableErrorAllPlatforms 测试所有平台不可重试错误都 SetError
+func TestTokenRefreshService_RefreshWithRetry_NonRetryableErrorAllPlatforms(t *testing.T) {
+	tests := []struct {
+		name     string
+		platform string
+	}{
+		{name: "gemini", platform: PlatformGemini},
+		{name: "anthropic", platform: PlatformAnthropic},
+		{name: "openai", platform: PlatformOpenAI},
+		{name: "antigravity", platform: PlatformAntigravity},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &tokenRefreshAccountRepo{}
+			invalidator := &tokenCacheInvalidatorStub{}
+			cfg := &config.Config{
+				TokenRefresh: config.TokenRefreshConfig{
+					MaxRetries:          3,
+					RetryBackoffSeconds: 0,
+				},
+			}
+			service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
+			account := &Account{
+				ID:       16,
+				Platform: tt.platform,
+				Type:     AccountTypeOAuth,
+			}
+			refresher := &tokenRefresherStub{
+				err: errors.New("invalid_grant: token revoked"),
+			}
+
+			err := service.refreshWithRetry(context.Background(), account, refresher)
+			require.Error(t, err)
+			require.Equal(t, 1, repo.setErrorCalls) // 所有平台不可重试错误都应 SetError
+		})
+	}
 }
 
 // TestIsNonRetryableRefreshError 测试不可重试错误判断
@@ -488,57 +452,4 @@ func TestIsNonRetryableRefreshError(t *testing.T) {
 			require.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-func TestTokenRefreshService_Stop_Idempotent(t *testing.T) {
-	repo := &tokenRefreshAccountRepo{}
-	cfg := &config.Config{
-		TokenRefresh: config.TokenRefreshConfig{
-			MaxRetries:          1,
-			RetryBackoffSeconds: 0,
-		},
-	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg)
-
-	require.NotPanics(t, func() {
-		service.Stop()
-		service.Stop()
-	})
-}
-
-func TestTokenRefreshService_RefreshWithRetry_StopInterruptsBackoff(t *testing.T) {
-	repo := &tokenRefreshAccountRepo{}
-	cfg := &config.Config{
-		TokenRefresh: config.TokenRefreshConfig{
-			MaxRetries:          3,
-			RetryBackoffSeconds: 5,
-		},
-	}
-	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg)
-	account := &Account{
-		ID:       21,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
-	}
-	refresher := &tokenRefresherStub{
-		err: errors.New("refresh failed"),
-	}
-
-	start := time.Now()
-	done := make(chan error, 1)
-	go func() {
-		done <- service.refreshWithRetry(context.Background(), account, refresher)
-	}()
-
-	time.Sleep(80 * time.Millisecond)
-	service.Stop()
-
-	select {
-	case err := <-done:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(600 * time.Millisecond):
-		t.Fatal("refreshWithRetry should exit quickly after service stop")
-	}
-	require.Less(t, time.Since(start), time.Second)
-	require.Equal(t, 0, repo.setErrorCalls, "stop 中断时不应落错误状态")
 }

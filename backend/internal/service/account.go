@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
@@ -27,6 +28,7 @@ type Account struct {
 	// RateMultiplier 账号计费倍率（>=0，允许 0 表示该账号计费为 0）。
 	// 使用指针用于兼容旧版本调度缓存（Redis）中缺字段的情况：nil 表示按 1.0 处理。
 	RateMultiplier     *float64
+	LoadFactor         *int // 调度负载因子；nil 表示使用 Concurrency
 	Status             string
 	ErrorMessage       string
 	LastUsedAt         *time.Time
@@ -85,6 +87,19 @@ func (a *Account) BillingRateMultiplier() float64 {
 		return 1.0
 	}
 	return *a.RateMultiplier
+}
+
+func (a *Account) EffectiveLoadFactor() int {
+	if a == nil {
+		return 1
+	}
+	if a.LoadFactor != nil && *a.LoadFactor > 0 {
+		return *a.LoadFactor
+	}
+	if a.Concurrency > 0 {
+		return a.Concurrency
+	}
+	return 1
 }
 
 func (a *Account) IsSchedulable() bool {
@@ -867,9 +882,10 @@ func normalizeOpenAIWSIngressMode(mode string) string {
 		return OpenAIWSIngressModeCtxPool
 	case OpenAIWSIngressModePassthrough:
 		return OpenAIWSIngressModePassthrough
-	case OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
-		// Deprecated: shared/dedicated 已废弃，平滑迁移到 ctx_pool
-		return OpenAIWSIngressModeCtxPool
+	case OpenAIWSIngressModeShared:
+		return OpenAIWSIngressModeShared
+	case OpenAIWSIngressModeDedicated:
+		return OpenAIWSIngressModeDedicated
 	default:
 		return ""
 	}
@@ -877,9 +893,12 @@ func normalizeOpenAIWSIngressMode(mode string) string {
 
 func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 	if normalized := normalizeOpenAIWSIngressMode(mode); normalized != "" {
+		if normalized == OpenAIWSIngressModeShared || normalized == OpenAIWSIngressModeDedicated {
+			return OpenAIWSIngressModeCtxPool
+		}
 		return normalized
 	}
-	return OpenAIWSIngressModeOff
+	return OpenAIWSIngressModeCtxPool
 }
 
 // ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/ctx_pool/passthrough）。
@@ -888,7 +907,7 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 // 1. 分类型 mode 新字段（string）
 // 2. 分类型 enabled 旧字段（bool）
 // 3. 兼容 enabled 旧字段（bool）
-// 4. defaultMode（非法时回退 off）
+// 4. defaultMode（非法时回退 ctx_pool）
 func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
 	resolvedDefault := normalizeOpenAIWSIngressDefaultMode(defaultMode)
 	if a == nil || !a.IsOpenAI() {
@@ -923,7 +942,6 @@ func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) stri
 			return "", false
 		}
 		if enabled {
-			// 兼容旧 enabled 字段：开启时至少落到 ctx_pool。
 			return OpenAIWSIngressModeCtxPool, true
 		}
 		return OpenAIWSIngressModeOff, true
@@ -950,6 +968,10 @@ func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) stri
 	}
 	if mode, ok := resolveBoolMode("openai_ws_enabled"); ok {
 		return mode
+	}
+	// 兼容旧值：shared/dedicated 语义都归并到 ctx_pool。
+	if resolvedDefault == OpenAIWSIngressModeShared || resolvedDefault == OpenAIWSIngressModeDedicated {
+		return OpenAIWSIngressModeCtxPool
 	}
 	return resolvedDefault
 }
@@ -1038,6 +1060,26 @@ func (a *Account) IsTLSFingerprintEnabled() bool {
 	return false
 }
 
+// GetUserMsgQueueMode 获取用户消息队列模式
+// "serialize" = 串行队列, "throttle" = 软性限速, "" = 未设置（使用全局配置）
+func (a *Account) GetUserMsgQueueMode() string {
+	if a.Extra == nil {
+		return ""
+	}
+	// 优先读取新字段 user_msg_queue_mode（白名单校验，非法值视为未设置）
+	if mode, ok := a.Extra["user_msg_queue_mode"].(string); ok && mode != "" {
+		if mode == config.UMQModeSerialize || mode == config.UMQModeThrottle {
+			return mode
+		}
+		return "" // 非法值 fallback 到全局配置
+	}
+	// 向后兼容: user_msg_queue_enabled: true → "serialize"
+	if enabled, ok := a.Extra["user_msg_queue_enabled"].(bool); ok && enabled {
+		return config.UMQModeSerialize
+	}
+	return ""
+}
+
 // IsSessionIDMaskingEnabled 检查是否启用会话ID伪装
 // 仅适用于 Anthropic OAuth/SetupToken 类型账号
 // 启用后将在一段时间内（15分钟）固定 metadata.user_id 中的 session ID，
@@ -1087,6 +1129,38 @@ func (a *Account) GetCacheTTLOverrideTarget() string {
 		}
 	}
 	return "5m"
+}
+
+// GetQuotaLimit 获取 API Key 账号的配额限制（美元）
+// 返回 0 表示未启用
+func (a *Account) GetQuotaLimit() float64 {
+	if a.Extra == nil {
+		return 0
+	}
+	if v, ok := a.Extra["quota_limit"]; ok {
+		return parseExtraFloat64(v)
+	}
+	return 0
+}
+
+// GetQuotaUsed 获取 API Key 账号的已用配额（美元）
+func (a *Account) GetQuotaUsed() float64 {
+	if a.Extra == nil {
+		return 0
+	}
+	if v, ok := a.Extra["quota_used"]; ok {
+		return parseExtraFloat64(v)
+	}
+	return 0
+}
+
+// IsQuotaExceeded 检查 API Key 账号配额是否已超限
+func (a *Account) IsQuotaExceeded() bool {
+	limit := a.GetQuotaLimit()
+	if limit <= 0 {
+		return false
+	}
+	return a.GetQuotaUsed() >= limit
 }
 
 // GetWindowCostLimit 获取 5h 窗口费用阈值（美元）
@@ -1280,6 +1354,12 @@ func parseExtraFloat64(value any) float64 {
 }
 
 // parseExtraInt 从 extra 字段解析 int 值
+// ParseExtraInt 从 extra 字段的 any 值解析为 int。
+// 支持 int, int64, float64, json.Number, string 类型，无法解析时返回 0。
+func ParseExtraInt(value any) int {
+	return parseExtraInt(value)
+}
+
 func parseExtraInt(value any) int {
 	switch v := value.(type) {
 	case int:

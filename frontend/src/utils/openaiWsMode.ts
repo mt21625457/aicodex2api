@@ -23,6 +23,9 @@ export interface ResolveOpenAIWSModeOptions {
 export const normalizeOpenAIWSMode = (mode: unknown): OpenAIWSMode | null => {
   if (typeof mode !== 'string') return null
   const normalized = mode.trim().toLowerCase()
+  if (normalized === 'shared' || normalized === 'dedicated') {
+    return OPENAI_WS_MODE_CTX_POOL
+  }
   if (OPENAI_WS_MODES.has(normalized as OpenAIWSMode)) {
     return normalized as OpenAIWSMode
   }

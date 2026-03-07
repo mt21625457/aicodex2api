@@ -280,7 +280,7 @@ export default {
     logout: '退出登录',
     github: 'GitHub',
     mySubscriptions: '我的订阅',
-    buySubscription: '购买订阅',
+    buySubscription: '充值/订阅',
     docs: '文档',
     sora: 'Sora 创作'
   },
@@ -1667,6 +1667,22 @@ export default {
         sessions: {
           full: '活跃会话已满，新会话需等待（空闲超时：{idle}分钟）',
           normal: '活跃会话正常（空闲超时：{idle}分钟）'
+        },
+        rpm: {
+          full: '已达 RPM 上限',
+          warning: 'RPM 接近上限',
+          normal: 'RPM 正常',
+          tieredNormal: 'RPM 限制 (三区模型) - 正常',
+          tieredWarning: 'RPM 限制 (三区模型) - 接近阈值',
+          tieredStickyOnly: 'RPM 限制 (三区模型) - 仅粘性会话 | 缓冲区: {buffer}',
+          tieredBlocked: 'RPM 限制 (三区模型) - 已阻塞 | 缓冲区: {buffer}',
+          stickyExemptNormal: 'RPM 限制 (粘性豁免) - 正常',
+          stickyExemptWarning: 'RPM 限制 (粘性豁免) - 接近阈值',
+          stickyExemptOver: 'RPM 限制 (粘性豁免) - 超限，仅粘性会话'
+        },
+        quota: {
+          exceeded: '配额已用完，账号暂停调度',
+          normal: '配额正常'
         }
       },
       clearRateLimit: '清除速率限制',
@@ -1940,6 +1956,8 @@ export default {
         wsModeOff: '关闭（off）',
         wsModeCtxPool: '上下文池（ctx_pool）',
         wsModePassthrough: '透传（passthrough）',
+        wsModeShared: '共享（shared）',
+        wsModeDedicated: '独享（dedicated）',
         wsModeConcurrencyHint: '启用 WS mode 后，该账号并发数将作为该账号 WS 连接池上限。',
         wsModePassthroughHint: 'passthrough 模式不使用 WS 连接池。',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
@@ -2024,6 +2042,27 @@ export default {
           idleTimeout: '空闲超时',
           idleTimeoutPlaceholder: '5',
           idleTimeoutHint: '会话空闲超时后自动释放'
+        },
+        rpmLimit: {
+          label: 'RPM 限制',
+          hint: '限制每分钟请求数量，保护上游账号',
+          baseRpm: '基础 RPM',
+          baseRpmPlaceholder: '15',
+          baseRpmHint: '每分钟最大请求数，0 或留空表示不限制',
+          strategy: 'RPM 策略',
+          strategyTiered: '三区模型',
+          strategyStickyExempt: '粘性豁免',
+          strategyTieredHint: '绿区→黄区→仅粘性→阻塞，逐步限流',
+          strategyStickyExemptHint: '超限后仅允许粘性会话',
+          strategyHint: '三区模型: 超限后逐步限制; 粘性豁免: 已有会话不受限',
+          stickyBuffer: '粘性缓冲区',
+          stickyBufferPlaceholder: '默认: base RPM 的 20%',
+          stickyBufferHint: '超过 base RPM 后，粘性会话额外允许的请求数。为空则使用默认值（base RPM 的 20%，最小为 1）',
+          userMsgQueue: '用户消息限速',
+          userMsgQueueHint: '对用户消息施加发送限制，避免触发上游 RPM 限制',
+          umqModeOff: '关闭',
+          umqModeThrottle: '软性限速',
+          umqModeSerialize: '串行队列',
         },
         tlsFingerprint: {
           label: 'TLS 指纹模拟',

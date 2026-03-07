@@ -239,6 +239,8 @@ type coderOpenAIWSClientConn struct {
 	conn *coderws.Conn
 }
 
+var _ openaiwsv2.FrameConn = (*coderOpenAIWSClientConn)(nil)
+
 func (c *coderOpenAIWSClientConn) WriteJSON(ctx context.Context, value any) error {
 	if c == nil || c.conn == nil {
 		return errOpenAIWSConnClosed
