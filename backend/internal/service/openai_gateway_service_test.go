@@ -2378,6 +2378,72 @@ func TestHandleNonStreamingResponsePassthrough_OAuthIncompleteSSEReturnsBadGatew
 	require.Contains(t, rec.Body.String(), `"type":"upstream_error"`)
 }
 
+func TestHandleNonStreamingResponsePassthrough_OAuthCompactEmptyBodyReturnsBadGateway(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader("")),
+	}
+
+	account := &Account{Type: AccountTypeOAuth}
+	usage, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, account, "gpt-4o")
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), `"type":"upstream_error"`)
+	require.Contains(t, rec.Body.String(), `empty compact response`)
+}
+
+func TestHandleNonStreamingResponsePassthrough_OAuthCompactInvalidJSONReturnsBadGateway(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/plain"}},
+		Body:       io.NopCloser(strings.NewReader("not-json")),
+	}
+
+	account := &Account{Type: AccountTypeOAuth}
+	usage, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, account, "gpt-4o")
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), `"type":"upstream_error"`)
+	require.Contains(t, rec.Body.String(), `invalid compact response JSON`)
+}
+
+func TestHandleNonStreamingResponsePassthrough_OAuthCompactMissingOutputReturnsBadGateway(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2}}`)),
+	}
+
+	account := &Account{Type: AccountTypeOAuth}
+	usage, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, account, "gpt-4o")
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), `"type":"upstream_error"`)
+	require.Contains(t, rec.Body.String(), `invalid compact response shape`)
+}
+
 func TestNormalizeOpenAIPassthroughOAuthBody_CompactForcesNonStreamAndRemovesStore(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.2","stream":true,"store":true}`)
 

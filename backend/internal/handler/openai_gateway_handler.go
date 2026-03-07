@@ -431,35 +431,128 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 		zap.Bool("force_codex_cli", h != nil && h.cfg != nil && h.cfg.Gateway.ForceCodexCLI),
 	}
 
-	if c != nil {
-		if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); userAgent != "" {
-			fields = append(fields, zap.String("request_user_agent", userAgent))
-		}
-		if v, ok := c.Get(opsModelKey); ok {
-			if model, ok := v.(string); ok && strings.TrimSpace(model) != "" {
-				fields = append(fields, zap.String("request_model", strings.TrimSpace(model)))
-			}
-		}
-		if v, ok := c.Get(opsAccountIDKey); ok {
-			if accountID, ok := v.(int64); ok && accountID > 0 {
-				fields = append(fields, zap.Int64("account_id", accountID))
-			}
-		}
-		if c.Writer != nil {
-			if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("x-request-id")); upstreamRequestID != "" {
-				fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
-			} else if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("X-Request-Id")); upstreamRequestID != "" {
-				fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
-			}
-		}
-	}
+	fields = appendOpenAIRemoteCompactLogFields(fields, c)
 
 	log := logger.FromContext(ctx).With(fields...)
 	if outcome == "succeeded" {
-		log.Info("codex.remote_compact.succeeded")
+		log.Warn("codex.remote_compact.succeeded")
 		return
 	}
 	log.Warn("codex.remote_compact.failed")
+}
+
+func appendOpenAIRemoteCompactLogFields(fields []zap.Field, c *gin.Context) []zap.Field {
+	if c == nil {
+		return fields
+	}
+	if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); userAgent != "" {
+		fields = append(fields, zap.String("request_user_agent", userAgent))
+	}
+	if v, ok := c.Get(opsModelKey); ok {
+		if model, ok := v.(string); ok && strings.TrimSpace(model) != "" {
+			fields = append(fields, zap.String("request_model", strings.TrimSpace(model)))
+		}
+	}
+	if v, ok := c.Get(opsAccountIDKey); ok {
+		if accountID, ok := v.(int64); ok && accountID > 0 {
+			fields = append(fields, zap.Int64("account_id", accountID))
+		}
+	}
+	if v, ok := c.Get(opsStreamKey); ok {
+		if stream, ok := v.(bool); ok {
+			fields = append(fields, zap.Bool("request_stream", stream))
+		}
+	}
+	if v, ok := c.Get(opsRequestBodyKey); ok {
+		switch raw := v.(type) {
+		case []byte:
+			fields = appendOpenAIRemoteCompactRequestBodyFields(fields, raw)
+		case string:
+			fields = appendOpenAIRemoteCompactRequestBodyFields(fields, []byte(raw))
+		}
+	}
+	if v, ok := c.Get("openai_passthrough"); ok {
+		if passthrough, ok := v.(bool); ok {
+			fields = append(fields, zap.Bool("passthrough", passthrough))
+		}
+	}
+	if msg, ok := c.Get(service.OpsUpstreamErrorMessageKey); ok {
+		if message, ok := msg.(string); ok && strings.TrimSpace(message) != "" {
+			fields = append(fields, zap.String("upstream_error_message", strings.TrimSpace(message)))
+		}
+	}
+	if detail, ok := c.Get(service.OpsUpstreamErrorDetailKey); ok {
+		if message, ok := detail.(string); ok && strings.TrimSpace(message) != "" {
+			fields = append(fields, zap.String("upstream_error_detail", strings.TrimSpace(message)))
+		}
+	}
+	if raw, ok := c.Get(service.OpsUpstreamErrorsKey); ok {
+		if events, ok := raw.([]*service.OpsUpstreamErrorEvent); ok {
+			fields = append(fields, zap.Int("upstream_error_count", len(events)))
+			if len(events) > 0 {
+				fields = append(fields, zap.Any("upstream_errors", events))
+			}
+		}
+	}
+	if c.Writer != nil {
+		if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("x-request-id")); upstreamRequestID != "" {
+			fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
+		} else if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("X-Request-Id")); upstreamRequestID != "" {
+			fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
+		}
+		if contentType := strings.TrimSpace(c.Writer.Header().Get("Content-Type")); contentType != "" {
+			fields = append(fields, zap.String("response_content_type", contentType))
+		}
+		if contentLength := strings.TrimSpace(c.Writer.Header().Get("Content-Length")); contentLength != "" {
+			fields = append(fields, zap.String("response_content_length", contentLength))
+		}
+		if capture, ok := c.Writer.(*opsCaptureWriter); ok && capture != nil && capture.buf.Len() > 0 {
+			fields = append(fields,
+				zap.Int("response_body_bytes", capture.buf.Len()),
+				zap.String("response_body_preview", compactLogPreview(capture.buf.Bytes(), 4096)),
+			)
+		}
+	}
+	return fields
+}
+
+func appendOpenAIRemoteCompactRequestBodyFields(fields []zap.Field, raw []byte) []zap.Field {
+	if len(raw) == 0 {
+		return fields
+	}
+	fields = append(fields,
+		zap.Int("request_body_bytes", len(raw)),
+		zap.String("request_body_preview", compactLogPreview(raw, 4096)),
+	)
+	if !gjson.ValidBytes(raw) {
+		return fields
+	}
+	if input := gjson.GetBytes(raw, "input"); input.Exists() && input.IsArray() {
+		fields = append(fields, zap.Int("request_input_items", len(input.Array())))
+	}
+	if instructions := strings.TrimSpace(gjson.GetBytes(raw, "instructions").String()); instructions != "" {
+		fields = append(fields, zap.Int("request_instructions_bytes", len(instructions)))
+	}
+	if promptCacheKey := strings.TrimSpace(gjson.GetBytes(raw, "prompt_cache_key").String()); promptCacheKey != "" {
+		fields = append(fields, zap.String("prompt_cache_key", truncateString(promptCacheKey, 256)))
+	}
+	if previousResponseID := strings.TrimSpace(gjson.GetBytes(raw, "previous_response_id").String()); previousResponseID != "" {
+		fields = append(fields, zap.String("previous_response_id", truncateString(previousResponseID, 256)))
+	}
+	if store := gjson.GetBytes(raw, "store"); store.Exists() {
+		fields = append(fields, zap.String("request_store", truncateString(strings.TrimSpace(store.Raw), 64)))
+	}
+	return fields
+}
+
+func compactLogPreview(raw []byte, max int) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	preview := truncateString(string(raw), max)
+	preview = strings.ReplaceAll(preview, "\n", "\\n")
+	preview = strings.ReplaceAll(preview, "\r", "\\r")
+	return preview
 }
 
 func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context, body []byte, reqLog *zap.Logger) bool {

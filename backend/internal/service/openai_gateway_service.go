@@ -2723,6 +2723,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		}
 	}
 
+	if resolveOpenAIResponsesEndpoint(c) == openAICompactEndpoint {
+		if msg := validateCompactPassthroughResponseBody(body); msg != "" {
+			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
+		}
+	}
+
 	usage := &OpenAIUsage{}
 	usageParsed := false
 	if len(body) > 0 {
@@ -2744,6 +2750,20 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil
+}
+
+func validateCompactPassthroughResponseBody(body []byte) string {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return "Upstream returned empty compact response"
+	}
+	if !gjson.ValidBytes(body) {
+		return "Upstream returned invalid compact response JSON"
+	}
+	output := gjson.GetBytes(body, "output")
+	if !output.Exists() || !output.IsArray() {
+		return "Upstream returned invalid compact response shape"
+	}
+	return ""
 }
 
 func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, filter *responseheaders.CompiledHeaderFilter) {
