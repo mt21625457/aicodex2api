@@ -477,6 +477,88 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_CountTokens404PassthroughNotE
 	}
 }
 
+func TestGatewayService_ShouldRetryUpstreamError_BadRequestNeverRetries(t *testing.T) {
+	svc := &GatewayService{}
+
+	t.Run("apikey_custom_error_codes_miss_still_not_retry_400", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformAnthropic,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"custom_error_codes_enabled": true,
+				"custom_error_codes":         []any{float64(http.StatusTooManyRequests), float64(http.StatusInternalServerError)},
+			},
+		}
+		require.False(t, svc.shouldRetryUpstreamError(account, http.StatusBadRequest))
+		require.True(t, svc.shouldRetryUpstreamError(account, http.StatusForbidden))
+	})
+
+	t.Run("oauth_keeps_403_retry_but_not_400", func(t *testing.T) {
+		account := &Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+		require.False(t, svc.shouldRetryUpstreamError(account, http.StatusBadRequest))
+		require.True(t, svc.shouldRetryUpstreamError(account, http.StatusForbidden))
+	})
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_400CustomErrorCodesMissDoesNotBecomeRetryExhausted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-sonnet-4-5-20250929","messages":[{"role":"user","content":"hi"}]}`)
+	parsed := &ParsedRequest{Body: body, Model: "claude-sonnet-4-5-20250929"}
+
+	upstreamBody := `{"type":"error","error":{"type":"invalid_request_error","message":"Invalid request Error"}}`
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+				"x-request-id": []string{"rid-kimi-400"},
+			},
+			Body: io.NopCloser(strings.NewReader(upstreamBody)),
+		},
+	}
+
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+		},
+		httpUpstream:     upstream,
+		rateLimitService: &RateLimitService{},
+	}
+
+	account := &Account{
+		ID:          7637,
+		Name:        "cf-7637",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":                    "sk-kimi-test",
+			"base_url":                   "https://api.kimi.com/coding/",
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(http.StatusTooManyRequests), float64(http.StatusServiceUnavailable)},
+		},
+		Extra: map[string]any{
+			"anthropic_passthrough": true,
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, upstreamBody, rec.Body.String())
+	require.NotContains(t, rec.Body.String(), "Upstream request failed after retries")
+	require.Contains(t, err.Error(), "upstream error: 400")
+	require.NotContains(t, err.Error(), "retries exhausted")
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_BuildRequestRejectsInvalidBaseURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

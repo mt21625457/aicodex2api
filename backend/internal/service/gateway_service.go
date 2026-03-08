@@ -3353,6 +3353,13 @@ const (
 )
 
 func (s *GatewayService) shouldRetryUpstreamError(account *Account, statusCode int) bool {
+	// 400 表示请求语义/兼容性错误，不应走通用“重试耗尽”包装。
+	// 相关的 400 特殊处理（如 thinking/signature 兼容重试、FailoverOn400）
+	// 已在各调用链路中单独完成，这里统一禁止把 400 视为可重试错误。
+	if statusCode == http.StatusBadRequest {
+		return false
+	}
+
 	// OAuth/Setup Token 账号：仅 403 重试
 	if account.IsOAuth() {
 		return statusCode == 403
