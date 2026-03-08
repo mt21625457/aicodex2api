@@ -160,6 +160,23 @@ func TestGetModelPricing_OpenAIGPT51Fallback(t *testing.T) {
 	require.InDelta(t, 1.25e-6, pricing.InputPricePerToken, 1e-12)
 }
 
+func TestCalculateCostWithServiceTier_OpenAICodexPriorityUsesPriorityPricing(t *testing.T) {
+	svc := newTestBillingService()
+	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 20}
+
+	baseCost, err := svc.CalculateCost("gpt-5.1-codex", tokens, 1.0)
+	require.NoError(t, err)
+
+	priorityCost, err := svc.CalculateCostWithServiceTier("gpt-5.1-codex", tokens, 1.0, "priority")
+	require.NoError(t, err)
+
+	require.InDelta(t, baseCost.InputCost*2, priorityCost.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost*2, priorityCost.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.CacheReadCost*2, priorityCost.CacheReadCost, 1e-10)
+	require.InDelta(t, baseCost.TotalCost*2, priorityCost.TotalCost, 1e-10)
+	require.InDelta(t, baseCost.ActualCost*2, priorityCost.ActualCost, 1e-10)
+}
+
 func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -172,6 +189,22 @@ func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	require.Equal(t, 272000, pricing.LongContextInputThreshold)
 	require.InDelta(t, 2.0, pricing.LongContextInputMultiplier, 1e-12)
 	require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
+}
+
+func TestGetModelPricing_OpenAIGPT52AndGpt53CodexFallback(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing52, err := svc.GetModelPricing("gpt-5.2")
+	require.NoError(t, err)
+	require.NotNil(t, pricing52)
+	require.InDelta(t, 1.75e-6, pricing52.InputPricePerToken, 1e-12)
+	require.InDelta(t, 3.5e-6, pricing52.InputPricePerTokenPriority, 1e-12)
+
+	pricing53Codex, err := svc.GetModelPricing("gpt-5.3-codex")
+	require.NoError(t, err)
+	require.NotNil(t, pricing53Codex)
+	require.InDelta(t, 1.75e-6, pricing53Codex.InputPricePerToken, 1e-12)
+	require.InDelta(t, 3.5e-6, pricing53Codex.InputPricePerTokenPriority, 1e-12)
 }
 
 func TestCalculateCost_OpenAIGPT54LongContextAppliesWholeSessionMultipliers(t *testing.T) {

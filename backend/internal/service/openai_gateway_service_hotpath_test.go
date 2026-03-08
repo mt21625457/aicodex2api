@@ -105,6 +105,53 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 	}
 }
 
+func TestExtractOpenAIServiceTierFromBody(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      []byte
+		wantNil   bool
+		wantValue string
+	}{
+		{
+			name:      "priority 原样读取",
+			body:      []byte(`{"service_tier":"priority"}`),
+			wantValue: "priority",
+		},
+		{
+			name:      "fast 归一化为 priority",
+			body:      []byte(`{"service_tier":"fast"}`),
+			wantValue: "priority",
+		},
+		{
+			name:      "flex 原样读取",
+			body:      []byte(`{"service_tier":"flex"}`),
+			wantValue: "flex",
+		},
+		{
+			name:    "unknown 忽略",
+			body:    []byte(`{"service_tier":"standard"}`),
+			wantNil: true,
+		},
+		{
+			name:    "缺失字段",
+			body:    []byte(`{"model":"gpt-5"}`),
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractOpenAIServiceTierFromBody(tt.body)
+			if tt.wantNil {
+				require.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			require.Equal(t, tt.wantValue, *got)
+		})
+	}
+}
+
 func TestGetOpenAIRequestBodyMap_UsesContextCache(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

@@ -71,6 +71,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			log.ImageCount,
 			sqlmock.AnyArg(), // image_size
 			sqlmock.AnyArg(), // media_type
+			sqlmock.AnyArg(), // service_tier
 			sqlmock.AnyArg(), // reasoning_effort
 			log.CacheTTLOverridden,
 			createdAt,

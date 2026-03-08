@@ -410,7 +410,7 @@ func TestProxyResponsesWebSocketV2Passthrough_Success(t *testing.T) {
 	}()
 
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","service_tier":"priority","input":[]}`))
 	cancelWrite()
 	require.NoError(t, err)
 
@@ -493,7 +493,7 @@ func TestProxyResponsesWebSocketV2Passthrough_NilContext(t *testing.T) {
 	}()
 
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","service_tier":"priority","input":[]}`))
 	cancelWrite()
 	require.NoError(t, err)
 
@@ -585,7 +585,7 @@ func TestProxyResponsesWebSocketV2Passthrough_ZeroTurnFallbackCallback(t *testin
 	}()
 
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","service_tier":"priority","input":[]}`))
 	cancelWrite()
 	require.NoError(t, err)
 
@@ -692,7 +692,7 @@ func TestProxyResponsesWebSocketV2Passthrough_TurnMetricsPropagated(t *testing.T
 	}()
 
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","service_tier":"priority","input":[]}`))
 	cancelWrite()
 	require.NoError(t, err)
 
@@ -810,7 +810,7 @@ func TestProxyResponsesWebSocketV2Passthrough_MultiTurnAfterTurnOnTerminal(t *te
 	}()
 
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","service_tier":"priority","input":[]}`))
 	cancelWrite()
 	require.NoError(t, err)
 
@@ -836,12 +836,16 @@ func TestProxyResponsesWebSocketV2Passthrough_MultiTurnAfterTurnOnTerminal(t *te
 	require.NoError(t, gotCalls[0].err)
 	require.NotNil(t, gotCalls[0].result)
 	require.Equal(t, "resp_turn_1", gotCalls[0].result.RequestID)
+	require.NotNil(t, gotCalls[0].result.ServiceTier)
+	require.Equal(t, "priority", *gotCalls[0].result.ServiceTier)
 	require.Equal(t, 3, gotCalls[0].result.Usage.InputTokens)
 	require.Equal(t, 2, gotCalls[0].result.Usage.OutputTokens)
 	require.Equal(t, 2, gotCalls[1].turn)
 	require.NoError(t, gotCalls[1].err)
 	require.NotNil(t, gotCalls[1].result)
 	require.Equal(t, "resp_turn_2", gotCalls[1].result.RequestID)
+	require.NotNil(t, gotCalls[1].result.ServiceTier)
+	require.Equal(t, "priority", *gotCalls[1].result.ServiceTier)
 	require.Equal(t, 1, gotCalls[1].result.Usage.InputTokens)
 	require.Equal(t, 4, gotCalls[1].result.Usage.OutputTokens)
 }

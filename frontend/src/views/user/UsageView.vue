@@ -442,6 +442,10 @@
           </div>
           <!-- Rate and Summary -->
           <div class="flex items-center justify-between gap-6">
+            <span class="text-gray-400">{{ t('usage.serviceTier') }}</span>
+            <span class="font-semibold text-cyan-300">{{ getServiceTierLabel(tooltipData?.service_tier) }}</span>
+          </div>
+          <div class="flex items-center justify-between gap-6">
             <span class="text-gray-400">{{ t('usage.rate') }}</span>
             <span class="font-semibold text-blue-400"
               >{{ (tooltipData?.rate_multiplier || 1).toFixed(2) }}x</span
@@ -485,6 +489,7 @@ import type { Column } from '@/components/common/types'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
+import { formatUsageServiceTier } from '@/utils/usageServiceTier'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -597,6 +602,14 @@ const getRequestTypeBadgeClass = (log: UsageLog): string => {
   if (requestType === 'stream') return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
   if (requestType === 'sync') return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
   return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200'
+}
+
+const getServiceTierLabel = (serviceTier?: string | null): string => {
+  const tier = formatUsageServiceTier(serviceTier)
+  if (tier === 'priority') return t('usage.serviceTierPriority')
+  if (tier === 'flex') return t('usage.serviceTierFlex')
+  if (tier === 'standard') return t('usage.serviceTierStandard')
+  return tier
 }
 
 const getRequestTypeExportText = (log: UsageLog): string => {

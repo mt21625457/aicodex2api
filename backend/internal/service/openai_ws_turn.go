@@ -399,6 +399,7 @@ func buildOpenAIWSIngressPartialResult(
 		RequestID:         responseID,
 		Usage:             usage,
 		Model:             model,
+		ServiceTier:       extractOpenAIServiceTierFromBody(requestPayload),
 		ReasoningEffort:   extractOpenAIReasoningEffortFromBody(requestPayload, model),
 		Stream:            reqStream,
 		OpenAIWSMode:      true,

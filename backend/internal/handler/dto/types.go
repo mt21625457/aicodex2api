@@ -260,6 +260,8 @@ type UsageLog struct {
 	AccountID int64  `json:"account_id"`
 	RequestID string `json:"request_id"`
 	Model     string `json:"model"`
+	// ServiceTier is the billed service tier, e.g. "priority" / "flex". Nil means standard/default.
+	ServiceTier *string `json:"service_tier,omitempty"`
 	// ReasoningEffort is the request's reasoning effort level (OpenAI Responses API).
 	// nil means not provided / not applicable.
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"`

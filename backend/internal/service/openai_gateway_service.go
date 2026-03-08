@@ -228,6 +228,9 @@ type OpenAIForwardResult struct {
 	RequestID string
 	Usage     OpenAIUsage
 	Model     string
+	// ServiceTier records the OpenAI Responses API service tier, e.g. "priority" / "flex".
+	// Nil means the request did not specify a recognized tier.
+	ServiceTier *string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
 	// Stored for usage records display; nil means not provided / not applicable.
 	ReasoningEffort *string
@@ -2293,11 +2296,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	reasoningEffort := extractOpenAIReasoningEffort(reqBody, originalModel)
+	serviceTier := extractOpenAIServiceTier(reqBody)
 
 	return &OpenAIForwardResult{
 		RequestID:       resp.Header.Get("x-request-id"),
 		Usage:           *usage,
 		Model:           originalModel,
+		ServiceTier:     serviceTier,
 		ReasoningEffort: reasoningEffort,
 		Stream:          reqStream,
 		OpenAIWSMode:    false,
@@ -2458,6 +2463,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		RequestID:       resp.Header.Get("x-request-id"),
 		Usage:           *usage,
 		Model:           reqModel,
+		ServiceTier:     extractOpenAIServiceTierFromBody(body),
 		ReasoningEffort: reasoningEffort,
 		Stream:          reqStream,
 		OpenAIWSMode:    false,
@@ -4096,6 +4102,10 @@ func buildOpenAIUsageFallbackRequestID(input *OpenAIRecordUsageInput) string {
 	_ = seed.WriteByte('|')
 	_, _ = seed.WriteString(strings.TrimSpace(result.Model))
 	_ = seed.WriteByte('|')
+	if result.ServiceTier != nil {
+		_, _ = seed.WriteString(strings.TrimSpace(*result.ServiceTier))
+	}
+	_ = seed.WriteByte('|')
 	_, _ = seed.WriteString(strings.TrimSpace(result.TerminalEventType))
 	_ = seed.WriteByte('|')
 	_, _ = seed.WriteString(strconv.FormatBool(result.Stream))
@@ -4199,13 +4209,18 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		multiplier = resolver.Resolve(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
 	}
 
-	cost, err := s.billingService.CalculateCost(result.Model, tokens, multiplier)
+	serviceTier := ""
+	if result.ServiceTier != nil {
+		serviceTier = strings.TrimSpace(*result.ServiceTier)
+	}
+	cost, err := s.billingService.CalculateCostWithServiceTier(result.Model, tokens, multiplier, serviceTier)
 	if err != nil {
 		cost, err = resolveUsagePricingFailure(s.cfg, "service.openai_gateway", result.Model, result.RequestID, err)
 		if err != nil {
 			return err
 		}
 	}
+	applyOpenAIServiceTierCostMultiplier(cost, result.ServiceTier)
 
 	// Determine billing type
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -4224,6 +4239,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		AccountID:             account.ID,
 		RequestID:             requestID,
 		Model:                 result.Model,
+		ServiceTier:           result.ServiceTier,
 		ReasoningEffort:       result.ReasoningEffort,
 		InputTokens:           actualInputTokens,
 		OutputTokens:          result.Usage.OutputTokens,
@@ -4514,6 +4530,58 @@ func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any) (value string, 
 	}
 
 	return "", false
+}
+
+func extractOpenAIServiceTier(reqBody map[string]any) *string {
+	if reqBody == nil {
+		return nil
+	}
+	raw, ok := reqBody["service_tier"].(string)
+	if !ok {
+		return nil
+	}
+	return normalizeOpenAIServiceTier(raw)
+}
+
+func extractOpenAIServiceTierFromBody(body []byte) *string {
+	if len(body) == 0 {
+		return nil
+	}
+	return normalizeOpenAIServiceTier(gjson.GetBytes(body, "service_tier").String())
+}
+
+func normalizeOpenAIServiceTier(raw string) *string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return nil
+	}
+	if value == "fast" {
+		value = "priority"
+	}
+	switch value {
+	case "priority", "flex":
+		return &value
+	default:
+		return nil
+	}
+}
+
+func applyOpenAIServiceTierCostMultiplier(cost *CostBreakdown, serviceTier *string) {
+	if cost == nil || serviceTier == nil {
+		return
+	}
+
+	if strings.ToLower(strings.TrimSpace(*serviceTier)) != "flex" {
+		return
+	}
+	multiplier := 0.5
+
+	cost.InputCost *= multiplier
+	cost.OutputCost *= multiplier
+	cost.CacheCreationCost *= multiplier
+	cost.CacheReadCost *= multiplier
+	cost.TotalCost *= multiplier
+	cost.ActualCost *= multiplier
 }
 
 func deriveOpenAIReasoningEffortFromModel(model string) string {
