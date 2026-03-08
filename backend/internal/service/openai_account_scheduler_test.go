@@ -3,6 +3,7 @@ package service
 import (
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -12,6 +13,236 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+type schedulerFreshAccountRepoStub struct {
+	startupAccountRepoStub
+	listSchedulableByPlatformErr error
+}
+
+func (s *schedulerFreshAccountRepoStub) ListSchedulableByPlatform(_ context.Context, platform string) ([]Account, error) {
+	if s.listSchedulableByPlatformErr != nil {
+		return nil, s.listSchedulableByPlatformErr
+	}
+	return s.startupAccountRepoStub.ListSchedulableByPlatform(context.Background(), platform)
+}
+
+func (s *schedulerFreshAccountRepoStub) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
+	return s.ListSchedulableByPlatform(ctx, platform)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_RefreshesDBWhenCachedCandidatesFilteredEmpty(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(77)
+	stale := Account{
+		ID:          7001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"},
+		},
+	}
+	fresh := Account{
+		ID:          7002,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4"},
+		},
+	}
+
+	repo := &startupAccountRepoStub{accounts: []Account{fresh}}
+	cache := &startupSchedulerCacheStub{snapshot: []*Account{&stale}, hit: true}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	snapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	snapshot.startupWarm.Store(true)
+
+	svc := &OpenAIGatewayService{
+		schedulerSnapshot:  snapshot,
+		cache:              &stubGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"session_hash_refresh_db",
+		"gpt-5.4",
+		nil,
+		OpenAIUpstreamTransportAny,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, fresh.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, 1, cache.getSnapshotCalls)
+	require.Equal(t, 1, cache.setSnapshotCalls)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_RefreshesDBWhenCachedPoolEmpty(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(78)
+	fresh := Account{
+		ID:          7102,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4"},
+		},
+	}
+
+	repo := &startupAccountRepoStub{accounts: []Account{fresh}}
+	cache := &startupSchedulerCacheStub{snapshot: []*Account{}, hit: true}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	snapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	snapshot.startupWarm.Store(true)
+
+	svc := &OpenAIGatewayService{
+		schedulerSnapshot:  snapshot,
+		cache:              &stubGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"session_hash_refresh_empty_pool",
+		"gpt-5.4",
+		nil,
+		OpenAIUpstreamTransportAny,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, fresh.ID, selection.Account.ID)
+	require.Equal(t, 1, cache.getSnapshotCalls)
+	require.Equal(t, 1, cache.setSnapshotCalls)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestDefaultOpenAIAccountSchedulerEnsureLoadBalanceCandidates_UsesFreshDBOnEmpty(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(79)
+	fresh := Account{ID: 7201, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1}
+	repo := &schedulerFreshAccountRepoStub{startupAccountRepoStub: startupAccountRepoStub{accounts: []Account{fresh}}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	snapshot := NewSchedulerSnapshotService(nil, nil, repo, nil, cfg)
+	svc := &OpenAIGatewayService{schedulerSnapshot: snapshot, cfg: cfg}
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, newOpenAIAccountRuntimeStats())
+
+	accounts, filtered, loadReq, err := scheduler.ensureLoadBalanceCandidates(ctx, nil, OpenAIAccountScheduleRequest{GroupID: &groupID})
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Len(t, filtered, 1)
+	require.Len(t, loadReq, 1)
+	require.Equal(t, fresh.ID, filtered[0].ID)
+}
+
+func TestDefaultOpenAIAccountSchedulerEnsureLoadBalanceCandidates_ReturnsFreshErrorWhenNoCachedPool(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(80)
+	repo := &schedulerFreshAccountRepoStub{listSchedulableByPlatformErr: errors.New("db unavailable")}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	snapshot := NewSchedulerSnapshotService(nil, nil, repo, nil, cfg)
+	svc := &OpenAIGatewayService{schedulerSnapshot: snapshot, cfg: cfg}
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, newOpenAIAccountRuntimeStats())
+
+	accounts, filtered, loadReq, err := scheduler.ensureLoadBalanceCandidates(ctx, nil, OpenAIAccountScheduleRequest{GroupID: &groupID})
+	require.Error(t, err)
+	require.Nil(t, accounts)
+	require.Nil(t, filtered)
+	require.Nil(t, loadReq)
+}
+
+func TestDefaultOpenAIAccountSchedulerEnsureLoadBalanceCandidates_RefreshesWhenCachedFilteredEmpty(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(81)
+	stale := Account{ID: 7301, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"}}}
+	fresh := Account{ID: 7302, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 2, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4"}}}
+	repo := &schedulerFreshAccountRepoStub{startupAccountRepoStub: startupAccountRepoStub{accounts: []Account{fresh}}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	snapshot := NewSchedulerSnapshotService(nil, nil, repo, nil, cfg)
+	svc := &OpenAIGatewayService{schedulerSnapshot: snapshot, cfg: cfg}
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, newOpenAIAccountRuntimeStats())
+
+	accounts, filtered, loadReq, err := scheduler.ensureLoadBalanceCandidates(ctx, []Account{stale}, OpenAIAccountScheduleRequest{GroupID: &groupID, RequestedModel: "gpt-5.4"})
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, fresh.ID, accounts[0].ID)
+	require.Len(t, filtered, 1)
+	require.Equal(t, fresh.ID, filtered[0].ID)
+	require.Len(t, loadReq, 1)
+	require.Equal(t, fresh.Concurrency, loadReq[0].MaxConcurrency)
+}
+
+func TestDefaultOpenAIAccountSchedulerEnsureLoadBalanceCandidates_KeepsCachedWhenFilteredNonEmpty(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(82)
+	cached := Account{ID: 7401, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 3}
+	repo := &schedulerFreshAccountRepoStub{listSchedulableByPlatformErr: errors.New("should not refresh")}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	snapshot := NewSchedulerSnapshotService(nil, nil, repo, nil, cfg)
+	svc := &OpenAIGatewayService{schedulerSnapshot: snapshot, cfg: cfg}
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, newOpenAIAccountRuntimeStats())
+
+	accounts, filtered, loadReq, err := scheduler.ensureLoadBalanceCandidates(ctx, []Account{cached}, OpenAIAccountScheduleRequest{GroupID: &groupID})
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, cached.ID, accounts[0].ID)
+	require.Len(t, filtered, 1)
+	require.Equal(t, cached.ID, filtered[0].ID)
+	require.Len(t, loadReq, 1)
+	require.Equal(t, cached.Concurrency, loadReq[0].MaxConcurrency)
+}
+
+func TestDefaultOpenAIAccountSchedulerFilterLoadBalanceCandidates(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	svc := &OpenAIGatewayService{cfg: cfg}
+	scheduler := mustDefaultOpenAIAccountScheduler(t, svc, newOpenAIAccountRuntimeStats())
+	accounts := []Account{
+		{ID: 7501, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1},
+		{ID: 7502, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusDisabled, Schedulable: true, Concurrency: 1},
+		{ID: 7503, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"}}},
+		{ID: 7504, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 2, Extra: map[string]any{"openai_apikey_responses_websockets_v2_enabled": true}},
+	}
+
+	filtered, loadReq := scheduler.filterLoadBalanceCandidates(accounts, OpenAIAccountScheduleRequest{
+		RequestedModel:    "gpt-5.4",
+		ExcludedIDs:       map[int64]struct{}{7501: {}},
+		RequiredTransport: OpenAIUpstreamTransportResponsesWebsocketV2,
+	})
+	require.Len(t, filtered, 1)
+	require.Equal(t, int64(7504), filtered[0].ID)
+	require.Len(t, loadReq, 1)
+	require.Equal(t, int64(7504), loadReq[0].ID)
+	require.Equal(t, 2, loadReq[0].MaxConcurrency)
+}
 
 func mustDefaultOpenAIAccountScheduler(t *testing.T, svc *OpenAIGatewayService, stats *openAIAccountRuntimeStats) *defaultOpenAIAccountScheduler {
 	t.Helper()

@@ -22,18 +22,20 @@ var (
 const outboxEventTimeout = 2 * time.Minute
 
 type SchedulerSnapshotService struct {
-	cache         SchedulerCache
-	outboxRepo    SchedulerOutboxRepository
-	accountRepo   AccountRepository
-	groupRepo     GroupRepository
-	cfg           *config.Config
-	startupWarm   atomic.Bool
-	stopCh        chan struct{}
-	stopOnce      sync.Once
-	wg            sync.WaitGroup
-	fallbackLimit *fallbackLimiter
-	lagMu         sync.Mutex
-	lagFailures   int
+	cache                       SchedulerCache
+	outboxRepo                  SchedulerOutboxRepository
+	accountRepo                 AccountRepository
+	groupRepo                   GroupRepository
+	cfg                         *config.Config
+	startupWarm                 atomic.Bool
+	ready                       atomic.Bool
+	startupDBFirstUntilUnixNano atomic.Int64
+	stopCh                      chan struct{}
+	stopOnce                    sync.Once
+	wg                          sync.WaitGroup
+	fallbackLimit               *fallbackLimiter
+	lagMu                       sync.Mutex
+	lagFailures                 int
 }
 
 func NewSchedulerSnapshotService(
@@ -57,6 +59,9 @@ func NewSchedulerSnapshotService(
 		fallbackLimit: newFallbackLimiter(maxQPS),
 	}
 	svc.startupWarm.Store(true)
+	if cfg != nil && cfg.Gateway.Scheduling.StartupDBFirstSeconds > 0 {
+		svc.startupDBFirstUntilUnixNano.Store(time.Now().Add(time.Duration(cfg.Gateway.Scheduling.StartupDBFirstSeconds) * time.Second).UnixNano())
+	}
 	return svc
 }
 
@@ -103,15 +108,24 @@ func (s *SchedulerSnapshotService) Stop() {
 }
 
 func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	return s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform, false)
+}
+
+func (s *SchedulerSnapshotService) ListSchedulableAccountsFresh(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	return s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform, true)
+}
+
+func (s *SchedulerSnapshotService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool, forceDB bool) ([]Account, bool, error) {
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
 
-	if s.cache != nil && s.startupWarm.Load() {
+	if s.cache != nil && !forceDB && s.startupWarm.Load() && !s.inStartupDBFirstWindow() {
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
-		} else if hit {
+		} else if hit && len(cached) > 0 {
+			s.ready.Store(true)
 			return derefAccounts(cached), useMixed, nil
 		}
 	}
@@ -127,6 +141,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	if err != nil {
 		return nil, useMixed, err
 	}
+	s.ready.Store(true)
 
 	if s.cache != nil {
 		if err := s.cache.SetSnapshot(fallbackCtx, bucket, accounts); err != nil {
@@ -135,6 +150,24 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	}
 
 	return accounts, useMixed, nil
+}
+
+func (s *SchedulerSnapshotService) IsReady() bool {
+	if s == nil {
+		return false
+	}
+	return s.ready.Load()
+}
+
+func (s *SchedulerSnapshotService) inStartupDBFirstWindow() bool {
+	if s == nil {
+		return false
+	}
+	until := s.startupDBFirstUntilUnixNano.Load()
+	if until <= 0 {
+		return false
+	}
+	return time.Now().UnixNano() < until
 }
 
 func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
@@ -185,7 +218,9 @@ func (s *SchedulerSnapshotService) runInitialRebuild() {
 	}
 	if err := s.rebuildBuckets(ctx, buckets, "startup"); err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild startup failed: %v", err)
+		return
 	}
+	s.ready.Store(true)
 }
 
 func (s *SchedulerSnapshotService) runOutboxWorker(interval time.Duration) {

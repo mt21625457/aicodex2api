@@ -31,6 +31,29 @@ type stubOpenAIAccountRepo struct {
 	accounts []Account
 }
 
+type freshListAccountRepoStub struct {
+	stubOpenAIAccountRepo
+	listByPlatformCalls         int
+	listByGroupAndPlatformCalls int
+	listErr                     error
+}
+
+func (r *freshListAccountRepoStub) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	r.listByGroupAndPlatformCalls++
+	return r.stubOpenAIAccountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, platform)
+}
+
+func (r *freshListAccountRepoStub) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	r.listByPlatformCalls++
+	return r.stubOpenAIAccountRepo.ListSchedulableByPlatform(ctx, platform)
+}
+
 func (r stubOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
 	for i := range r.accounts {
 		if r.accounts[i].ID == id {
@@ -221,6 +244,69 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	if h4 != "" {
 		t.Fatalf("expected empty hash when no signals")
 	}
+}
+
+func TestOpenAIGatewayService_ListSchedulableAccountsFresh_UsesSnapshotWhenAvailable(t *testing.T) {
+	groupID := int64(1)
+	account := Account{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}
+	repo := &startupAccountRepoStub{accounts: []Account{account}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	snapshot := NewSchedulerSnapshotService(nil, nil, repo, nil, cfg)
+	svc := &OpenAIGatewayService{schedulerSnapshot: snapshot, cfg: cfg}
+
+	accounts, err := svc.listSchedulableAccountsFresh(context.Background(), &groupID)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, account.ID, accounts[0].ID)
+}
+
+func TestOpenAIGatewayService_ListSchedulableAccountsFresh_UsesGroupRepoPath(t *testing.T) {
+	groupID := int64(2)
+	account := Account{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}
+	repo := &freshListAccountRepoStub{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{}}
+
+	accounts, err := svc.listSchedulableAccountsFresh(context.Background(), &groupID)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, 1, repo.listByGroupAndPlatformCalls)
+	require.Zero(t, repo.listByPlatformCalls)
+}
+
+func TestOpenAIGatewayService_ListSchedulableAccountsFresh_UsesPlatformRepoPathInSimpleMode(t *testing.T) {
+	account := Account{ID: 3, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}
+	repo := &freshListAccountRepoStub{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}}
+	cfg := &config.Config{}
+	cfg.RunMode = config.RunModeSimple
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: cfg}
+
+	accounts, err := svc.listSchedulableAccountsFresh(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, 1, repo.listByPlatformCalls)
+	require.Zero(t, repo.listByGroupAndPlatformCalls)
+}
+
+func TestOpenAIGatewayService_ListSchedulableAccountsFresh_UsesPlatformRepoPathWithoutGroup(t *testing.T) {
+	account := Account{ID: 4, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}
+	repo := &freshListAccountRepoStub{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{}}
+
+	accounts, err := svc.listSchedulableAccountsFresh(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, 1, repo.listByPlatformCalls)
+	require.Zero(t, repo.listByGroupAndPlatformCalls)
+}
+
+func TestOpenAIGatewayService_ListSchedulableAccountsFresh_ReturnsRepoError(t *testing.T) {
+	repo := &freshListAccountRepoStub{listErr: errors.New("query failed")}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{}}
+
+	accounts, err := svc.listSchedulableAccountsFresh(context.Background(), nil)
+	require.Error(t, err)
+	require.Nil(t, accounts)
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_UsesXXHash64(t *testing.T) {

@@ -1,22 +1,15 @@
 # =============================================================================
-# Sub2API Docker Compose - Local Directory Version
+# Sub2API Docker Compose Test Configuration (Local Build)
 # =============================================================================
-# This configuration uses local directories for data storage instead of named
-# volumes, making it easy to migrate the entire deployment by simply copying
-# the deploy directory.
-#
 # Quick Start:
 #   1. Copy .env.example to .env and configure
-#   2. mkdir -p data postgres_data redis_data
-#   3. docker-compose -f docker-compose.local.yml up -d
-#   4. Check logs: docker-compose -f docker-compose.local.yml logs -f sub2api
-#   5. Access: http://localhost:8080
+#   2. docker-compose -f docker-compose-test.yml up -d --build
+#   3. Check logs: docker-compose -f docker-compose-test.yml logs -f sub2api
+#   4. Access: http://localhost:8080
 #
-# Migration to New Server:
-#   1. docker-compose -f docker-compose.local.yml down
-#   2. tar czf sub2api-deploy.tar.gz deploy/
-#   3. Transfer to new server and extract
-#   4. docker-compose -f docker-compose.local.yml up -d
+# This configuration builds the image from source (Dockerfile in project root).
+# All configuration is done via environment variables.
+# No Setup Wizard needed - the system auto-initializes on first run.
 # =============================================================================
 
 services:
@@ -24,7 +17,10 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: weishaw/sub2api:latest
+    image: sub2api:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
     container_name: sub2api
     restart: unless-stopped
     ulimits:
@@ -34,10 +30,9 @@ services:
     ports:
       - "${BIND_HOST:-0.0.0.0}:${SERVER_PORT:-8080}:8080"
     volumes:
-      # Local directory mapping for easy migration
-      - ./data:/app/data
-      # Optional: Mount custom config.yaml (uncomment and create the file first)
-      # Copy config.example.yaml to config.yaml, modify it, then uncomment:
+      # Data persistence (config.yaml will be auto-generated here)
+      - sub2api_data:/app/data
+      # Mount custom config.yaml (optional, overrides auto-generated config)
       # - ./config.yaml:/app/data/config.yaml:ro
     environment:
       # =======================================================================
@@ -76,7 +71,6 @@ services:
       - REDIS_DB=${REDIS_DB:-0}
       - REDIS_POOL_SIZE=${REDIS_POOL_SIZE:-1024}
       - REDIS_MIN_IDLE_CONNS=${REDIS_MIN_IDLE_CONNS:-10}
-      - REDIS_ENABLE_TLS=${REDIS_ENABLE_TLS:-false}
 
       # =======================================================================
       # Admin Account (auto-created on first run)
@@ -87,22 +81,9 @@ services:
       # =======================================================================
       # JWT Configuration
       # =======================================================================
-      # IMPORTANT: Set a fixed JWT_SECRET to prevent login sessions from being
-      # invalidated after container restarts. If left empty, a random secret
-      # will be generated on each startup.
-      # Generate a secure secret: openssl rand -hex 32
+      # Leave empty to auto-generate (recommended)
       - JWT_SECRET=${JWT_SECRET:-}
       - JWT_EXPIRE_HOUR=${JWT_EXPIRE_HOUR:-24}
-
-      # =======================================================================
-      # TOTP (2FA) Configuration
-      # =======================================================================
-      # IMPORTANT: Set a fixed encryption key for TOTP secrets. If left empty,
-      # a random key will be generated on each startup, causing all existing
-      # TOTP configurations to become invalid (users won't be able to login
-      # with 2FA).
-      # Generate a secure key: openssl rand -hex 32
-      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:-}
 
       # =======================================================================
       # Timezone Configuration
@@ -131,21 +112,8 @@ services:
       # =======================================================================
       # Security Configuration (URL Allowlist)
       # =======================================================================
-      # Enable URL allowlist validation (false to skip allowlist checks)
-      - SECURITY_URL_ALLOWLIST_ENABLED=${SECURITY_URL_ALLOWLIST_ENABLED:-false}
-      # Allow insecure HTTP URLs when allowlist is disabled (default: false, requires https)
-      - SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP=${SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP:-false}
-      # Allow private IP addresses for upstream/pricing/CRS (for internal deployments)
-      - SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS=${SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS:-false}
-      # Upstream hosts whitelist (comma-separated, only used when enabled=true)
-      - SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS=${SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS:-}
-
-      # =======================================================================
-      # Update Configuration (在线更新配置)
-      # =======================================================================
-      # Proxy for accessing GitHub (online updates + pricing data)
-      # Examples: http://host:port, socks5://host:port
-      - UPDATE_PROXY_URL=${UPDATE_PROXY_URL:-}
+      # Allow private IP addresses for CRS sync (for internal deployments)
+      - SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS=${SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS:-true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -172,13 +140,15 @@ services:
         soft: 100000
         hard: 100000
     volumes:
-      # Local directory mapping for easy migration
-      - ./postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     environment:
+      # postgres:18-alpine 默认 PGDATA=/var/lib/postgresql/18/docker（位于镜像声明的匿名卷 /var/lib/postgresql 内）。
+      # 若不显式设置 PGDATA，则即使挂载了 postgres_data 到 /var/lib/postgresql/data，数据也不会落盘到该命名卷，
+      # docker compose down/up 后会触发 initdb 重新初始化，导致用户/密码等数据丢失。
+      - PGDATA=/var/lib/postgresql/data
       - POSTGRES_USER=${POSTGRES_USER:-sub2api}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_DB=${POSTGRES_DB:-sub2api}
-      - PGDATA=/var/lib/postgresql/data
       - TZ=${TZ:-Asia/Shanghai}
     networks:
       - sub2api-network
@@ -203,15 +173,13 @@ services:
         soft: 100000
         hard: 100000
     volumes:
-      # Local directory mapping for easy migration
-      - ./redis_data:/data
+      - redis_data:/data
     command: >
-        sh -c '
-          redis-server
-          --save 60 1
-          --appendonly yes
-          --appendfsync everysec
-          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
+      redis-server
+      --save 60 1
+      --appendonly yes
+      --appendfsync everysec
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       # REDISCLI_AUTH is used by redis-cli for authentication (safer than -a flag)
@@ -224,6 +192,17 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  sub2api_data:
+    driver: local
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
 
 # =============================================================================
 # Networks

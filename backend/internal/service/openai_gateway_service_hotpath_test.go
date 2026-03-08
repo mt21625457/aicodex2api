@@ -133,6 +133,11 @@ func TestExtractOpenAIServiceTierFromBody(t *testing.T) {
 			wantNil: true,
 		},
 		{
+			name:    "空 body",
+			body:    []byte{},
+			wantNil: true,
+		},
+		{
 			name:    "缺失字段",
 			body:    []byte(`{"model":"gpt-5"}`),
 			wantNil: true,
@@ -308,4 +313,32 @@ func TestOpenAIRequestMeta_Fields(t *testing.T) {
 	require.Equal(t, "gpt-5", meta.Model)
 	require.True(t, meta.Stream)
 	require.Equal(t, "pk", meta.PromptCacheKey)
+}
+
+func TestExtractOpenAIServiceTierFromReqBody(t *testing.T) {
+	tests := []struct {
+		name      string
+		reqBody   map[string]any
+		wantNil   bool
+		wantValue string
+	}{
+		{name: "nil req body", reqBody: nil, wantNil: true},
+		{name: "priority string", reqBody: map[string]any{"service_tier": "priority"}, wantValue: "priority"},
+		{name: "fast normalized", reqBody: map[string]any{"service_tier": "fast"}, wantValue: "priority"},
+		{name: "flex preserved", reqBody: map[string]any{"service_tier": "flex"}, wantValue: "flex"},
+		{name: "non string ignored", reqBody: map[string]any{"service_tier": true}, wantNil: true},
+		{name: "unknown ignored", reqBody: map[string]any{"service_tier": "standard"}, wantNil: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractOpenAIServiceTier(tt.reqBody)
+			if tt.wantNil {
+				require.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			require.Equal(t, tt.wantValue, *got)
+		})
+	}
 }

@@ -6,11 +6,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type readinessReporter interface {
+	IsReady() bool
+}
+
 // RegisterCommonRoutes 注册通用路由（健康检查、状态等）
-func RegisterCommonRoutes(r *gin.Engine) {
+func RegisterCommonRoutes(r *gin.Engine, readiness readinessReporter) {
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	r.GET("/ready", func(c *gin.Context) {
+		if readiness != nil && !readiness.IsReady() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "starting"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
 	})
 
 	// Claude Code 遥测日志（忽略，直接返回200）
