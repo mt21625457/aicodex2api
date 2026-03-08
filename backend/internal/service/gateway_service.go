@@ -5166,26 +5166,6 @@ func (s *GatewayService) getBetaHeader(modelID string, clientBetaHeader string) 
 	return claude.DefaultBetaHeader
 }
 
-func requestNeedsBetaFeatures(body []byte) bool {
-	tools := gjson.GetBytes(body, "tools")
-	if tools.Exists() && tools.IsArray() && len(tools.Array()) > 0 {
-		return true
-	}
-	thinkingType := gjson.GetBytes(body, "thinking.type").String()
-	if strings.EqualFold(thinkingType, "enabled") || strings.EqualFold(thinkingType, "adaptive") {
-		return true
-	}
-	return false
-}
-
-func defaultAPIKeyBetaHeader(body []byte) string {
-	modelID := gjson.GetBytes(body, "model").String()
-	if strings.Contains(strings.ToLower(modelID), "haiku") {
-		return claude.APIKeyHaikuBetaHeader
-	}
-	return claude.APIKeyBetaHeader
-}
-
 func requestThinkingEnabled(body []byte) bool {
 	thinkingType := gjson.GetBytes(body, "thinking.type").String()
 	return strings.EqualFold(thinkingType, "enabled") || strings.EqualFold(thinkingType, "adaptive")
@@ -6458,89 +6438,6 @@ type RecordUsageInput struct {
 type APIKeyQuotaUpdater interface {
 	UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cost float64) error
 	UpdateRateLimitUsage(ctx context.Context, apiKeyID int64, cost float64) error
-}
-
-// postUsageBillingParams 统一扣费所需的参数
-type postUsageBillingParams struct {
-	Cost                  *CostBreakdown
-	User                  *User
-	APIKey                *APIKey
-	Account               *Account
-	Subscription          *UserSubscription
-	IsSubscriptionBill    bool
-	AccountRateMultiplier float64
-	APIKeyService         APIKeyQuotaUpdater
-}
-
-// postUsageBilling 统一处理使用量记录后的扣费逻辑：
-//   - 订阅/余额扣费
-//   - API Key 配额更新
-//   - API Key 限速用量更新
-//   - 账号配额用量更新（账号口径：TotalCost × 账号计费倍率）
-func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps) {
-	cost := p.Cost
-
-	// 1. 订阅 / 余额扣费
-	if p.IsSubscriptionBill {
-		if cost.TotalCost > 0 {
-			if err := deps.userSubRepo.IncrementUsage(ctx, p.Subscription.ID, cost.TotalCost); err != nil {
-				slog.Error("increment subscription usage failed", "subscription_id", p.Subscription.ID, "error", err)
-			}
-			deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, *p.APIKey.GroupID, cost.TotalCost)
-		}
-	} else {
-		if cost.ActualCost > 0 {
-			if err := deps.userRepo.DeductBalance(ctx, p.User.ID, cost.ActualCost); err != nil {
-				slog.Error("deduct balance failed", "user_id", p.User.ID, "error", err)
-			}
-			deps.billingCacheService.QueueDeductBalance(p.User.ID, cost.ActualCost)
-		}
-	}
-
-	// 2. API Key 配额
-	if cost.ActualCost > 0 && p.APIKey.Quota > 0 && p.APIKeyService != nil {
-		if err := p.APIKeyService.UpdateQuotaUsed(ctx, p.APIKey.ID, cost.ActualCost); err != nil {
-			slog.Error("update api key quota failed", "api_key_id", p.APIKey.ID, "error", err)
-		}
-	}
-
-	// 3. API Key 限速用量
-	if cost.ActualCost > 0 && p.APIKey.HasRateLimits() && p.APIKeyService != nil {
-		if err := p.APIKeyService.UpdateRateLimitUsage(ctx, p.APIKey.ID, cost.ActualCost); err != nil {
-			slog.Error("update api key rate limit usage failed", "api_key_id", p.APIKey.ID, "error", err)
-		}
-		deps.billingCacheService.QueueUpdateAPIKeyRateLimitUsage(p.APIKey.ID, cost.ActualCost)
-	}
-
-	// 4. 账号配额用量（账号口径：TotalCost × 账号计费倍率）
-	if cost.TotalCost > 0 && p.Account.Type == AccountTypeAPIKey && p.Account.GetQuotaLimit() > 0 {
-		accountCost := cost.TotalCost * p.AccountRateMultiplier
-		if err := deps.accountRepo.IncrementQuotaUsed(ctx, p.Account.ID, accountCost); err != nil {
-			slog.Error("increment account quota used failed", "account_id", p.Account.ID, "cost", accountCost, "error", err)
-		}
-	}
-
-	// 5. 更新账号最近使用时间
-	deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
-}
-
-// billingDeps 扣费逻辑依赖的服务（由各 gateway service 提供）
-type billingDeps struct {
-	accountRepo         AccountRepository
-	userRepo            UserRepository
-	userSubRepo         UserSubscriptionRepository
-	billingCacheService *BillingCacheService
-	deferredService     *DeferredService
-}
-
-func (s *GatewayService) billingDeps() *billingDeps {
-	return &billingDeps{
-		accountRepo:         s.accountRepo,
-		userRepo:            s.userRepo,
-		userSubRepo:         s.userSubRepo,
-		billingCacheService: s.billingCacheService,
-		deferredService:     s.deferredService,
-	}
 }
 
 // RecordUsage 记录使用量并扣费（或更新订阅用量）

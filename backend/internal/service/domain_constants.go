@@ -119,9 +119,9 @@ const (
 	SettingKeyCustomMenuItems             = "custom_menu_items"             // 自定义菜单项（JSON 数组）
 
 	// 默认配置
-	SettingKeyDefaultConcurrency   = "default_concurrency"   // 新用户默认并发量
-	SettingKeyDefaultBalance       = "default_balance"       // 新用户默认余额
-	SettingKeyDefaultSubscriptions = "default_subscriptions" // 新用户默认订阅列表（JSON）
+	SettingKeyDefaultConcurrency      = "default_concurrency"           // 新用户默认并发量
+	SettingKeyDefaultBalance          = "default_balance"               // 新用户默认余额
+	SettingKeyDefaultSubscriptions    = "default_subscriptions"         // 新用户默认订阅列表（JSON）
 	SettingKeyBulkEditTemplateLibrary = "bulk_edit_template_library_v1" // 批量编辑模板库（JSON）
 
 	// 管理员 API Key
@@ -138,8 +138,8 @@ const (
 	SettingKeyFallbackModelAntigravity = "fallback_model_antigravity"
 
 	// Request identity patch (Claude -> Gemini systemInstruction injection)
-	SettingKeyEnableIdentityPatch     = "enable_identity_patch"
-	SettingKeyIdentityPatchPrompt     = "identity_patch_prompt"
+	SettingKeyEnableIdentityPatch = "enable_identity_patch"
+	SettingKeyIdentityPatchPrompt = "identity_patch_prompt"
 
 	// =========================
 	// Ops Monitoring (vNext)

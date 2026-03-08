@@ -308,7 +308,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
@@ -318,6 +318,7 @@ import AccountQuotaInfo from './AccountQuotaInfo.vue'
 
 const props = defineProps<{
   account: Account
+  refreshVersion?: number
 }>()
 
 const { t } = useI18n()
@@ -325,6 +326,7 @@ const { t } = useI18n()
 const loading = ref(false)
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
+const usageRequestSeq = ref(0)
 
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {
@@ -732,23 +734,55 @@ const hasIneligibleTiers = computed(() => {
   return Array.isArray(ineligibleTiers) && ineligibleTiers.length > 0
 })
 
-const loadUsage = async () => {
-  if (!shouldFetchUsage.value) return
+const loadUsage = async (forceRefresh: boolean = false) => {
+  if (!shouldFetchUsage.value) {
+    usageInfo.value = null
+    error.value = null
+    loading.value = false
+    return
+  }
+
+  const reqSeq = ++usageRequestSeq.value
 
   loading.value = true
   error.value = null
 
   try {
-    usageInfo.value = await adminAPI.accounts.getUsage(props.account.id)
+    const nextUsage = await adminAPI.accounts.getUsage(
+      props.account.id,
+      forceRefresh ? { force: true } : undefined
+    )
+    if (reqSeq !== usageRequestSeq.value) return
+    usageInfo.value = nextUsage
   } catch (e: any) {
+    if (reqSeq !== usageRequestSeq.value) return
     error.value = t('common.error')
     console.error('Failed to load usage:', e)
   } finally {
-    loading.value = false
+    if (reqSeq === usageRequestSeq.value) {
+      loading.value = false
+    }
   }
 }
 
 onMounted(() => {
   loadUsage()
 })
+
+watch(
+  () => props.account.id,
+  (nextID, prevID) => {
+    if (nextID === prevID) return
+    usageInfo.value = null
+    void loadUsage()
+  }
+)
+
+watch(
+  () => props.refreshVersion ?? 0,
+  (nextVersion, prevVersion) => {
+    if (nextVersion === prevVersion) return
+    void loadUsage(true)
+  }
+)
 </script>

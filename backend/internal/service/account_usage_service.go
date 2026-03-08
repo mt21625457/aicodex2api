@@ -118,6 +118,17 @@ func NewUsageCache() *UsageCache {
 	return &UsageCache{}
 }
 
+// InvalidateAccount clears all in-memory usage caches for the given account.
+func (c *UsageCache) InvalidateAccount(accountID int64) {
+	if c == nil || accountID <= 0 {
+		return
+	}
+	c.apiCache.Delete(accountID)
+	c.windowStatsCache.Delete(accountID)
+	c.antigravityCache.Delete(accountID)
+	c.openAIProbeCache.Delete(accountID)
+}
+
 // WindowStats 窗口期统计
 //
 // cost: 账号口径费用（total_cost * account_rate_multiplier）
@@ -228,18 +239,28 @@ func NewAccountUsageService(
 	}
 }
 
-// GetUsage 获取账号使用量
-// OAuth账号: 调用Anthropic API获取真实数据（需要profile scope），API响应缓存10分钟，窗口统计缓存1分钟
-// Setup Token账号: 根据session_window推算5h窗口，7d数据不可用（没有profile scope）
-// API Key账号: 不支持usage查询
-func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*UsageInfo, error) {
+// InvalidateAccountCache clears usage-related in-memory caches for a single account.
+func (s *AccountUsageService) InvalidateAccountCache(accountID int64) {
+	if s == nil || s.cache == nil {
+		return
+	}
+	s.cache.InvalidateAccount(accountID)
+}
+
+// GetUsage 获取账号使用量。
+// forceRefresh=true 时会跳过进程内缓存，并对 OpenAI OAuth 账号主动重新探测 Codex 用量快照。
+func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, forceRefresh bool) (*UsageInfo, error) {
+	if forceRefresh && s.cache != nil {
+		s.cache.InvalidateAccount(accountID)
+	}
+
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
 
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
-		usage, err := s.getOpenAIUsage(ctx, account)
+		usage, err := s.getOpenAIUsage(ctx, account, forceRefresh)
 		if err == nil {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
@@ -351,7 +372,7 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*U
 	return nil, fmt.Errorf("account type %s does not support usage query", account.Type)
 }
 
-func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Account, forceRefresh bool) (*UsageInfo, error) {
 	now := time.Now()
 	usage := &UsageInfo{UpdatedAt: &now}
 
@@ -366,7 +387,11 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		usage.SevenDay = progress
 	}
 
-	if (usage.FiveHour == nil || usage.SevenDay == nil) && s.shouldProbeOpenAICodexSnapshot(account.ID, now) {
+	shouldProbeSnapshot := forceRefresh
+	if !shouldProbeSnapshot {
+		shouldProbeSnapshot = (usage.FiveHour == nil || usage.SevenDay == nil) && s.shouldProbeOpenAICodexSnapshot(account.ID, now)
+	}
+	if shouldProbeSnapshot {
 		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
 			mergeAccountExtra(account, updates)
 			if usage.UpdatedAt == nil {

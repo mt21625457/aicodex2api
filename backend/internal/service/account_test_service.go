@@ -411,8 +411,34 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
+	s.persistOpenAICodexUsageSnapshot(ctx, account, resp.Header)
+
 	// Process SSE stream
 	return s.processOpenAIStream(c, resp.Body)
+}
+
+func (s *AccountTestService) persistOpenAICodexUsageSnapshot(ctx context.Context, account *Account, headers http.Header) {
+	if s == nil || s.accountRepo == nil || account == nil || !account.IsOAuth() {
+		return
+	}
+
+	snapshot := ParseCodexRateLimitHeaders(headers)
+	if snapshot == nil {
+		return
+	}
+
+	updates := buildCodexUsageExtraUpdates(snapshot, time.Now())
+	if len(updates) == 0 {
+		return
+	}
+
+	mergeAccountExtra(account, updates)
+
+	updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.accountRepo.UpdateExtra(updateCtx, account.ID, updates); err != nil {
+		log.Printf("Failed to persist OpenAI Codex usage snapshot for account %d: %v", account.ID, err)
+	}
 }
 
 // testGeminiAccountConnection tests a Gemini account's connection

@@ -661,6 +661,8 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		// Error already sent via SSE, just log
 		return
 	}
+
+	h.accountUsageService.InvalidateAccountCache(accountID)
 }
 
 // SyncFromCRS handles syncing accounts from claude-relay-service (CRS)
@@ -1305,7 +1307,17 @@ func (h *AccountHandler) GetUsage(c *gin.Context) {
 		return
 	}
 
-	usage, err := h.accountUsageService.GetUsage(c.Request.Context(), accountID)
+	forceRefresh := false
+	if rawForce := strings.TrimSpace(c.Query("force")); rawForce != "" {
+		parsed, parseErr := strconv.ParseBool(rawForce)
+		if parseErr != nil {
+			response.BadRequest(c, "Invalid force parameter")
+			return
+		}
+		forceRefresh = parsed
+	}
+
+	usage, err := h.accountUsageService.GetUsage(c.Request.Context(), accountID, forceRefresh)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

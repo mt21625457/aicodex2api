@@ -3,6 +3,8 @@
 VERSION ?= $(shell tr -d '\r\n' < ./cmd/server/VERSION)
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
 
+GOLANGCI_LINT ?= GOTOOLCHAIN=go1.26.1 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.2
+
 build:
 	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
 
@@ -12,7 +14,7 @@ generate:
 
 test:
 	go test ./...
-	golangci-lint run ./...
+	$(GOLANGCI_LINT) run ./...
 
 test-unit:
 	go test -tags=unit ./...

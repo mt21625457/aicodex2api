@@ -118,8 +118,71 @@ describe('AccountUsageCell', () => {
 
 	await flushPromises()
 
-	expect(getUsage).toHaveBeenCalledWith(2002)
+	expect(getUsage).toHaveBeenCalledWith(2002, undefined)
 	expect(wrapper.text()).toContain('5h|0|27700')
 	expect(wrapper.text()).toContain('7d|0|27700')
+  })
+
+  it('refreshVersion 变化时会强制刷新用量', async () => {
+    getUsage
+      .mockResolvedValueOnce({
+        five_hour: {
+          utilization: 10,
+          resets_at: null,
+          remaining_seconds: 0,
+          window_stats: {
+            requests: 1,
+            tokens: 100,
+            cost: 0.01,
+            standard_cost: 0.01,
+            user_cost: 0.01
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        five_hour: {
+          utilization: 20,
+          resets_at: null,
+          remaining_seconds: 0,
+          window_stats: {
+            requests: 2,
+            tokens: 200,
+            cost: 0.02,
+            standard_cost: 0.02,
+            user_cost: 0.02
+          }
+        }
+      })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: {
+          id: 3003,
+          platform: 'openai',
+          type: 'oauth',
+          extra: {}
+        } as any,
+        refreshVersion: 0
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+    expect(getUsage).toHaveBeenNthCalledWith(1, 3003, undefined)
+    expect(wrapper.text()).toContain('5h|10|100')
+
+    await wrapper.setProps({ refreshVersion: 1 })
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenNthCalledWith(2, 3003, { force: true })
+    expect(wrapper.text()).toContain('5h|20|200')
   })
 })

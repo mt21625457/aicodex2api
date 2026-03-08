@@ -221,10 +221,16 @@ export async function clearError(id: number): Promise<Account> {
 /**
  * Get account usage information (5h/7d window)
  * @param id - Account ID
+ * @param options - Query options
  * @returns Account usage info
  */
-export async function getUsage(id: number): Promise<AccountUsageInfo> {
-  const { data } = await apiClient.get<AccountUsageInfo>(`/admin/accounts/${id}/usage`)
+export async function getUsage(
+  id: number,
+  options?: { force?: boolean }
+): Promise<AccountUsageInfo> {
+  const { data } = await apiClient.get<AccountUsageInfo>(`/admin/accounts/${id}/usage`, {
+    params: options?.force ? { force: true } : undefined
+  })
   return data
 }
 
