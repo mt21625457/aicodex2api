@@ -283,10 +283,10 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreami
 	require.Equal(t, "compact me", gjson.GetBytes(upstream.lastBody, "input.0.text").String())
 	require.Equal(t, "local-test-instructions", strings.TrimSpace(gjson.GetBytes(upstream.lastBody, "instructions").String()))
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Accept"))
-	require.Equal(t, codexCLIVersion, upstream.lastReq.Header.Get("Version"))
-	require.NotEmpty(t, upstream.lastReq.Header.Get("Session_Id"))
-	require.Equal(t, "chatgpt.com", upstream.lastReq.Host)
-	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
+	require.Empty(t, upstream.lastReq.Header.Get("Version"))
+	require.Empty(t, upstream.lastReq.Header.Get("Session_Id"))
+	require.Empty(t, upstream.lastReq.Host)
+	require.Empty(t, upstream.lastReq.Header.Get("chatgpt-account-id"))
 	require.Contains(t, rec.Body.String(), `"id":"cmp_123"`)
 }
 
@@ -850,8 +850,15 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactPathUsesCompactEndpoint(t 
 	_, err := svc.Forward(context.Background(), c, account, originalBody)
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses/compact", upstream.lastReq.URL.String())
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", upstream.lastReq.URL.String())
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("accept"))
+	require.Empty(t, upstream.lastReq.Host)
+	require.Empty(t, upstream.lastReq.Header.Get("chatgpt-account-id"))
+	require.Empty(t, upstream.lastReq.Header.Get("OpenAI-Beta"))
+	require.Empty(t, upstream.lastReq.Header.Get("originator"))
+	require.Empty(t, upstream.lastReq.Header.Get("version"))
+	require.Empty(t, upstream.lastReq.Header.Get("conversation_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 	require.False(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
 }
 
@@ -899,10 +906,12 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactPathPreservesNonStreamRequ
 	require.Equal(t, 1, result.Usage.CacheReadInputTokens)
 
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses/compact", upstream.lastReq.URL.String())
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", upstream.lastReq.URL.String())
 	require.Equal(t, false, gjson.GetBytes(upstream.lastBody, "stream").Bool())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Exists())
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("accept"))
+	require.Empty(t, upstream.lastReq.Host)
+	require.Empty(t, upstream.lastReq.Header.Get("chatgpt-account-id"))
 }
 
 func TestOpenAIGatewayService_OAuthLegacy_CompactPathStripsStoreAndPreservesNonStreamRequest(t *testing.T) {
@@ -945,10 +954,12 @@ func TestOpenAIGatewayService_OAuthLegacy_CompactPathStripsStoreAndPreservesNonS
 	require.False(t, result.Stream)
 
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses/compact", upstream.lastReq.URL.String())
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", upstream.lastReq.URL.String())
 	require.Equal(t, false, gjson.GetBytes(upstream.lastBody, "stream").Bool())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Exists())
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("accept"))
+	require.Empty(t, upstream.lastReq.Host)
+	require.Empty(t, upstream.lastReq.Header.Get("chatgpt-account-id"))
 }
 
 func TestOpenAIGatewayService_OAuthLegacy_CompactPathUsesCompactEndpoint(t *testing.T) {
@@ -988,9 +999,11 @@ func TestOpenAIGatewayService_OAuthLegacy_CompactPathUsesCompactEndpoint(t *test
 	_, err := svc.Forward(context.Background(), c, account, inputBody)
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "https://chatgpt.com/backend-api/codex/responses/compact", upstream.lastReq.URL.String())
+	require.Equal(t, "https://api.openai.com/v1/responses/compact", upstream.lastReq.URL.String())
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("accept"))
 	require.False(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+	require.Empty(t, upstream.lastReq.Host)
+	require.Empty(t, upstream.lastReq.Header.Get("chatgpt-account-id"))
 }
 
 func TestOpenAIGatewayService_OAuthPassthrough_CompactPathIncompleteSSEReturnsBadGateway(t *testing.T) {

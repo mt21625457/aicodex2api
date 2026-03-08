@@ -61,15 +61,17 @@ const (
 
 // SSE 热路径包级常量，避免循环内重复分配
 var (
-	sseDataDone              = []byte("[DONE]")
-	sseResponseCompletedMark = []byte(`"response.completed"`)
-	sseResponseDoneMark      = []byte(`"response.done"`)
-	sseResponseFailedMark    = []byte(`"response.failed"`)
-	sseTypeResponseCompleted = []byte(`"type":"response.completed"`)
-	sseTypeResponseDone      = []byte(`"type":"response.done"`)
-	sseTypeResponseFailed    = []byte(`"type":"response.failed"`)
-	sseTokenDeltaMark        = []byte(".delta")
-	sseTypeResponseOutput    = []byte(`"type":"response.output`)
+	sseDataDone               = []byte("[DONE]")
+	sseResponseCompletedMark  = []byte(`"response.completed"`)
+	sseResponseDoneMark       = []byte(`"response.done"`)
+	sseResponseFailedMark     = []byte(`"response.failed"`)
+	sseResponseIncompleteMark = []byte(`"response.incomplete"`)
+	sseTypeResponseCompleted  = []byte(`"type":"response.completed"`)
+	sseTypeResponseDone       = []byte(`"type":"response.done"`)
+	sseTypeResponseFailed     = []byte(`"type":"response.failed"`)
+	sseTypeResponseIncomplete = []byte(`"type":"response.incomplete"`)
+	sseTokenDeltaMark         = []byte(".delta")
+	sseTypeResponseOutput     = []byte(`"type":"response.output`)
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -2524,7 +2526,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	targetURL := buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
 	switch account.Type {
 	case AccountTypeOAuth:
-		targetURL = buildOpenAIResponsesURL(chatgptCodexURL, endpoint)
+		if shouldUseOpenAIPlatformCompactEndpoint(account, endpoint) {
+			targetURL = buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
+		} else {
+			targetURL = buildOpenAIResponsesURL(chatgptCodexURL, endpoint)
+		}
 	case AccountTypeAPIKey:
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL != "" {
@@ -2563,7 +2569,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	req.Header.Set("authorization", "Bearer "+token)
 
 	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
-	if account.Type == AccountTypeOAuth {
+	if account.Type == AccountTypeOAuth && !shouldUseOpenAIPlatformCompactEndpoint(account, endpoint) {
 		promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 		req.Host = "chatgpt.com"
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
@@ -2591,7 +2597,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			req.Header.Set("session_id", sessionID)
 		}
 	}
-	if isStream {
+	if isCompactEndpoint(endpoint) {
+		sanitizeOpenAICompactPlatformHeaders(req)
+		req.Header.Set("accept", "application/json")
+	} else if isStream {
 		req.Header.Set("accept", "text/event-stream")
 	} else {
 		req.Header.Set("accept", "application/json")
@@ -2929,8 +2938,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	var targetURL string
 	switch account.Type {
 	case AccountTypeOAuth:
-		// OAuth accounts use ChatGPT internal API
-		targetURL = buildOpenAIResponsesURL(chatgptCodexURL, endpoint)
+		// /responses/compact 对齐 OpenAI 官方平台端点，避免落到 ChatGPT internal 的 SSE/实验协议。
+		if shouldUseOpenAIPlatformCompactEndpoint(account, endpoint) {
+			targetURL = buildOpenAIResponsesURL(openaiPlatformAPIURL, endpoint)
+		} else {
+			// OAuth accounts use ChatGPT internal API
+			targetURL = buildOpenAIResponsesURL(chatgptCodexURL, endpoint)
+		}
 	case AccountTypeAPIKey:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
@@ -2957,7 +2971,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	req.Header.Set("authorization", "Bearer "+token)
 
 	// Set headers specific to OAuth accounts (ChatGPT internal API)
-	if account.Type == AccountTypeOAuth {
+	if account.Type == AccountTypeOAuth && !shouldUseOpenAIPlatformCompactEndpoint(account, endpoint) {
 		// Required: set Host for ChatGPT API (must use req.Host, not Header.Set)
 		req.Host = "chatgpt.com"
 		// Required: set chatgpt-account-id header
@@ -2976,14 +2990,16 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 		}
 	}
-	if account.Type == AccountTypeOAuth {
+	if account.Type == AccountTypeOAuth && !shouldUseOpenAIPlatformCompactEndpoint(account, endpoint) {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		if isCodexCLI {
 			req.Header.Set("originator", "codex_cli_rs")
 		} else {
 			req.Header.Set("originator", "opencode")
 		}
-		if isStream {
+		if isCompactEndpoint(endpoint) {
+			req.Header.Set("accept", "application/json")
+		} else if isStream {
 			req.Header.Set("accept", "text/event-stream")
 		} else {
 			req.Header.Set("accept", "application/json")
@@ -2992,6 +3008,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			req.Header.Set("conversation_id", promptCacheKey)
 			req.Header.Set("session_id", promptCacheKey)
 		}
+	}
+
+	if isCompactEndpoint(endpoint) {
+		sanitizeOpenAICompactPlatformHeaders(req)
+		req.Header.Set("accept", "application/json")
 	}
 
 	// Apply custom User-Agent if configured
@@ -3525,7 +3546,7 @@ func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
 
 func openAIResponsesSSEEventShouldParseUsage(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
-	case "response.completed", "response.done", "response.failed":
+	case "response.completed", "response.done", "response.failed", "response.incomplete":
 		return true
 	default:
 		return false
@@ -3538,7 +3559,8 @@ func openAIResponsesSSEStringMayContainUsageEvent(data string) bool {
 	}
 	return strings.Contains(data, `"response.completed"`) ||
 		strings.Contains(data, `"response.done"`) ||
-		strings.Contains(data, `"response.failed"`)
+		strings.Contains(data, `"response.failed"`) ||
+		strings.Contains(data, `"response.incomplete"`)
 }
 
 func openAIResponsesSSEBytesMayContainUsageEvent(data []byte) bool {
@@ -3547,7 +3569,8 @@ func openAIResponsesSSEBytesMayContainUsageEvent(data []byte) bool {
 	}
 	return bytes.Contains(data, sseResponseCompletedMark) ||
 		bytes.Contains(data, sseResponseDoneMark) ||
-		bytes.Contains(data, sseResponseFailedMark)
+		bytes.Contains(data, sseResponseFailedMark) ||
+		bytes.Contains(data, sseResponseIncompleteMark)
 }
 
 func openAIResponsesSSEStringHasCanonicalTerminalType(data string) bool {
@@ -3556,7 +3579,8 @@ func openAIResponsesSSEStringHasCanonicalTerminalType(data string) bool {
 	}
 	return strings.Contains(data, `"type":"response.completed"`) ||
 		strings.Contains(data, `"type":"response.done"`) ||
-		strings.Contains(data, `"type":"response.failed"`)
+		strings.Contains(data, `"type":"response.failed"`) ||
+		strings.Contains(data, `"type":"response.incomplete"`)
 }
 
 func openAIResponsesSSEBytesHasCanonicalTerminalType(data []byte) bool {
@@ -3565,7 +3589,8 @@ func openAIResponsesSSEBytesHasCanonicalTerminalType(data []byte) bool {
 	}
 	return bytes.Contains(data, sseTypeResponseCompleted) ||
 		bytes.Contains(data, sseTypeResponseDone) ||
-		bytes.Contains(data, sseTypeResponseFailed)
+		bytes.Contains(data, sseTypeResponseFailed) ||
+		bytes.Contains(data, sseTypeResponseIncomplete)
 }
 
 func openAIResponsesSSEEventIsTokenEvent(eventType string) bool {
@@ -3758,6 +3783,13 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 		}
+		if terminalOK && terminalType == "response.incomplete" {
+			msg := extractOpenAISSEIncompleteMessage(terminalPayload)
+			if msg == "" {
+				msg = "Upstream compact response incomplete"
+			}
+			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
+		}
 		msg := "Upstream returned an incomplete event-stream response"
 		if terminalOK {
 			msg = fmt.Sprintf("Upstream returned unsupported terminal event: %s", terminalType)
@@ -3790,6 +3822,8 @@ func extractOpenAISSETerminalEvent(body string) (string, []byte, bool) {
 		switch eventType {
 		case "response.completed", "response.done", "response.failed":
 			return eventType, []byte(data), true
+		case "response.incomplete":
+			return eventType, []byte(data), true
 		}
 	}
 	return "", nil, false
@@ -3805,6 +3839,22 @@ func extractOpenAISSEErrorMessage(payload []byte) string {
 		}
 	}
 	return sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(payload)))
+}
+
+func extractOpenAISSEIncompleteMessage(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	if msg := strings.TrimSpace(gjson.GetBytes(payload, "response.incomplete_details.reason").String()); msg != "" {
+		return sanitizeUpstreamErrorMessage("Upstream compact response incomplete: " + msg)
+	}
+	if msg := strings.TrimSpace(gjson.GetBytes(payload, "incomplete_details.reason").String()); msg != "" {
+		return sanitizeUpstreamErrorMessage("Upstream compact response incomplete: " + msg)
+	}
+	if msg := strings.TrimSpace(gjson.GetBytes(payload, "response.status").String()); msg != "" {
+		return sanitizeUpstreamErrorMessage("Upstream compact response incomplete: " + msg)
+	}
+	return ""
 }
 
 func (s *OpenAIGatewayService) writeOpenAINonStreamingProtocolError(resp *http.Response, c *gin.Context, message string) error {
@@ -3937,6 +3987,33 @@ func buildOpenAIResponsesURL(base, endpoint string) string {
 		return normalized + endpointSuffix
 	}
 	return normalized + "/v1" + endpointSuffix
+}
+
+func isCompactEndpoint(endpoint string) bool {
+	return strings.Trim(strings.TrimSpace(endpoint), "/") == openAICompactEndpoint
+}
+
+func shouldUseOpenAIPlatformCompactEndpoint(account *Account, endpoint string) bool {
+	return account != nil && account.Type == AccountTypeOAuth && isCompactEndpoint(endpoint)
+}
+
+func sanitizeOpenAICompactPlatformHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Host = ""
+	for _, key := range []string{
+		"chatgpt-account-id",
+		"OpenAI-Beta",
+		"originator",
+		"version",
+		"conversation_id",
+		"session_id",
+		"x-codex-turn-state",
+		"x-codex-turn-metadata",
+	} {
+		req.Header.Del(key)
+	}
 }
 
 func IsOpenAIResponsesCompactPathForTest(c *gin.Context) bool {
