@@ -71,3 +71,22 @@ func TestRequestTypeStringPtrNil(t *testing.T) {
 	t.Parallel()
 	require.Nil(t, requestTypeStringPtr(nil))
 }
+
+func TestUsageLogFromService_IncludesServiceTier(t *testing.T) {
+	serviceTier := "priority"
+	log := &service.UsageLog{
+		ID:          1,
+		RequestID:   "req_service_tier",
+		Model:       "gpt-5.1-codex",
+		ServiceTier: &serviceTier,
+	}
+
+	userDTO := UsageLogFromService(log)
+	adminDTO := UsageLogFromServiceAdmin(log)
+	require.NotNil(t, userDTO)
+	require.NotNil(t, adminDTO)
+	require.NotNil(t, userDTO.ServiceTier)
+	require.NotNil(t, adminDTO.ServiceTier)
+	require.Equal(t, serviceTier, *userDTO.ServiceTier)
+	require.Equal(t, serviceTier, *adminDTO.ServiceTier)
+}

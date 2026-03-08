@@ -68,3 +68,21 @@ func TestGetModelPricing_Gpt54UsesStaticFallbackWhenRemoteMissing(t *testing.T) 
 	require.InDelta(t, 2.0, got.LongContextInputCostMultiplier, 1e-12)
 	require.InDelta(t, 1.5, got.LongContextOutputCostMultiplier, 1e-12)
 }
+
+func TestGetModelPricing_PreservesPriorityFields(t *testing.T) {
+	pricing := &LiteLLMModelPricing{
+		InputCostPerToken:               1.25e-6,
+		InputCostPerTokenPriority:       2.5e-6,
+		OutputCostPerToken:              1.0e-5,
+		OutputCostPerTokenPriority:      2.0e-5,
+		CacheReadInputTokenCost:         1.25e-7,
+		CacheReadInputTokenCostPriority: 2.5e-7,
+	}
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{"gpt-5.1-codex": pricing}}
+
+	got := svc.GetModelPricing("gpt-5.1-codex")
+	require.NotNil(t, got)
+	require.InDelta(t, 2.5e-6, got.InputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 2.0e-5, got.OutputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 2.5e-7, got.CacheReadInputTokenCostPriority, 1e-12)
+}

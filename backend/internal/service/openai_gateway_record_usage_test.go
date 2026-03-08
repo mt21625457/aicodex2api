@@ -1036,6 +1036,36 @@ func TestResolveOpenAIUsageRequestID_FallbackChangesWhenUsageChanges(t *testing.
 	require.NotEqual(t, baseID, changedID, "fallback request id should change when usage fingerprint changes")
 }
 
+func TestResolveOpenAIUsageRequestID_FallbackChangesWhenServiceTierChanges(t *testing.T) {
+	priority := "priority"
+	base := &OpenAIRecordUsageInput{
+		FallbackRequestID: "req_fallback_seed",
+		APIKey:            &APIKey{ID: 11004},
+		Account:           &Account{ID: 21004},
+		Result: &OpenAIForwardResult{
+			Model:    "gpt-5.1-codex",
+			Usage:    OpenAIUsage{InputTokens: 10, OutputTokens: 4},
+			Duration: 2 * time.Second,
+		},
+	}
+	changed := &OpenAIRecordUsageInput{
+		FallbackRequestID: base.FallbackRequestID,
+		APIKey:            base.APIKey,
+		Account:           base.Account,
+		Result: &OpenAIForwardResult{
+			Model:       "gpt-5.1-codex",
+			ServiceTier: &priority,
+			Usage:       OpenAIUsage{InputTokens: 10, OutputTokens: 4},
+			Duration:    2 * time.Second,
+		},
+	}
+
+	baseID := resolveOpenAIUsageRequestID(base)
+	changedID := resolveOpenAIUsageRequestID(changed)
+
+	require.NotEqual(t, baseID, changedID, "fallback request id should change when service tier changes")
+}
+
 func TestResolveOpenAIUsageRequestID_FallbackChangesWhenWSIngressModeChanges(t *testing.T) {
 	base := &OpenAIRecordUsageInput{
 		FallbackRequestID: "req_fallback_seed",
@@ -1145,4 +1175,74 @@ func TestOpenAIGatewayServiceRecordUsage_Gpt54LongContextBillsWholeSession(t *te
 	require.InDelta(t, expectedOutput, usageRepo.lastLog.OutputCost, 1e-10)
 	require.InDelta(t, expectedInput+expectedOutput, usageRepo.lastLog.ActualCost, 1e-10)
 	require.Equal(t, 1, userRepo.deductCalls)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_ServiceTierPriorityDoublesCost(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+	serviceTier := "priority"
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID:   "resp_service_tier_priority",
+			ServiceTier: &serviceTier,
+			Usage: OpenAIUsage{
+				InputTokens:  100,
+				OutputTokens: 50,
+			},
+			Model:    "gpt-5.1-codex",
+			Duration: time.Second,
+		},
+		APIKey:  &APIKey{ID: 1015},
+		User:    &User{ID: 2015},
+		Account: &Account{ID: 3015},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.NotNil(t, usageRepo.lastLog.ServiceTier)
+	require.Equal(t, serviceTier, *usageRepo.lastLog.ServiceTier)
+
+	baseCost, calcErr := svc.billingService.CalculateCost("gpt-5.1-codex", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0)
+	require.NoError(t, calcErr)
+	require.InDelta(t, baseCost.InputCost*2, usageRepo.lastLog.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost*2, usageRepo.lastLog.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.ActualCost*2, usageRepo.lastLog.ActualCost, 1e-10)
+	require.InDelta(t, baseCost.ActualCost*2, userRepo.lastAmount, 1e-10)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_ServiceTierFlexHalvesCost(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
+	serviceTier := "flex"
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID:   "resp_service_tier_flex",
+			ServiceTier: &serviceTier,
+			Usage: OpenAIUsage{
+				InputTokens:  100,
+				OutputTokens: 50,
+			},
+			Model:    "gpt-5.1-codex",
+			Duration: time.Second,
+		},
+		APIKey:  &APIKey{ID: 1016},
+		User:    &User{ID: 2016},
+		Account: &Account{ID: 3016},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+
+	baseCost, calcErr := svc.billingService.CalculateCost("gpt-5.1-codex", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0)
+	require.NoError(t, calcErr)
+	require.InDelta(t, baseCost.InputCost*0.5, usageRepo.lastLog.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost*0.5, usageRepo.lastLog.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.ActualCost*0.5, usageRepo.lastLog.ActualCost, 1e-10)
+	require.InDelta(t, baseCost.ActualCost*0.5, userRepo.lastAmount, 1e-10)
 }

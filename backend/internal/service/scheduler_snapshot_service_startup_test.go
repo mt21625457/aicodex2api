@@ -121,12 +121,11 @@ func (s *startupAccountRepoStub) BulkUpdate(context.Context, []int64, AccountBul
 }
 
 type startupSchedulerCacheStub struct {
-	snapshot           []*Account
-	hit                bool
-	getSnapshotCalls   int
-	setSnapshotCalls   int
-	lastSnapshotBucket SchedulerBucket
-	lastSnapshotIDs    []int64
+	snapshot         []*Account
+	hit              bool
+	getSnapshotCalls int
+	setSnapshotCalls int
+	lastSnapshotIDs  []int64
 }
 
 func (s *startupSchedulerCacheStub) GetSnapshot(_ context.Context, _ SchedulerBucket) ([]*Account, bool, error) {
@@ -136,7 +135,6 @@ func (s *startupSchedulerCacheStub) GetSnapshot(_ context.Context, _ SchedulerBu
 
 func (s *startupSchedulerCacheStub) SetSnapshot(_ context.Context, bucket SchedulerBucket, accounts []Account) error {
 	s.setSnapshotCalls++
-	s.lastSnapshotBucket = bucket
 	s.lastSnapshotIDs = s.lastSnapshotIDs[:0]
 	for _, account := range accounts {
 		s.lastSnapshotIDs = append(s.lastSnapshotIDs, account.ID)

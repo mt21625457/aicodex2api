@@ -662,7 +662,7 @@ func TestHandleOpenAIWSUpstreamStatusSideEffects(t *testing.T) {
 			Type:        AccountTypeAPIKey,
 			Credentials: map[string]any{},
 		}
-		svc.handleOpenAIWSUpstreamStatusSideEffects(nil, account, wrapOpenAIWSFallback("upstream_rate_limited", errors.New("rate limited")))
+		svc.handleOpenAIWSUpstreamStatusSideEffects(context.TODO(), account, wrapOpenAIWSFallback("upstream_rate_limited", errors.New("rate limited")))
 		require.Equal(t, 1, repo.setRateLimitedCalls)
 	})
 
