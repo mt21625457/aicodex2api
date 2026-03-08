@@ -17,7 +17,6 @@ type usageSettlementBillingCacheStub struct {
 	deductErr                    error
 	invalidateUserBalanceCalls   int
 	updateSubscriptionUsageCalls int
-	lastSubscriptionUsageAmount  float64
 	invalidateSubscriptionCalls  int
 }
 
