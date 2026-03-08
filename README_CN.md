@@ -521,9 +521,9 @@ transport http {
 
 ```bash
 # h2c prior knowledge
-curl --http2-prior-knowledge -I http://localhost:8080/health
+curl --http2-prior-knowledge -I http://localhost:8080/ready
 # HTTP/1.1 回退
-curl --http1.1 -I http://localhost:8080/health
+curl --http1.1 -I http://localhost:8080/ready
 # WebSocket 回退验证（需管理员 token）
 websocat -H="Sec-WebSocket-Protocol: sub2api-admin, jwt.<ADMIN_TOKEN>" ws://localhost:8080/api/v1/admin/ops/ws/qps
 ```

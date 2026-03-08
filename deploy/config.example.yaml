@@ -382,6 +382,8 @@ gateway:
     db_fallback_timeout_seconds: 0
     # 受控回源限流（实例级 QPS），0 表示不限制
     db_fallback_max_qps: 0
+    # 启动后强制优先读库窗口（秒）；在此窗口内跳过调度快照缓存，适合容器冷启动场景
+    startup_db_first_seconds: 30
     # outbox 轮询周期（秒）
     outbox_poll_interval_seconds: 1
     # outbox 滞后告警阈值（秒）

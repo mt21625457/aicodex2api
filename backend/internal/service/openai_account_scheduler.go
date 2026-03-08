@@ -1326,35 +1326,13 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
-	if len(accounts) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+	filtered := make([]*Account, 0)
+	loadReq := make([]AccountWithConcurrency, 0)
+	accounts, filtered, loadReq, err = s.ensureLoadBalanceCandidates(ctx, accounts, req)
+	if err != nil {
+		return nil, 0, 0, 0, err
 	}
-
-	filtered := make([]*Account, 0, len(accounts))
-	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
-	for i := range accounts {
-		account := &accounts[i]
-		if req.ExcludedIDs != nil {
-			if _, excluded := req.ExcludedIDs[account.ID]; excluded {
-				continue
-			}
-		}
-		if !account.IsSchedulable() || !account.IsOpenAI() {
-			continue
-		}
-		if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
-			continue
-		}
-		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
-			continue
-		}
-		filtered = append(filtered, account)
-		loadReq = append(loadReq, AccountWithConcurrency{
-			ID:             account.ID,
-			MaxConcurrency: account.Concurrency,
-		})
-	}
-	if len(filtered) == 0 {
+	if len(accounts) == 0 || len(filtered) == 0 {
 		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
 	}
 
@@ -1574,6 +1552,59 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			MaxWaiting:     cfg.FallbackMaxWaiting,
 		},
 	}, len(candidates), topK, loadSkew, nil
+}
+
+func (s *defaultOpenAIAccountScheduler) filterLoadBalanceCandidates(
+	accounts []Account,
+	req OpenAIAccountScheduleRequest,
+) ([]*Account, []AccountWithConcurrency) {
+	filtered := make([]*Account, 0, len(accounts))
+	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		if req.ExcludedIDs != nil {
+			if _, excluded := req.ExcludedIDs[account.ID]; excluded {
+				continue
+			}
+		}
+		if !account.IsSchedulable() || !account.IsOpenAI() {
+			continue
+		}
+		if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+			continue
+		}
+		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+			continue
+		}
+		filtered = append(filtered, account)
+		loadReq = append(loadReq, AccountWithConcurrency{
+			ID:             account.ID,
+			MaxConcurrency: account.Concurrency,
+		})
+	}
+	return filtered, loadReq
+}
+
+func (s *defaultOpenAIAccountScheduler) ensureLoadBalanceCandidates(
+	ctx context.Context,
+	accounts []Account,
+	req OpenAIAccountScheduleRequest,
+) ([]Account, []*Account, []AccountWithConcurrency, error) {
+	filtered, loadReq := s.filterLoadBalanceCandidates(accounts, req)
+	if len(accounts) > 0 && len(filtered) > 0 {
+		return accounts, filtered, loadReq, nil
+	}
+
+	freshAccounts, freshErr := s.service.listSchedulableAccountsFresh(ctx, req.GroupID)
+	if freshErr != nil {
+		if len(accounts) == 0 {
+			return nil, nil, nil, freshErr
+		}
+		return accounts, filtered, loadReq, nil
+	}
+
+	filtered, loadReq = s.filterLoadBalanceCandidates(freshAccounts, req)
+	return freshAccounts, filtered, loadReq, nil
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {

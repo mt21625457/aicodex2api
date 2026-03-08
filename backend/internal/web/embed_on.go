@@ -38,6 +38,7 @@ func isFrontendSkippedAPIPath(path string) bool {
 		strings.HasPrefix(path, "/antigravity/") ||
 		strings.HasPrefix(path, "/setup/") ||
 		path == "/health" ||
+		path == "/ready" ||
 		strings.HasPrefix(path, "/responses")
 }
 

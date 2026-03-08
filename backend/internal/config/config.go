@@ -685,6 +685,9 @@ type GatewaySchedulingConfig struct {
 	// 受控回源限流（实例级 QPS），0 表示不限制
 	DbFallbackMaxQPS int `mapstructure:"db_fallback_max_qps"`
 
+	// 启动后强制优先读库窗口（秒），在此窗口内跳过调度快照缓存。
+	StartupDBFirstSeconds int `mapstructure:"startup_db_first_seconds"`
+
 	// Outbox 轮询与滞后阈值配置
 	// Outbox 轮询周期（秒）
 	OutboxPollIntervalSeconds int `mapstructure:"outbox_poll_interval_seconds"`
@@ -1397,6 +1400,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.db_fallback_enabled", true)
 	viper.SetDefault("gateway.scheduling.db_fallback_timeout_seconds", 0)
 	viper.SetDefault("gateway.scheduling.db_fallback_max_qps", 0)
+	viper.SetDefault("gateway.scheduling.startup_db_first_seconds", 30)
 	viper.SetDefault("gateway.scheduling.outbox_poll_interval_seconds", 1)
 	viper.SetDefault("gateway.scheduling.outbox_lag_warn_seconds", 5)
 	viper.SetDefault("gateway.scheduling.outbox_lag_rebuild_seconds", 10)
@@ -2187,6 +2191,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Scheduling.DbFallbackMaxQPS < 0 {
 		return fmt.Errorf("gateway.scheduling.db_fallback_max_qps must be non-negative")
+	}
+	if c.Gateway.Scheduling.StartupDBFirstSeconds < 0 {
+		return fmt.Errorf("gateway.scheduling.startup_db_first_seconds must be non-negative")
 	}
 	if c.Gateway.Scheduling.OutboxPollIntervalSeconds <= 0 {
 		return fmt.Errorf("gateway.scheduling.outbox_poll_interval_seconds must be positive")

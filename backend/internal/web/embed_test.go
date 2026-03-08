@@ -120,8 +120,22 @@ func buildFrontendAPISkipCases(apiPath string) []frontendAPISkipCase {
 		{method: http.MethodGet, path: "/antigravity/test"},
 		{method: http.MethodGet, path: "/setup/init"},
 		{method: http.MethodGet, path: "/health"},
+		{method: http.MethodGet, path: "/ready"},
 		{method: http.MethodGet, path: "/responses"},
 		{method: http.MethodPost, path: "/responses/compact"},
+	}
+}
+
+func TestIsFrontendSkippedAPIPath(t *testing.T) {
+	for _, path := range []string{"/health", "/ready", "/setup/status", "/api/v1/test", "/responses/compact"} {
+		t.Run(path, func(t *testing.T) {
+			require.True(t, isFrontendSkippedAPIPath(path))
+		})
+	}
+	for _, path := range []string{"/", "/index.html", "/assets/app.js"} {
+		t.Run(path, func(t *testing.T) {
+			require.False(t, isFrontendSkippedAPIPath(path))
+		})
 	}
 }
 

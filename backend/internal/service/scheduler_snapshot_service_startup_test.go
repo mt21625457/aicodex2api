@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
@@ -203,4 +204,109 @@ func TestSchedulerSnapshotServiceListSchedulableAccountsUsesCacheAfterStartupWar
 	require.Equal(t, stale.ID, accounts[0].ID)
 	require.Equal(t, 1, cache.getSnapshotCalls)
 	require.Zero(t, cache.setSnapshotCalls)
+}
+
+func TestSchedulerSnapshotServiceListSchedulableAccountsBypassesCacheDuringStartupDBFirstWindow(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(42)
+	fresh := Account{ID: 2, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: true}
+	stale := &Account{ID: 1, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: true}
+
+	repo := &startupAccountRepoStub{accounts: []Account{fresh}}
+	cache := &startupSchedulerCacheStub{snapshot: []*Account{stale}, hit: true}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	cfg.Gateway.Scheduling.StartupDBFirstSeconds = 30
+	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	svc.startupWarm.Store(true)
+
+	accounts, useMixed, err := svc.ListSchedulableAccounts(ctx, &groupID, PlatformAnthropic, false)
+	require.NoError(t, err)
+	require.True(t, useMixed)
+	require.Len(t, accounts, 1)
+	require.Equal(t, fresh.ID, accounts[0].ID)
+	require.Zero(t, cache.getSnapshotCalls)
+	require.Equal(t, 1, cache.setSnapshotCalls)
+	require.True(t, svc.IsReady())
+}
+
+func TestSchedulerSnapshotServiceListSchedulableAccountsEmptyCacheFallsBackToDB(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(42)
+	fresh := Account{ID: 2, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: true}
+
+	repo := &startupAccountRepoStub{accounts: []Account{fresh}}
+	cache := &startupSchedulerCacheStub{snapshot: []*Account{}, hit: true}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	svc.startupWarm.Store(true)
+
+	accounts, useMixed, err := svc.ListSchedulableAccounts(ctx, &groupID, PlatformAnthropic, false)
+	require.NoError(t, err)
+	require.True(t, useMixed)
+	require.Len(t, accounts, 1)
+	require.Equal(t, fresh.ID, accounts[0].ID)
+	require.Equal(t, 1, cache.getSnapshotCalls)
+	require.Equal(t, 1, cache.setSnapshotCalls)
+}
+
+func TestSchedulerSnapshotServiceListSchedulableAccountsFreshBypassesWarmCache(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(42)
+	fresh := Account{ID: 2, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: true}
+	stale := &Account{ID: 1, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: true}
+
+	repo := &startupAccountRepoStub{accounts: []Account{fresh}}
+	cache := &startupSchedulerCacheStub{snapshot: []*Account{stale}, hit: true}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	svc.startupWarm.Store(true)
+
+	accounts, useMixed, err := svc.ListSchedulableAccountsFresh(ctx, &groupID, PlatformAnthropic, false)
+	require.NoError(t, err)
+	require.True(t, useMixed)
+	require.Len(t, accounts, 1)
+	require.Equal(t, fresh.ID, accounts[0].ID)
+	require.Zero(t, cache.getSnapshotCalls)
+	require.Equal(t, 1, cache.setSnapshotCalls)
+}
+
+func TestSchedulerSnapshotServiceReadySetOnWarmCacheHit(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(42)
+	stale := &Account{ID: 1, Platform: PlatformAnthropic, Status: StatusActive, Schedulable: true}
+
+	repo := &startupAccountRepoStub{}
+	cache := &startupSchedulerCacheStub{snapshot: []*Account{stale}, hit: true}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.DbFallbackEnabled = true
+	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, cfg)
+	svc.startupWarm.Store(true)
+
+	require.False(t, svc.IsReady())
+	accounts, _, err := svc.ListSchedulableAccounts(ctx, &groupID, PlatformAnthropic, false)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.True(t, svc.IsReady())
+}
+
+func TestSchedulerSnapshotServiceIsReadyNilReceiver(t *testing.T) {
+	var svc *SchedulerSnapshotService
+	require.False(t, svc.IsReady())
+}
+
+func TestSchedulerSnapshotServiceInStartupDBFirstWindowStates(t *testing.T) {
+	var nilSvc *SchedulerSnapshotService
+	require.False(t, nilSvc.inStartupDBFirstWindow())
+
+	svc := &SchedulerSnapshotService{}
+	require.False(t, svc.inStartupDBFirstWindow())
+
+	svc.startupDBFirstUntilUnixNano.Store(time.Now().Add(5 * time.Second).UnixNano())
+	require.True(t, svc.inStartupDBFirstWindow())
+
+	svc.startupDBFirstUntilUnixNano.Store(time.Now().Add(-5 * time.Second).UnixNano())
+	require.False(t, svc.inStartupDBFirstWindow())
 }
