@@ -177,6 +177,23 @@ func TestCalculateCostWithServiceTier_OpenAICodexPriorityUsesPriorityPricing(t *
 	require.InDelta(t, baseCost.ActualCost*2, priorityCost.ActualCost, 1e-10)
 }
 
+func TestCalculateCostWithServiceTier_Gpt54PriorityFallsBackToTwoX(t *testing.T) {
+	svc := newTestBillingService()
+	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 20}
+
+	baseCost, err := svc.CalculateCost("gpt-5.4", tokens, 1.0)
+	require.NoError(t, err)
+
+	priorityCost, err := svc.CalculateCostWithServiceTier("gpt-5.4", tokens, 1.0, "priority")
+	require.NoError(t, err)
+
+	require.InDelta(t, baseCost.InputCost*2, priorityCost.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost*2, priorityCost.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.CacheReadCost*2, priorityCost.CacheReadCost, 1e-10)
+	require.InDelta(t, baseCost.TotalCost*2, priorityCost.TotalCost, 1e-10)
+	require.InDelta(t, baseCost.ActualCost*2, priorityCost.ActualCost, 1e-10)
+}
+
 func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -555,4 +572,44 @@ func TestCalculateCost_LargeTokenCount(t *testing.T) {
 	require.InDelta(t, 15.0, cost.OutputCost, 1e-6)
 	require.False(t, math.IsNaN(cost.TotalCost))
 	require.False(t, math.IsInf(cost.TotalCost, 0))
+}
+
+func TestServiceTierCostMultiplier(t *testing.T) {
+	require.InDelta(t, 2.0, serviceTierCostMultiplier("priority"), 1e-12)
+	require.InDelta(t, 2.0, serviceTierCostMultiplier(" Priority "), 1e-12)
+	require.InDelta(t, 0.5, serviceTierCostMultiplier("flex"), 1e-12)
+	require.InDelta(t, 1.0, serviceTierCostMultiplier(""), 1e-12)
+	require.InDelta(t, 1.0, serviceTierCostMultiplier("default"), 1e-12)
+}
+
+func TestCalculateCostWithServiceTier_FlexAppliesHalfMultiplierToAllCostParts(t *testing.T) {
+	svc := newTestBillingService()
+	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheCreationTokens: 40, CacheReadTokens: 20}
+
+	baseCost, err := svc.CalculateCost("gpt-5.4", tokens, 1.0)
+	require.NoError(t, err)
+
+	flexCost, err := svc.CalculateCostWithServiceTier("gpt-5.4", tokens, 1.0, "flex")
+	require.NoError(t, err)
+
+	require.InDelta(t, baseCost.InputCost*0.5, flexCost.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost*0.5, flexCost.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.CacheCreationCost*0.5, flexCost.CacheCreationCost, 1e-10)
+	require.InDelta(t, baseCost.CacheReadCost*0.5, flexCost.CacheReadCost, 1e-10)
+	require.InDelta(t, baseCost.TotalCost*0.5, flexCost.TotalCost, 1e-10)
+	require.InDelta(t, baseCost.ActualCost*0.5, flexCost.ActualCost, 1e-10)
+}
+
+func TestCalculateCostWithServiceTier_UnknownTierFallsBackToStandardPricing(t *testing.T) {
+	svc := newTestBillingService()
+	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheCreationTokens: 40, CacheReadTokens: 20}
+
+	baseCost, err := svc.CalculateCost("gpt-5.4", tokens, 1.0)
+	require.NoError(t, err)
+
+	unknownCost, err := svc.CalculateCostWithServiceTier("gpt-5.4", tokens, 1.0, "economy")
+	require.NoError(t, err)
+
+	require.InDelta(t, baseCost.TotalCost, unknownCost.TotalCost, 1e-10)
+	require.InDelta(t, baseCost.ActualCost, unknownCost.ActualCost, 1e-10)
 }

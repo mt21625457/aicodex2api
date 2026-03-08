@@ -1326,8 +1326,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
-	filtered := make([]*Account, 0)
-	loadReq := make([]AccountWithConcurrency, 0)
+	var filtered []*Account
+	var loadReq []AccountWithConcurrency
 	accounts, filtered, loadReq, err = s.ensureLoadBalanceCandidates(ctx, accounts, req)
 	if err != nil {
 		return nil, 0, 0, 0, err

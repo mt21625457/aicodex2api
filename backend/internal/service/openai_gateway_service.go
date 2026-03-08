@@ -4228,7 +4228,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			return err
 		}
 	}
-	applyOpenAIServiceTierCostMultiplier(cost, result.ServiceTier)
 
 	// Determine billing type
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -4572,24 +4571,6 @@ func normalizeOpenAIServiceTier(raw string) *string {
 	default:
 		return nil
 	}
-}
-
-func applyOpenAIServiceTierCostMultiplier(cost *CostBreakdown, serviceTier *string) {
-	if cost == nil || serviceTier == nil {
-		return
-	}
-
-	if strings.ToLower(strings.TrimSpace(*serviceTier)) != "flex" {
-		return
-	}
-	multiplier := 0.5
-
-	cost.InputCost *= multiplier
-	cost.OutputCost *= multiplier
-	cost.CacheCreationCost *= multiplier
-	cost.CacheReadCost *= multiplier
-	cost.TotalCost *= multiplier
-	cost.ActualCost *= multiplier
 }
 
 func deriveOpenAIReasoningEffortFromModel(model string) string {
