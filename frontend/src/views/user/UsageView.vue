@@ -448,8 +448,17 @@
             <span class="text-gray-400">{{ t('usage.serviceTier') }}</span>
             <span class="font-semibold text-cyan-300">{{ getServiceTierLabel(tooltipData?.service_tier) }}</span>
           </div>
+          <div
+            v-if="tooltipData && getServiceTierMultiplier(tooltipData.service_tier) !== 1"
+            class="flex items-center justify-between gap-6"
+          >
+            <span class="text-gray-400">{{ t('usage.serviceTierRate') }}</span>
+            <span class="font-semibold text-cyan-300"
+              >{{ getServiceTierMultiplier(tooltipData.service_tier).toFixed(2) }}x</span
+            >
+          </div>
           <div class="flex items-center justify-between gap-6">
-            <span class="text-gray-400">{{ t('usage.rate') }}</span>
+            <span class="text-gray-400">{{ t('usage.userRate') }}</span>
             <span class="font-semibold text-blue-400"
               >{{ (tooltipData?.rate_multiplier || 1).toFixed(2) }}x</span
             >
@@ -492,7 +501,7 @@ import type { Column } from '@/components/common/types'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
-import { formatUsageServiceTier } from '@/utils/usageServiceTier'
+import { formatUsageServiceTier, getUsageServiceTierMultiplier } from '@/utils/usageServiceTier'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -613,6 +622,10 @@ const getServiceTierLabel = (serviceTier?: string | null): string => {
   if (tier === 'flex') return t('usage.serviceTierFlex')
   if (tier === 'standard') return t('usage.serviceTierStandard')
   return tier
+}
+
+const getServiceTierMultiplier = (serviceTier?: string | null): number => {
+  return getUsageServiceTierMultiplier(serviceTier)
 }
 
 const getRequestTypeExportText = (log: UsageLog): string => {

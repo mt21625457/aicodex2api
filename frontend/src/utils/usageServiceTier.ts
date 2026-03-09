@@ -12,3 +12,10 @@ export function formatUsageServiceTier(serviceTier?: string | null): string {
   if (!normalized) return 'standard'
   return normalized
 }
+
+export function getUsageServiceTierMultiplier(serviceTier?: string | null): number {
+  const normalized = formatUsageServiceTier(serviceTier)
+  if (normalized === 'priority') return 2
+  if (normalized === 'flex') return 0.5
+  return 1
+}
