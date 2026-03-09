@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatUsageServiceTier, normalizeUsageServiceTier } from '../usageServiceTier'
+import {
+  formatUsageServiceTier,
+  getUsageServiceTierMultiplier,
+  normalizeUsageServiceTier
+} from '../usageServiceTier'
 
 describe('usageServiceTier', () => {
   it('normalizes fast to priority', () => {
@@ -20,5 +24,13 @@ describe('usageServiceTier', () => {
     expect(formatUsageServiceTier('priority')).toBe('priority')
     expect(formatUsageServiceTier('flex')).toBe('flex')
     expect(formatUsageServiceTier('economy')).toBe('economy')
+  })
+
+  it('returns the expected billing multiplier for service tiers', () => {
+    expect(getUsageServiceTierMultiplier('fast')).toBe(2)
+    expect(getUsageServiceTierMultiplier('priority')).toBe(2)
+    expect(getUsageServiceTierMultiplier('flex')).toBe(0.5)
+    expect(getUsageServiceTierMultiplier('standard')).toBe(1)
+    expect(getUsageServiceTierMultiplier(undefined)).toBe(1)
   })
 })

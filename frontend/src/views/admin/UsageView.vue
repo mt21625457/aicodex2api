@@ -162,7 +162,7 @@ const exportToExcel = async () => {
       t('admin.usage.outputTokens'), t('admin.usage.outputCost'), `${t('usage.outputTokenPrice')} ($/1M)`,
       t('admin.usage.cacheReadTokens'), t('admin.usage.cacheReadCost'),
       t('admin.usage.cacheCreationTokens'), t('admin.usage.cacheCreationCost'),
-      t('usage.rate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
+      t('usage.userRate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
       t('usage.firstToken'), t('usage.duration'),
       t('admin.usage.requestId'), t('usage.userAgent'), t('admin.usage.ipAddress')
     ]
