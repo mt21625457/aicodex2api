@@ -40,6 +40,22 @@ func safeDateFormat(granularity string) string {
 	return "YYYY-MM-DD"
 }
 
+func usageLogServiceTierMultiplierSQL() string {
+	return "CASE LOWER(COALESCE(service_tier, '')) WHEN 'priority' THEN 2.0 WHEN 'fast' THEN 2.0 WHEN 'flex' THEN 0.5 ELSE 1.0 END"
+}
+
+func usageLogEffectiveRateMultiplierSQL() string {
+	return "CASE WHEN rate_multiplier <= 0 THEN 1.0 ELSE rate_multiplier END"
+}
+
+func usageLogStoredServiceTierMultiplierSQL() string {
+	return fmt.Sprintf(
+		"CASE WHEN ABS(actual_cost - (total_cost * %s)) < 0.000001 THEN 1.0 ELSE %s END",
+		usageLogEffectiveRateMultiplierSQL(),
+		usageLogServiceTierMultiplierSQL(),
+	)
+}
+
 type usageLogRepository struct {
 	client *dbent.Client
 	sql    sqlExecutor
@@ -948,18 +964,19 @@ func (r *usageLogRepository) GetAPIKeyStatsAggregated(ctx context.Context, apiKe
 // 2. 只返回单行聚合结果，大幅减少数据传输量
 // 3. 利用数据库索引优化聚合查询性能
 func (r *usageLogRepository) GetAccountStatsAggregated(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.UsageStats, error) {
-	query := `
+	accountCostExpr := fmt.Sprintf("COALESCE(SUM(total_cost * %s * COALESCE(account_rate_multiplier, 1)), 0)", usageLogStoredServiceTierMultiplierSQL())
+	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as total_requests,
 			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens + cache_read_tokens), 0) as total_cache_tokens,
 			COALESCE(SUM(total_cost), 0) as total_cost,
-			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
+			%s as total_actual_cost,
 			COALESCE(AVG(COALESCE(duration_ms, 0)), 0) as avg_duration_ms
 		FROM usage_logs
 		WHERE account_id = $1 AND created_at >= $2 AND created_at < $3
-	`
+	`, accountCostExpr)
 
 	var stats usagestats.UsageStats
 	if err := scanSingleRow(
@@ -1132,17 +1149,18 @@ func (r *usageLogRepository) Delete(ctx context.Context, id int64) error {
 // GetAccountTodayStats 获取账号今日统计
 func (r *usageLogRepository) GetAccountTodayStats(ctx context.Context, accountID int64) (*usagestats.AccountStats, error) {
 	today := timezone.Today()
+	accountCostExpr := fmt.Sprintf("COALESCE(SUM(total_cost * %s * COALESCE(account_rate_multiplier, 1)), 0)", usageLogStoredServiceTierMultiplierSQL())
 
-	query := `
+	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(total_cost * COALESCE(account_rate_multiplier, 1)), 0) as cost,
+			%s as cost,
 			COALESCE(SUM(total_cost), 0) as standard_cost,
 			COALESCE(SUM(actual_cost), 0) as user_cost
 		FROM usage_logs
 		WHERE account_id = $1 AND created_at >= $2
-	`
+	`, accountCostExpr)
 
 	stats := &usagestats.AccountStats{}
 	if err := scanSingleRow(
@@ -1163,16 +1181,17 @@ func (r *usageLogRepository) GetAccountTodayStats(ctx context.Context, accountID
 
 // GetAccountWindowStats 获取账号时间窗口内的统计
 func (r *usageLogRepository) GetAccountWindowStats(ctx context.Context, accountID int64, startTime time.Time) (*usagestats.AccountStats, error) {
-	query := `
+	accountCostExpr := fmt.Sprintf("COALESCE(SUM(total_cost * %s * COALESCE(account_rate_multiplier, 1)), 0)", usageLogStoredServiceTierMultiplierSQL())
+	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(total_cost * COALESCE(account_rate_multiplier, 1)), 0) as cost,
+			%s as cost,
 			COALESCE(SUM(total_cost), 0) as standard_cost,
 			COALESCE(SUM(actual_cost), 0) as user_cost
 		FROM usage_logs
 		WHERE account_id = $1 AND created_at >= $2
-	`
+	`, accountCostExpr)
 
 	stats := &usagestats.AccountStats{}
 	if err := scanSingleRow(
@@ -1199,18 +1218,19 @@ func (r *usageLogRepository) GetAccountWindowStatsBatch(ctx context.Context, acc
 		return result, nil
 	}
 
-	query := `
+	accountCostExpr := fmt.Sprintf("COALESCE(SUM(total_cost * %s * COALESCE(account_rate_multiplier, 1)), 0)", usageLogStoredServiceTierMultiplierSQL())
+	query := fmt.Sprintf(`
 		SELECT
 			account_id,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(total_cost * COALESCE(account_rate_multiplier, 1)), 0) as cost,
+			%s as cost,
 			COALESCE(SUM(total_cost), 0) as standard_cost,
 			COALESCE(SUM(actual_cost), 0) as user_cost
 		FROM usage_logs
 		WHERE account_id = ANY($1) AND created_at >= $2
 		GROUP BY account_id
-	`
+	`, accountCostExpr)
 	rows, err := r.sql.QueryContext(ctx, query, pq.Array(accountIDs), startTime)
 	if err != nil {
 		return nil, err
@@ -1994,9 +2014,9 @@ func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, start
 // GetModelStatsWithFilters returns model statistics with optional filters
 func (r *usageLogRepository) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) (results []ModelStat, err error) {
 	actualCostExpr := "COALESCE(SUM(actual_cost), 0) as actual_cost"
-	// 当仅按 account_id 聚合时，实际费用使用账号倍率（total_cost * account_rate_multiplier）。
+	// 当仅按 account_id 聚合时，实际费用使用账号口径（total_cost * service_tier_multiplier * account_rate_multiplier）。
 	if accountID > 0 && userID == 0 && apiKeyID == 0 {
-		actualCostExpr = "COALESCE(SUM(total_cost * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost"
+		actualCostExpr = fmt.Sprintf("COALESCE(SUM(total_cost * %s * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost", usageLogStoredServiceTierMultiplierSQL())
 	}
 
 	query := fmt.Sprintf(`
@@ -2130,6 +2150,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 		args = append(args, *filters.EndTime)
 	}
 
+	accountCostExpr := fmt.Sprintf("COALESCE(SUM(total_cost * %s * COALESCE(account_rate_multiplier, 1)), 0) as total_account_cost", usageLogStoredServiceTierMultiplierSQL())
 	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as total_requests,
@@ -2138,11 +2159,11 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			COALESCE(SUM(cache_creation_tokens + cache_read_tokens), 0) as total_cache_tokens,
 			COALESCE(SUM(total_cost), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
-			COALESCE(SUM(total_cost * COALESCE(account_rate_multiplier, 1)), 0) as total_account_cost,
+			%s,
 			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
 		FROM usage_logs
 		%s
-	`, buildWhere(conditions))
+	`, accountCostExpr, buildWhere(conditions))
 
 	stats := &UsageStats{}
 	var totalAccountCost float64
@@ -2185,19 +2206,20 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		daysCount = 30
 	}
 
-	query := `
+	accountCostExpr := fmt.Sprintf("COALESCE(SUM(total_cost * %s * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost", usageLogStoredServiceTierMultiplierSQL())
+	query := fmt.Sprintf(`
 		SELECT
 			TO_CHAR(created_at, 'YYYY-MM-DD') as date,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
 			COALESCE(SUM(total_cost), 0) as cost,
-			COALESCE(SUM(total_cost * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost,
+			%s,
 			COALESCE(SUM(actual_cost), 0) as user_cost
 		FROM usage_logs
 		WHERE account_id = $1 AND created_at >= $2 AND created_at < $3
 		GROUP BY date
 		ORDER BY date ASC
-	`
+	`, accountCostExpr)
 
 	rows, err := r.sql.QueryContext(ctx, query, accountID, startTime, endTime)
 	if err != nil {

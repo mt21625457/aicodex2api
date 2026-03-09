@@ -180,8 +180,8 @@ type AccountUsageHistory struct {
 	Requests   int64   `json:"requests"`
 	Tokens     int64   `json:"tokens"`
 	Cost       float64 `json:"cost"`        // 标准计费（total_cost）
-	ActualCost float64 `json:"actual_cost"` // 账号口径费用（total_cost * account_rate_multiplier）
-	UserCost   float64 `json:"user_cost"`   // 用户口径费用（actual_cost，受分组倍率影响）
+	ActualCost float64 `json:"actual_cost"` // 账号口径费用（total_cost * service_tier_multiplier * account_rate_multiplier）
+	UserCost   float64 `json:"user_cost"`   // 用户口径费用（actual_cost，受 service tier 与分组倍率影响）
 }
 
 // AccountUsageSummary represents summary statistics for an account

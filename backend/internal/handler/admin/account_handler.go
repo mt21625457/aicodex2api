@@ -176,7 +176,7 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 		if h.accountUsageService != nil && account.GetWindowCostLimit() > 0 {
 			startTime := account.GetCurrentWindowStartTime()
 			if stats, err := h.accountUsageService.GetAccountWindowStats(ctx, account.ID, startTime); err == nil && stats != nil {
-				cost := stats.StandardCost
+				cost := stats.Cost
 				item.CurrentWindowCost = &cost
 			}
 		}
@@ -280,7 +280,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 				stats, err := h.accountUsageService.GetAccountWindowStats(gctx, accCopy.ID, startTime)
 				if err == nil && stats != nil {
 					mu.Lock()
-					windowCosts[accCopy.ID] = stats.StandardCost // 使用标准费用
+					windowCosts[accCopy.ID] = stats.Cost // 使用账号口径费用（含 service tier）
 					mu.Unlock()
 				}
 				return nil // 不返回错误，允许部分失败

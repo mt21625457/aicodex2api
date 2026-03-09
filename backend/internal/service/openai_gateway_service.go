@@ -4240,6 +4240,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
 	requestID := resolveOpenAIUsageRequestID(input)
+	serviceTierMultiplier := serviceTierCostMultiplier(serviceTier)
 	usageLog := &UsageLog{
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
@@ -4289,7 +4290,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		UsageLog:             usageLog,
 		BillingType:          billingType,
 		BalanceDeltaUSD:      cost.ActualCost,
-		SubscriptionDeltaUSD: cost.TotalCost,
+		SubscriptionDeltaUSD: cost.TotalCost * serviceTierMultiplier,
 		APIKeyID:             apiKey.ID,
 		APIKeyQuota:          apiKey.Quota,
 		APIKeyQuotaDeltaUSD:  cost.ActualCost,

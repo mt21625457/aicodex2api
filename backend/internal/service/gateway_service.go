@@ -2075,7 +2075,7 @@ func (s *GatewayService) withWindowCostPrefetch(ctx context.Context, accounts []
 					stats := statsByAccount[accountID]
 					cost := 0.0
 					if stats != nil {
-						cost = stats.StandardCost
+						cost = stats.Cost
 					}
 					costs[accountID] = cost
 					_ = s.sessionLimitCache.SetWindowCost(ctx, accountID, cost)
@@ -2094,7 +2094,7 @@ func (s *GatewayService) withWindowCostPrefetch(ctx context.Context, accounts []
 				windowCostPrefetchErrorTotal.Add(1)
 				continue
 			}
-			cost := stats.StandardCost
+			cost := stats.Cost
 			costs[accountID] = cost
 			_ = s.sessionLimitCache.SetWindowCost(ctx, accountID, cost)
 		}
@@ -2141,8 +2141,8 @@ func (s *GatewayService) isAccountSchedulableForWindowCost(ctx context.Context, 
 			return true
 		}
 
-		// 使用标准费用（不含账号倍率）
-		currentCost = stats.StandardCost
+		// 使用账号口径费用（已包含 service tier，未包含账号倍率）
+		currentCost = stats.Cost
 
 		// 设置缓存（忽略错误）
 		if s.sessionLimitCache != nil {

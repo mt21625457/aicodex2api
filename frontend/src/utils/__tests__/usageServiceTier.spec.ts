@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  applyUsageServiceTierMultiplier,
+  calculateUsageAccountBilledCost,
   formatUsageServiceTier,
   getUsageServiceTierMultiplier,
+  getStoredUsageServiceTierMultiplier,
   normalizeUsageServiceTier
 } from '../usageServiceTier'
 
@@ -32,5 +35,30 @@ describe('usageServiceTier', () => {
     expect(getUsageServiceTierMultiplier('flex')).toBe(0.5)
     expect(getUsageServiceTierMultiplier('standard')).toBe(1)
     expect(getUsageServiceTierMultiplier(undefined)).toBe(1)
+  })
+
+  it('applies the billing multiplier on top of the base cost', () => {
+    expect(applyUsageServiceTierMultiplier(1.25, 'fast')).toBe(2.5)
+    expect(applyUsageServiceTierMultiplier(1.25, 'priority')).toBe(2.5)
+    expect(applyUsageServiceTierMultiplier(1.25, 'flex')).toBe(0.625)
+    expect(applyUsageServiceTierMultiplier(1.25, 'standard')).toBe(1.25)
+    expect(applyUsageServiceTierMultiplier(undefined, 'fast')).toBe(0)
+  })
+
+  it('detects whether stored totals already include the service tier', () => {
+    expect(getStoredUsageServiceTierMultiplier(1, 1, 1, 'fast')).toBe(1)
+    expect(getStoredUsageServiceTierMultiplier(1, 2, 1, 'fast')).toBe(2)
+    expect(getStoredUsageServiceTierMultiplier(1, 0.5, 1, 'flex')).toBe(0.5)
+    expect(getStoredUsageServiceTierMultiplier(undefined, 2, 1, 'fast')).toBe(2)
+    expect(getStoredUsageServiceTierMultiplier(1, undefined, 1, 'fast')).toBe(2)
+    expect(getStoredUsageServiceTierMultiplier(1, 2, 0, 'fast')).toBe(2)
+    expect(getStoredUsageServiceTierMultiplier(1, 1, undefined, 'standard')).toBe(1)
+  })
+
+  it('calculates account billed cost without double-applying old records', () => {
+    expect(calculateUsageAccountBilledCost(1, 1, 1, 1.5, 'fast')).toBe(1.5)
+    expect(calculateUsageAccountBilledCost(1, 2, 1, 1.5, 'fast')).toBe(3)
+    expect(calculateUsageAccountBilledCost(1, 2, 1, undefined, 'fast')).toBe(2)
+    expect(calculateUsageAccountBilledCost(1, 2, 1, -1, 'fast')).toBe(2)
   })
 })

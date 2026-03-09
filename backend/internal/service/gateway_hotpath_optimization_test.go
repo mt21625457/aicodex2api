@@ -77,9 +77,29 @@ type sessionLimitCacheHotpathStub struct {
 
 	batchData map[int64]float64
 	batchErr  error
+	getData   map[int64]float64
+	getHit    bool
+	getErr    error
 
 	setData map[int64]float64
 	setErr  error
+}
+
+func (s *sessionLimitCacheHotpathStub) GetWindowCost(ctx context.Context, accountID int64) (float64, bool, error) {
+	if s.getErr != nil {
+		return 0, false, s.getErr
+	}
+	if s.getData == nil {
+		return 0, false, nil
+	}
+	value, ok := s.getData[accountID]
+	if !ok {
+		return 0, false, nil
+	}
+	if s.getHit {
+		return value, true, nil
+	}
+	return value, false, nil
 }
 
 func (s *sessionLimitCacheHotpathStub) GetWindowCostBatch(ctx context.Context, accountIDs []int64) (map[int64]float64, error) {
@@ -336,7 +356,7 @@ func TestWithWindowCostPrefetch_BatchReadAndContextReuse(t *testing.T) {
 	}
 	repo := &usageLogWindowBatchRepoStub{
 		batchResult: map[int64]*usagestats.AccountStats{
-			2: {StandardCost: 22.0},
+			2: {Cost: 22.0},
 		},
 	}
 	svc := &GatewayService{
@@ -367,6 +387,203 @@ func TestWithWindowCostPrefetch_BatchReadAndContextReuse(t *testing.T) {
 	require.Equal(t, int64(1), batchSQL)
 	require.Equal(t, int64(0), fallback)
 	require.Equal(t, int64(0), errCount)
+}
+
+func TestWithWindowCostPrefetch_PrefersCostOverStandardCost(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	windowStart := time.Now().Add(-30 * time.Minute).Truncate(time.Hour)
+	windowEnd := windowStart.Add(5 * time.Hour)
+	accounts := []Account{
+		{
+			ID:                 2,
+			Platform:           PlatformAnthropic,
+			Type:               AccountTypeSetupToken,
+			Extra:              map[string]any{"window_cost_limit": 100.0},
+			SessionWindowStart: &windowStart,
+			SessionWindowEnd:   &windowEnd,
+		},
+	}
+
+	cache := &sessionLimitCacheHotpathStub{}
+	repo := &usageLogWindowBatchRepoStub{
+		batchResult: map[int64]*usagestats.AccountStats{
+			2: {Cost: 22.0, StandardCost: 9.0},
+		},
+	}
+	svc := &GatewayService{
+		sessionLimitCache: cache,
+		usageLogRepo:      repo,
+	}
+
+	outCtx := svc.withWindowCostPrefetch(context.Background(), accounts)
+	cost, ok := windowCostFromPrefetchContext(outCtx, 2)
+	require.True(t, ok)
+	require.Equal(t, 22.0, cost)
+	require.Equal(t, 22.0, cache.setData[2])
+}
+
+func TestWithWindowCostPrefetch_NoEligibleAccountsReturnsOriginalContext(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	accounts := []Account{
+		{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+	}
+	svc := &GatewayService{}
+
+	baseCtx := context.Background()
+	outCtx := svc.withWindowCostPrefetch(baseCtx, accounts)
+	require.Equal(t, baseCtx, outCtx)
+}
+
+func TestWithWindowCostPrefetch_CacheBatchErrorFallsBackToDatabase(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	windowStart := time.Now().Add(-30 * time.Minute).Truncate(time.Hour)
+	windowEnd := windowStart.Add(5 * time.Hour)
+	accounts := []Account{
+		{
+			ID:                 2,
+			Platform:           PlatformAnthropic,
+			Type:               AccountTypeSetupToken,
+			Extra:              map[string]any{"window_cost_limit": 100.0},
+			SessionWindowStart: &windowStart,
+			SessionWindowEnd:   &windowEnd,
+		},
+	}
+
+	cache := &sessionLimitCacheHotpathStub{
+		batchErr: errors.New("cache down"),
+	}
+	repo := &usageLogWindowBatchRepoStub{
+		batchResult: map[int64]*usagestats.AccountStats{
+			2: {Cost: 44.0},
+		},
+	}
+	svc := &GatewayService{
+		sessionLimitCache: cache,
+		usageLogRepo:      repo,
+	}
+
+	outCtx := svc.withWindowCostPrefetch(context.Background(), accounts)
+	cost, ok := windowCostFromPrefetchContext(outCtx, 2)
+	require.True(t, ok)
+	require.Equal(t, 44.0, cost)
+	require.Equal(t, int64(1), repo.batchCalls.Load())
+}
+
+func TestIsAccountSchedulableForWindowCost_UsesCostInsteadOfStandardCost(t *testing.T) {
+	account := &Account{
+		ID:       2,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Extra: map[string]any{
+			"window_cost_limit": 20.0,
+		},
+	}
+
+	repo := &usageLogWindowBatchRepoStub{
+		singleResult: map[int64]*usagestats.AccountStats{
+			2: {Cost: 22.0, StandardCost: 9.0},
+		},
+	}
+	svc := &GatewayService{usageLogRepo: repo}
+
+	require.False(t, svc.isAccountSchedulableForWindowCost(context.Background(), account, false))
+	require.True(t, svc.isAccountSchedulableForWindowCost(context.Background(), account, true))
+}
+
+func TestIsAccountSchedulableForWindowCost_UsesPrefetchedCost(t *testing.T) {
+	account := &Account{
+		ID:       3,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"window_cost_limit": 20.0,
+		},
+	}
+
+	ctx := context.WithValue(context.Background(), windowCostPrefetchContextKey, map[int64]float64{
+		3: 35.0,
+	})
+	svc := &GatewayService{}
+
+	require.False(t, svc.isAccountSchedulableForWindowCost(ctx, account, false))
+}
+
+func TestIsAccountSchedulableForWindowCost_NonAnthropicOrDisabledLimitPasses(t *testing.T) {
+	svc := &GatewayService{}
+
+	nonAnthropic := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	require.True(t, svc.isAccountSchedulableForWindowCost(context.Background(), nonAnthropic, false))
+
+	noLimit := &Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	require.True(t, svc.isAccountSchedulableForWindowCost(context.Background(), noLimit, false))
+}
+
+func TestIsAccountSchedulableForWindowCost_UsesCacheHitBeforeDatabase(t *testing.T) {
+	account := &Account{
+		ID:       5,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"window_cost_limit": 20.0,
+		},
+	}
+	cache := &sessionLimitCacheHotpathStub{
+		getData: map[int64]float64{5: 35.0},
+		getHit:  true,
+	}
+	repo := &usageLogWindowBatchRepoStub{
+		singleResult: map[int64]*usagestats.AccountStats{
+			5: {Cost: 1.0},
+		},
+	}
+	svc := &GatewayService{
+		sessionLimitCache: cache,
+		usageLogRepo:      repo,
+	}
+
+	require.False(t, svc.isAccountSchedulableForWindowCost(context.Background(), account, false))
+	require.Equal(t, int64(0), repo.singleCalls.Load())
+}
+
+func TestIsAccountSchedulableForWindowCost_DBErrorFailsOpen(t *testing.T) {
+	account := &Account{
+		ID:       6,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"window_cost_limit": 20.0,
+		},
+	}
+	svc := &GatewayService{
+		usageLogRepo: &usageLogWindowBatchRepoStub{
+			singleErr: errors.New("db down"),
+		},
+	}
+
+	require.True(t, svc.isAccountSchedulableForWindowCost(context.Background(), account, false))
+}
+
+func TestIsAccountSchedulableForWindowCost_BelowLimitAllowsScheduling(t *testing.T) {
+	account := &Account{
+		ID:       7,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"window_cost_limit": 20.0,
+		},
+	}
+	svc := &GatewayService{
+		usageLogRepo: &usageLogWindowBatchRepoStub{
+			singleResult: map[int64]*usagestats.AccountStats{
+				7: {Cost: 19.0, StandardCost: 40.0},
+			},
+		},
+	}
+
+	require.True(t, svc.isAccountSchedulableForWindowCost(context.Background(), account, false))
 }
 
 func TestWithWindowCostPrefetch_AllHitNoSQL(t *testing.T) {
@@ -443,7 +660,7 @@ func TestWithWindowCostPrefetch_BatchErrorFallbackSingleQuery(t *testing.T) {
 	repo := &usageLogWindowBatchRepoStub{
 		batchErr: errors.New("batch failed"),
 		singleResult: map[int64]*usagestats.AccountStats{
-			2: {StandardCost: 33.0},
+			2: {Cost: 33.0},
 		},
 	}
 	svc := &GatewayService{

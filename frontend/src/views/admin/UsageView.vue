@@ -75,6 +75,7 @@ import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admi
 import { formatReasoningEffort } from '@/utils/format'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
+import { calculateUsageAccountBilledCost, getUsageServiceTierMultiplier } from '@/utils/usageServiceTier'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import Select from '@/components/common/Select.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
@@ -162,7 +163,7 @@ const exportToExcel = async () => {
       t('admin.usage.outputTokens'), t('admin.usage.outputCost'), `${t('usage.outputTokenPrice')} ($/1M)`,
       t('admin.usage.cacheReadTokens'), t('admin.usage.cacheReadCost'),
       t('admin.usage.cacheCreationTokens'), t('admin.usage.cacheCreationCost'),
-      t('usage.userRate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
+      t('usage.serviceTier'), t('usage.serviceTierRate'), t('usage.userRate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
       t('usage.firstToken'), t('usage.duration'),
       t('admin.usage.requestId'), t('usage.userAgent'), t('admin.usage.ipAddress')
     ]
@@ -179,9 +180,10 @@ const exportToExcel = async () => {
         log.output_tokens, log.output_cost?.toFixed(6) || '0.000000', formatTokenPricePerMillion(log.output_cost, log.output_tokens, { withCurrencySymbol: false }),
         log.cache_read_tokens, log.cache_read_cost?.toFixed(6) || '0.000000',
         log.cache_creation_tokens, log.cache_creation_cost?.toFixed(6) || '0.000000',
+        log.service_tier || 'standard', getUsageServiceTierMultiplier(log.service_tier).toFixed(2),
         log.rate_multiplier?.toFixed(2) || '1.00', (log.account_rate_multiplier ?? 1).toFixed(2),
         log.total_cost?.toFixed(6) || '0.000000', log.actual_cost?.toFixed(6) || '0.000000',
-        (log.total_cost * (log.account_rate_multiplier ?? 1)).toFixed(6), log.first_token_ms ?? '', log.duration_ms,
+        calculateUsageAccountBilledCost(log.total_cost, log.actual_cost, log.rate_multiplier, log.account_rate_multiplier, log.service_tier).toFixed(6), log.first_token_ms ?? '', log.duration_ms,
         log.request_id || '', log.user_agent || '', log.ip_address || ''
       ])
       if (rows.length) {

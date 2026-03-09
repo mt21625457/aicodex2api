@@ -1207,8 +1207,9 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierPriorityDoublesCost(t *testi
 
 	baseCost, calcErr := svc.billingService.CalculateCost("gpt-5.1-codex", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0)
 	require.NoError(t, calcErr)
-	require.InDelta(t, baseCost.InputCost*2, usageRepo.lastLog.InputCost, 1e-10)
-	require.InDelta(t, baseCost.OutputCost*2, usageRepo.lastLog.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.InputCost, usageRepo.lastLog.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost, usageRepo.lastLog.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
 	require.InDelta(t, baseCost.ActualCost*2, usageRepo.lastLog.ActualCost, 1e-10)
 	require.InDelta(t, baseCost.ActualCost*2, userRepo.lastAmount, 1e-10)
 }
@@ -1241,8 +1242,9 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierFlexHalvesCost(t *testing.T)
 
 	baseCost, calcErr := svc.billingService.CalculateCost("gpt-5.1-codex", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0)
 	require.NoError(t, calcErr)
-	require.InDelta(t, baseCost.InputCost*0.5, usageRepo.lastLog.InputCost, 1e-10)
-	require.InDelta(t, baseCost.OutputCost*0.5, usageRepo.lastLog.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.InputCost, usageRepo.lastLog.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost, usageRepo.lastLog.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
 	require.InDelta(t, baseCost.ActualCost*0.5, usageRepo.lastLog.ActualCost, 1e-10)
 	require.InDelta(t, baseCost.ActualCost*0.5, userRepo.lastAmount, 1e-10)
 }
@@ -1278,9 +1280,10 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierPriorityGpt54DoublesCost(t *
 
 	baseCost, calcErr := svc.billingService.CalculateCost("gpt-5.4", UsageTokens{InputTokens: 80, OutputTokens: 50, CacheReadTokens: 20}, 1.0)
 	require.NoError(t, calcErr)
-	require.InDelta(t, baseCost.InputCost*2, usageRepo.lastLog.InputCost, 1e-10)
-	require.InDelta(t, baseCost.OutputCost*2, usageRepo.lastLog.OutputCost, 1e-10)
-	require.InDelta(t, baseCost.CacheReadCost*2, usageRepo.lastLog.CacheReadCost, 1e-10)
+	require.InDelta(t, baseCost.InputCost, usageRepo.lastLog.InputCost, 1e-10)
+	require.InDelta(t, baseCost.OutputCost, usageRepo.lastLog.OutputCost, 1e-10)
+	require.InDelta(t, baseCost.CacheReadCost, usageRepo.lastLog.CacheReadCost, 1e-10)
+	require.InDelta(t, baseCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
 	require.InDelta(t, baseCost.ActualCost*2, usageRepo.lastLog.ActualCost, 1e-10)
 	require.InDelta(t, baseCost.ActualCost*2, userRepo.lastAmount, 1e-10)
 }

@@ -46,13 +46,6 @@ func normalizeBillingServiceTier(serviceTier string) string {
 	return strings.ToLower(strings.TrimSpace(serviceTier))
 }
 
-func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bool {
-	if pricing == nil || normalizeBillingServiceTier(serviceTier) != "priority" {
-		return false
-	}
-	return pricing.InputPricePerTokenPriority > 0 || pricing.OutputPricePerTokenPriority > 0 || pricing.CacheReadPricePerTokenPriority > 0
-}
-
 func serviceTierCostMultiplier(serviceTier string) float64 {
 	switch normalizeBillingServiceTier(serviceTier) {
 	case "priority":
@@ -80,8 +73,8 @@ type CostBreakdown struct {
 	OutputCost        float64
 	CacheCreationCost float64
 	CacheReadCost     float64
-	TotalCost         float64
-	ActualCost        float64 // 应用倍率后的实际费用
+	TotalCost         float64 // 标准费用，不含 service tier / 用户倍率
+	ActualCost        float64 // 实际费用，已应用 service tier 与用户倍率
 }
 
 // BillingService 计费服务
@@ -337,7 +330,8 @@ func (s *BillingService) CalculateCost(model string, tokens UsageTokens, rateMul
 	return s.CalculateCostWithServiceTier(model, tokens, rateMultiplier, "")
 }
 
-// CalculateCostWithServiceTier 计算使用费用，并按 service tier 选择 priority 定价。
+// CalculateCostWithServiceTier 计算使用费用。
+// 分项成本与 TotalCost 始终保持原始单价，service tier 仅作用于最终 ActualCost。
 func (s *BillingService) CalculateCostWithServiceTier(model string, tokens UsageTokens, rateMultiplier float64, serviceTier string) (*CostBreakdown, error) {
 	pricing, err := s.GetModelPricing(model)
 	if err != nil {
@@ -348,20 +342,7 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 	inputPricePerToken := pricing.InputPricePerToken
 	outputPricePerToken := pricing.OutputPricePerToken
 	cacheReadPricePerToken := pricing.CacheReadPricePerToken
-	tierMultiplier := 1.0
-	if usePriorityServiceTierPricing(serviceTier, pricing) {
-		if pricing.InputPricePerTokenPriority > 0 {
-			inputPricePerToken = pricing.InputPricePerTokenPriority
-		}
-		if pricing.OutputPricePerTokenPriority > 0 {
-			outputPricePerToken = pricing.OutputPricePerTokenPriority
-		}
-		if pricing.CacheReadPricePerTokenPriority > 0 {
-			cacheReadPricePerToken = pricing.CacheReadPricePerTokenPriority
-		}
-	} else {
-		tierMultiplier = serviceTierCostMultiplier(serviceTier)
-	}
+	tierMultiplier := serviceTierCostMultiplier(serviceTier)
 	if s.shouldApplySessionLongContextPricing(tokens, pricing) {
 		inputPricePerToken *= pricing.LongContextInputMultiplier
 		outputPricePerToken *= pricing.LongContextOutputMultiplier
@@ -390,13 +371,6 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 
 	breakdown.CacheReadCost = float64(tokens.CacheReadTokens) * cacheReadPricePerToken
 
-	if tierMultiplier != 1.0 {
-		breakdown.InputCost *= tierMultiplier
-		breakdown.OutputCost *= tierMultiplier
-		breakdown.CacheCreationCost *= tierMultiplier
-		breakdown.CacheReadCost *= tierMultiplier
-	}
-
 	// 计算总费用
 	breakdown.TotalCost = breakdown.InputCost + breakdown.OutputCost +
 		breakdown.CacheCreationCost + breakdown.CacheReadCost
@@ -405,7 +379,7 @@ func (s *BillingService) CalculateCostWithServiceTier(model string, tokens Usage
 	if rateMultiplier <= 0 {
 		rateMultiplier = 1.0
 	}
-	breakdown.ActualCost = breakdown.TotalCost * rateMultiplier
+	breakdown.ActualCost = breakdown.TotalCost * tierMultiplier * rateMultiplier
 
 	return breakdown, nil
 }
