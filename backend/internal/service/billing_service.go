@@ -42,12 +42,6 @@ type ModelPricing struct {
 	LongContextOutputMultiplier    float64 // 长上下文整次会话输出倍率
 }
 
-const (
-	openAIGPT54LongContextInputThreshold   = 272000
-	openAIGPT54LongContextInputMultiplier  = 2.0
-	openAIGPT54LongContextOutputMultiplier = 1.5
-)
-
 func normalizeBillingServiceTier(serviceTier string) string {
 	return strings.ToLower(strings.TrimSpace(serviceTier))
 }
@@ -193,14 +187,11 @@ func (s *BillingService) initFallbackPricing() {
 	}
 	// OpenAI GPT-5.4（业务指定价格）
 	s.fallbackPrices["gpt-5.4"] = &ModelPricing{
-		InputPricePerToken:          2.5e-6,  // $2.5 per MTok
-		OutputPricePerToken:         15e-6,   // $15 per MTok
-		CacheCreationPricePerToken:  2.5e-6,  // $2.5 per MTok
-		CacheReadPricePerToken:      0.25e-6, // $0.25 per MTok
-		SupportsCacheBreakdown:      false,
-		LongContextInputThreshold:   openAIGPT54LongContextInputThreshold,
-		LongContextInputMultiplier:  openAIGPT54LongContextInputMultiplier,
-		LongContextOutputMultiplier: openAIGPT54LongContextOutputMultiplier,
+		InputPricePerToken:         2.5e-6,  // $2.5 per MTok
+		OutputPricePerToken:        15e-6,   // $15 per MTok
+		CacheCreationPricePerToken: 2.5e-6,  // $2.5 per MTok
+		CacheReadPricePerToken:     0.25e-6, // $0.25 per MTok
+		SupportsCacheBreakdown:     false,
 	}
 	// OpenAI GPT-5.2（本地兜底）
 	s.fallbackPrices["gpt-5.2"] = &ModelPricing{
@@ -426,19 +417,10 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 	if !isOpenAIGPT54Model(model) {
 		return pricing
 	}
-	if pricing.LongContextInputThreshold > 0 && pricing.LongContextInputMultiplier > 0 && pricing.LongContextOutputMultiplier > 0 {
-		return pricing
-	}
 	cloned := *pricing
-	if cloned.LongContextInputThreshold <= 0 {
-		cloned.LongContextInputThreshold = openAIGPT54LongContextInputThreshold
-	}
-	if cloned.LongContextInputMultiplier <= 0 {
-		cloned.LongContextInputMultiplier = openAIGPT54LongContextInputMultiplier
-	}
-	if cloned.LongContextOutputMultiplier <= 0 {
-		cloned.LongContextOutputMultiplier = openAIGPT54LongContextOutputMultiplier
-	}
+	cloned.LongContextInputThreshold = 0
+	cloned.LongContextInputMultiplier = 0
+	cloned.LongContextOutputMultiplier = 0
 	return &cloned
 }
 

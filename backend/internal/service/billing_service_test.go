@@ -203,9 +203,9 @@ func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	require.InDelta(t, 2.5e-6, pricing.InputPricePerToken, 1e-12)
 	require.InDelta(t, 15e-6, pricing.OutputPricePerToken, 1e-12)
 	require.InDelta(t, 0.25e-6, pricing.CacheReadPricePerToken, 1e-12)
-	require.Equal(t, 272000, pricing.LongContextInputThreshold)
-	require.InDelta(t, 2.0, pricing.LongContextInputMultiplier, 1e-12)
-	require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
+	require.Zero(t, pricing.LongContextInputThreshold)
+	require.Zero(t, pricing.LongContextInputMultiplier)
+	require.Zero(t, pricing.LongContextOutputMultiplier)
 }
 
 func TestGetModelPricing_OpenAIGPT52AndGpt53CodexFallback(t *testing.T) {
@@ -224,7 +224,7 @@ func TestGetModelPricing_OpenAIGPT52AndGpt53CodexFallback(t *testing.T) {
 	require.InDelta(t, 3.5e-6, pricing53Codex.InputPricePerTokenPriority, 1e-12)
 }
 
-func TestCalculateCost_OpenAIGPT54LongContextAppliesWholeSessionMultipliers(t *testing.T) {
+func TestCalculateCost_OpenAIGPT54LongContextDoesNotApplySessionMultipliers(t *testing.T) {
 	svc := newTestBillingService()
 
 	tokens := UsageTokens{
@@ -235,8 +235,8 @@ func TestCalculateCost_OpenAIGPT54LongContextAppliesWholeSessionMultipliers(t *t
 	cost, err := svc.CalculateCost("gpt-5.4-2026-03-05", tokens, 1.0)
 	require.NoError(t, err)
 
-	expectedInput := float64(tokens.InputTokens) * 2.5e-6 * 2.0
-	expectedOutput := float64(tokens.OutputTokens) * 15e-6 * 1.5
+	expectedInput := float64(tokens.InputTokens) * 2.5e-6
+	expectedOutput := float64(tokens.OutputTokens) * 15e-6
 	require.InDelta(t, expectedInput, cost.InputCost, 1e-10)
 	require.InDelta(t, expectedOutput, cost.OutputCost, 1e-10)
 	require.InDelta(t, expectedInput+expectedOutput, cost.TotalCost, 1e-10)
